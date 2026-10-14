@@ -1,0 +1,16 @@
+# 固定工具链版本。
+#
+# docs/TEST_PLAN.md §5「Windows Release 构建可重复」要求构建可复现，
+# 因此这里锁定到具体版本而不是 "stable"。
+#
+# 1.99.0 的选择依据：`egui 0.36` / `eframe 0.36` 的 MSRV 是 1.95，
+# edition 2024 需要 1.85+。1.99.0 是本项目 M0 构建时验证通过的 stable。
+#
+# 升级方式：修改此处版本号，然后运行 `cargo update -w` 或直接构建；
+# rustup 会自动安装新工具链。升级后应重跑全部 DSP 数值测试，
+# 因为浮点结果可能因 LLVM 版本变化产生末位差异。
+
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

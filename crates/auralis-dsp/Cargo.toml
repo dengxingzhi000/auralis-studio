@@ -1,0 +1,18 @@
+[package]
+name = "auralis-dsp"
+description = "Auralis Studio 纯数值 DSP 内核：窗函数与基础信号指标"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+auralis-core = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"

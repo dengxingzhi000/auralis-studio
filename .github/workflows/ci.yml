@@ -1,0 +1,140 @@
+name: CI
+
+# docs/TEST_PLAN.md §7 要求的标准检查集合。
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # 让 -D warnings 真正生效，同时禁止意料之外的警告悄悄通过
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # ---------------------------------------------------------------- 主检查
+  check:
+    name: fmt / clippy / test / release build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows 是首发平台（docs/PRD.md），必测。
+        # macOS/Linux 只跑检查不跑 GUI，用于提前发现跨平台编译问题
+        # （docs/ADR.md ADR-005；跨平台支持属于 V2.0）。
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # 版本来源：仓库根 rust-toolchain.toml，保证 CI 与本地一致
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: 缓存 Cargo 主目录
+        run: |
+          # rust-cache 已处理 registry；这里仅确保 CARGO_HOME 存在
+          echo "CARGO_HOME=$CARGO_HOME"
+
+      # ---- 架构边界检查（AGENTS.md「Architecture rules」）----
+      - name: 架构边界检查
+        shell: pwsh
+        run: ./scripts/check-boundaries.ps1
+
+      - name: 格式检查
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: 单元与集成测试
+        run: cargo test --workspace --locked
+
+      - name: Release 构建
+        run: cargo build --workspace --release --locked
+
+      # docs/TEST_PLAN.md §5「Windows Release 构建可重复」。
+      # GitHub 的 Windows runner 没有交互式桌面，--self-test 是
+      # 「产物确实能启动并跑数值代码」的唯一可自动化证据。
+      - name: Release 产物自检（无窗口）
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $exe = "target\release\auralis-studio.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "未找到 $exe"
+            exit 1
+          }
+          & $exe --version
+          & $exe --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # ---------------------------------------------------------------- DSP 回归
+  # 关键 DSP 数值测试单独成一个 job：即使 UI 改动频繁，
+  # 数值回归也必须每次都被看到。
+  dsp-regression:
+    name: DSP 数值回归
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: DSP 单元测试（含完整输出）
+        run: cargo test -p auralis-dsp --locked -- --nocapture
+      - name: DSP 测试清单核对
+        shell: pwsh
+        run: |
+          # docs/DSP_SPEC.md §9 覆盖：直流、Nyquist、近 Nyquist、非整数周期、
+          # 多通道隔离。确认这些测试确实存在，而不是只测了正弦波。
+          $required = @(
+            'dc_offset_is_the_mean',
+            'dc_offset_is_signed',
+            'silence_produces_zeroes_not_nan',
+            'non_finite_samples_are_sanitized_and_counted',
+            'over_full_scale_is_counted_not_clipped',
+            'hard_clipped_sine_is_detected_as_flat_top',
+            'clean_sine_is_not_reported_as_clipping',
+            'channel_isolation_l_and_r_are_independent',
+            'peak_of_sine_tracks_amplitude',
+            'rms_of_sine_is_amplitude_over_sqrt_two',
+            'crest_factor_of_full_scale_sine_is_about_3_01_db'
+          )
+          $out = cargo test -p auralis-dsp --locked -- --list 2>&1 | Out-String
+          $missing = @()
+          foreach ($t in $required) {
+            if ($out -notmatch [regex]::Escape($t)) { $missing += $t }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error ("缺少必需的 DSP 测试: " + ($missing -join ', '))
+            exit 1
+          }
+          Write-Host "全部 $($required.Count) 个必需 DSP 测试均存在"
+
+  # ---------------------------------------------------------------- 构建产物
+  artifact:
+    name: 上传 Windows Release 产物
+    needs: [check]
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auralis-studio-windows-x64
+          path: target/release/auralis-studio.exe
+          if-no-files-found: error

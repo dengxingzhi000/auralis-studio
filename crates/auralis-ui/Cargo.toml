@@ -1,0 +1,22 @@
+[package]
+name = "auralis-ui"
+description = "Auralis Studio egui 界面：设计 Token、布局骨架与视图组件"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+auralis-core = { workspace = true }
+auralis-dsp = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"

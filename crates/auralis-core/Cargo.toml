@@ -1,0 +1,20 @@
+[package]
+name = "auralis-core"
+description = "Auralis Studio 共享领域类型、错误、时间轴与单位约定"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"
+
+[lints.clippy]
+# DSP 数值代码里，位运算和显式截断是刻意的，不当作 lint 错误。
+undocumented_unsafe_blocks = "deny"

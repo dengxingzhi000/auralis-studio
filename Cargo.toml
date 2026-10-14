@@ -1,0 +1,59 @@
+# Auralis Studio — Cargo workspace
+#
+# 依赖版本策略（见 docs/ADR.md ADR-007）：
+#   - 所有外部依赖只在 [workspace.dependencies] 里声明一份版本。
+#   - 成员 crate 用 `xxx = { workspace = true }` 引用，不重复写版本号。
+#   - 新增依赖用 `cargo add -p <crate>` 解析当前兼容版本，然后把手写结果挪到这里。
+#   - Cargo.lock 提交入库；CI 用 --locked 构建。
+[workspace]
+resolver = "3"
+members = [
+    "apps/auralis-desktop",
+    "crates/auralis-core",
+    "crates/auralis-dsp",
+    "crates/auralis-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+publish = false
+authors = ["Auralis Studio contributors"]
+
+[workspace.dependencies]
+# --- 内部 crate ---
+auralis-core = { path = "crates/auralis-core" }
+auralis-dsp = { path = "crates/auralis-dsp" }
+auralis-ui = { path = "crates/auralis-ui" }
+
+# --- 外部：UI（只允许 auralis-ui / auralis-desktop 使用）---
+eframe = "0.36"
+egui = "0.36"
+# 已解析验证：egui_plot 0.37.0（与 egui 0.36 兼容）。
+# M0 没有任何 crate 使用它，因此它**不在 Cargo.lock 中**，CI 也不会构建它。
+# M3 接入频谱视图时再由成员 crate 引用。
+egui_plot = "0.37"
+
+# --- 外部：DSP（只允许 auralis-dsp 使用）---
+# 已解析验证：rustfft 6.4.1。M2 接入 FFT 时再由 auralis-dsp 引用。
+rustfft = "6.4"
+
+# --- 外部：通用 ---
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+# 故意不设置 `panic = "abort"`。
+# AGENTS.md 要求「异常文件不能导致整个应用崩溃」「后台任务失败应可以定位、取消或重试」。
+# `panic = "abort"` 会让任意工作线程里的 panic 直接终止整个进程，与该要求冲突。
+# M3 起工作线程将用 `catch_unwind` 做任务级隔离，因此必须保留 unwinding。

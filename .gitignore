@@ -1,0 +1,24 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+*.pdb
+
+# 本地工具链与缓存（本项目全部落在 D 盘，不入库）
+/.cargo/registry/
+/.cargo/git/
+
+# Superpowers 可视化伴侣的临时产物
+/.superpowers/
+
+# IDE
+/.idea/
+*.iml
+/.vscode/
+
+# 操作系统
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 运行期产物
+*.log

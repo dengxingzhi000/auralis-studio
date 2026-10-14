@@ -1,0 +1,20 @@
+# Auralis Studio — 项目级 Cargo 配置
+#
+# 刻意保持最小。镜像/网络等**机器相关**设置放在 CARGO_HOME（%CARGO_HOME%\config.toml），
+# 不进版本库，避免把某个地区的网络环境强加给 CI 和其他开发者。
+# 这里只放与项目本身相关的、可复现的设置。
+
+[alias]
+# 与 docs/TEST_PLAN.md §7 的 CI 命令一一对应，方便本地复现同一套检查
+ci-fmt = "fmt --all -- --check"
+ci-clippy = "clippy --workspace --all-targets -- -D warnings"
+ci-test = "test --workspace --locked"
+ci-build = "build --workspace --release --locked"
+ci = ["fmt --all -- --check", "clippy --workspace --all-targets -- -D warnings", "test --workspace --locked"]
+
+[term]
+color = "auto"
+
+[build]
+# 显式声明，避免不同机器上因 default-jobs 推断差异产生不可复现的构建行为差异
+incremental = true

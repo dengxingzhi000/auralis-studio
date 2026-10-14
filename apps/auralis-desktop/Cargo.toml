@@ -1,0 +1,22 @@
+[package]
+name = "auralis-desktop"
+description = "Auralis Studio 桌面应用入口"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "auralis-studio"
+path = "src/main.rs"
+
+[dependencies]
+auralis-core = { workspace = true }
+auralis-dsp = { workspace = true }
+auralis-ui = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
