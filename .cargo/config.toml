@@ -18,3 +18,17 @@ color = "auto"
 [build]
 # 显式声明，避免不同机器上因 default-jobs 推断差异产生不可复现的构建行为差异
 incremental = true
+
+# 静态链接 MSVC CRT。
+#
+# 背景：实测 `x86_64-pc-windows-msvc` 目标在本机默认**动态**链接 CRT，
+# 导致 target\release\auralis-studio.exe 对 `VCRUNTIME140.dll` 与
+# `api-ms-win-crt-*.dll` 产生硬导入（dumpbin /imports 确认，非延迟加载）。
+# 后果：未安装「Microsoft Visual C++ Redistributable」的机器上双击即报
+# "找不到 VCRUNTIME140.dll"，程序根本不启动——这就不是"单个 exe"了。
+#
+# `+crt-static` 把 CRT 静态链进可执行文件，去掉这些导入。
+# 代价：exe 体积略增（实测 13.93 MB -> 14.11 MB，+0.18 MB），且不能用 C++ 跨模块
+# 边界传递 FILE*/堆指针等 CRT 私有类型。本项目为纯 Rust，不受影响。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

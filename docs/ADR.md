@@ -226,3 +226,45 @@ runner 没有交互式桌面会话，`eframe::run_native` 无法开窗，因此�
 ### 后果
 
 CI 多了一条廉价的强断言。代价是多维护一个 CLI 分支。
+
+## ADR-013：静态链接 CRT，使产物成为真正独立的单文件 exe
+
+状态：Accepted（M0 收尾）
+
+### 背景
+
+M0 收尾时用 `dumpbin /dependents` 检查产物，发现
+`target/release/auralis-studio.exe`（13.93 MB）存在对
+`VCRUNTIME140.dll` 与 `api-ms-win-crt-*.dll` 的**硬导入**
+（`dumpbin /imports` 确认，不是延迟加载；`/delayloads` 为空）。
+
+`rustc --print cfg --target x86_64-pc-windows-msvc` 中没有 `crt-static`
+特性，说明本机该目标默认**动态**链接 MSVC CRT。
+
+### 影响
+
+`VCRUNTIME140.dll` 来自「Microsoft Visual C++ Redistributable」，不是
+Windows 系统自带组件。没有装过该运行库的机器上双击即报
+「找不到 VCRUNTIME140.dll」，程序根本不启动——这不符合
+`IMPLEMENTATION_PLAN.md` §5「Windows Release 构建可重复」与分发预期。
+
+### 决策
+
+在仓库 `.cargo/config.toml` 中对 `x86_64-pc-windows-msvc` 目标启用
+`-C target-feature=+crt-static`，把 CRT 静态链入可执行文件。
+
+### 验证
+
+- `dumpbin /imports` 中 `VCRUNTIME140` / `api-ms-win-crt` 命中数 **4 -> 0**。
+- 剩余依赖全部是 Windows 系统 DLL（`kernel32`、`user32`、`gdi32`、
+  `opengl32`、`dxgi` 等），任何 Windows 10/11 都自带。
+- 把 exe 单独复制到空目录运行 `--self-test`，**exit 0**。
+- 改动链接模型后重跑 `cargo test --workspace`：**69 passed / 0 failed**。
+- 体积代价实测 **13.93 MB -> 14.11 MB（+0.18 MB）**。
+
+### 后果
+
+- 单文件可直接分发与双击运行，无需安装运行库。
+- 代价是体积略增，且不能跨模块边界传递 CRT 私有类型（`FILE*` 等）。
+  本项目为纯 Rust，不受影响；若将来引入 C/C++ FFI 需重新评估。
+- 该设置只作用于 MSVC 目标，不影响 macOS/Linux 构建。
