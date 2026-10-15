@@ -69,10 +69,14 @@ Write-Host "exe    : $Exe"
 if ($LASTEXITCODE -ne 0) { Fail "Python 缺少 numpy，请先执行: $Python -m pip install numpy" }
 
 # ---- 导出参考值 ----
+# 注意：release 构建带 `windows_subsystem = "windows"`，是 GUI 子系统程序。
+# 直接 `& $exe ...` 时 PowerShell **不保证**等待它结束，$LASTEXITCODE 可能为空。
+# 必须用 Start-Process -Wait -PassThru 才能可靠拿到退出码。
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "auralis-oracle-$([guid]::NewGuid().ToString('N')).json"
 try {
-    & $Exe --dump-reference $tmp
-    if ($LASTEXITCODE -ne 0) { Fail "--dump-reference 退出码 $LASTEXITCODE" }
+    $proc = Start-Process -FilePath $Exe -ArgumentList @('--dump-reference', $tmp) `
+        -Wait -PassThru -NoNewWindow
+    if ($proc.ExitCode -ne 0) { Fail "--dump-reference 退出码 $($proc.ExitCode)" }
     if (-not (Test-Path $tmp)) { Fail "--dump-reference 未产出文件" }
 
     # ---- 对照 ----

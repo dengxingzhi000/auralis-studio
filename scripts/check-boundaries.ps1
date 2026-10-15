@@ -31,13 +31,15 @@ $pureCrates = @('auralis-core', 'auralis-dsp')
 $forbiddenCrates = @(
     'eframe', 'egui', 'egui_plot', 'egui_extras', 'winit', 'wgpu',
     'cpal', 'symphonia', 'rtrb',
-    'rusqlite', 'diesel', 'sqlx', 'tokio', 'async-std', 'rayon', 'rfd'
+    'rusqlite', 'diesel', 'sqlx', 'tokio', 'async-std', 'rayon', 'rfd',
+    # ADR-016: Tauri/Rust IPC 端点也不得进入纯算法层
+    'tauri', 'tauri-plugin-log'
 )
 
 # Forbidden tokens in .rs source of pure crates.
 $forbiddenTokens = @(
     'std::fs', 'std::net', 'std::process',
-    'egui::', 'eframe::', 'cpal::', 'symphonia::'
+    'egui::', 'eframe::', 'cpal::', 'symphonia::', 'tauri::'
 )
 
 $failures = New-Object System.Collections.Generic.List[string]
@@ -105,10 +107,41 @@ if ($failures.Count -gt 0) {
     Write-Host "BOUNDARY VIOLATIONS ($($failures.Count)):" -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
     Write-Host ""
-    Write-Host "docs/TAD.md §3 and AGENTS.md require these crates to stay free of UI," -ForegroundColor Yellow
+    Write-Host "docs/TAD.md 3 and AGENTS.md require these crates to stay free of UI," -ForegroundColor Yellow
     Write-Host "device APIs, filesystem access and database dependencies."
     exit 1
 }
 
+# ---------------------------------------------------------------------------
+# 前端音频边界（ADR-018 规则 1）
+# ---------------------------------------------------------------------------
+# React 不得参与音频计算。这里机械检查前端不出现 FFT / dB 对数等
+# 数值运算调用——它们必须留在 Rust 侧。
+$srcDir = Join-Path $WorkspaceRoot 'apps\desktop\src'
+if (Test-Path $srcDir) {
+    $tsFiles = Get-ChildItem $srcDir -Recurse -Include '*.ts', '*.tsx'
+    $forbiddenTs = @(
+        'Math.log10', 'Math.log2', 'new Float64Array', 'fft(', 'hann(', 'hamming(', 'blackman('
+    )
+    foreach ($f in $tsFiles) {
+        $text = Get-Content $f.FullName -Raw
+        foreach ($bad in $forbiddenTs) {
+            if ($text -match [regex]::Escape($bad)) {
+                $rel = $f.FullName.Substring($WorkspaceRoot.Length + 1)
+                $failures.Add("$rel contains '$bad' - audio math belongs in Rust (ADR-018)")
+            }
+        }
+    }
+    if ($failures.Count -gt 0) {
+        Write-Host "FRONTEND BOUNDARY VIOLATIONS:" -ForegroundColor Red
+        $failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+        Write-Host ""
+        Write-Host "ADR-018: React must not perform audio computation. dB conversion," -ForegroundColor Yellow
+        Write-Host "FFT, resampling and peak detection all belong in the Rust core."
+        exit 1
+    }
+}
+
 Write-Host "boundary check OK: $($pureCrates -join ', ') are free of UI/device/fs/db deps" -ForegroundColor Green
+Write-Host "boundary check OK: frontend src contains no audio math (ADR-018)" -ForegroundColor Green
 exit 0

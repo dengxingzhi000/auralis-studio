@@ -1,0 +1,82 @@
+/* ============================================================================
+ * Auralis 全局基础样式
+ * ============================================================================
+ * 目标是「专业测量仪器」，不是 Web 产品：
+ *   - 紧凑密度，不做大圆角大留白
+ *   - 弱边框，明确层级
+ *   - 数值等宽
+ * ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: 1.45;
+  /* 桌面应用：不需要选中文本，否则拖图表时会误选 */
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* 全局焦点样式：键盘可达性是 ADR-017 的硬要求 */
+:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+::selection {
+  background: rgb(87 166 255 / 35%);
+}
+
+/* 滚动条：细、低对比，不抢视觉 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--axis-line);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+/* ---- 工具类 ---- */
+
+/* 所有数值必须走这个类：频率、dB、采样率、百分比 */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.label {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.muted {
+  color: var(--text-disabled);
+}

@@ -5,19 +5,36 @@
 #   - 成员 crate 用 `xxx = { workspace = true }` 引用，不重复写版本号。
 #   - 新增依赖用 `cargo add -p <crate>` 解析当前兼容版本，然后把手写结果挪到这里。
 #   - Cargo.lock 提交入库；CI 用 --locked 构建。
+#
+# 架构（ADR-016）：Rust 只做音频内核与 IPC 端点，
+# UI 由 Tauri 2 + React 承担，React 不参与音频计算。
 [workspace]
 resolver = "3"
 members = [
-    "apps/auralis-desktop",
+    "apps/desktop/src-tauri",
     "crates/auralis-core",
     "crates/auralis-dsp",
-    "crates/auralis-ui",
 ]
+
+# ADR-007: do not pre-create empty crates. auralis-codec / auralis-analysis /
+# auralis-audio join `members` in M1-M4 when they actually have content.
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+# MSRV 声明。**注意这与 rust-toolchain.toml 的 channel 是两件事：**
+#
+#   rust-toolchain.toml channel = 1.99.0  ->  实际用哪个编译器（这才是真正的版本）
+#   这里的 rust-version                  ->  纯元数据，cargo/clippy 读取
+#
+# 本项目声明 1.99.0，与实际构建并测试通过的版本一致。理由：
+# 我们**没有**跑 MSRV CI job，因此任何低于 1.99.0 的声明都是未经验证的。
+# 依据 AGENTS.md「不宣称未经验证的东西」，不写没测过的数字。
+#
+# 实际下限参考（未验证，仅供将来降 MSRV 时参考）：
+#   tauri 2.11.6 = 1.77.2 / edition 2024 = 1.85 / is_multiple_of = 1.87
+# 若将来要正式支持旧版工具链，需在 CI 增加一个 MSRV job 实测后再改这里。
+rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 publish = false
 authors = ["Auralis Studio contributors"]
@@ -26,17 +43,10 @@ authors = ["Auralis Studio contributors"]
 # --- 内部 crate ---
 auralis-core = { path = "crates/auralis-core" }
 auralis-dsp = { path = "crates/auralis-dsp" }
-auralis-ui = { path = "crates/auralis-ui" }
+auralis-codec = { path = "crates/auralis-codec" }
+auralis-analysis = { path = "crates/auralis-analysis" }
 
-# --- 外部：UI（只允许 auralis-ui / auralis-desktop 使用）---
-eframe = "0.36"
-egui = "0.36"
-# 已解析验证：egui_plot 0.37.0（与 egui 0.36 兼容）。
-# M0 没有任何 crate 使用它，因此它**不在 Cargo.lock 中**，CI 也不会构建它。
-# M3 接入频谱视图时再由成员 crate 引用。
-egui_plot = "0.37"
-
-# --- 外部：DSP（只允许 auralis-dsp 使用）---
+# --- 外部：DSP（只允许 auralis-dsp / auralis-analysis 使用）---
 # 已解析验证：rustfft 6.4.1。M2 接入 FFT 时再由 auralis-dsp 引用。
 rustfft = "6.4"
 
@@ -47,6 +57,9 @@ thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# --- 外部：文件解码（M1 接入）---
+symphonia = "0.6"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
@@ -54,6 +67,10 @@ codegen-units = 1
 strip = "debuginfo"
 
 # 故意不设置 `panic = "abort"`。
-# AGENTS.md 要求「异常文件不能导致整个应用崩溃」「后台任务失败应可以定位、取消或重试」。
-# `panic = "abort"` 会让任意工作线程里的 panic 直接终止整个进程，与该要求冲突。
-# M3 起工作线程将用 `catch_unwind` 做任务级隔离，因此必须保留 unwinding。
+# AGENTS.md 要求「异常文件不能导致整个应用崩溃」「后台任务失败应可以
+# 定位、取消或重试」。`panic = "abort"` 会让任意工作线程里的 panic
+# 直接终止整个进程，与该要求冲突。M3 起工作线程用 `catch_unwind`
+# 做任务级隔离，因此必须保留 unwinding。
+#
+# 另见 ADR-013：本项目对 msvc 目标启用 +crt-static，使产物是
+# 真正独立的单文件 exe。
