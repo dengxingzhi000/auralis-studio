@@ -236,7 +236,50 @@ python --version                                  # 失败：Python was not foun
 > 注意：本机直连 PyPI 很慢（与 crates.io 同因），必要时加镜像：
 > `-i https://pypi.tuna.tsinghua.edu.cn/simple`
 
-## 8. 工具链升级
+## 8. 在 PowerShell 里运行 GUI 子系统产物的两个坑
+
+Auralis Studio 的 release 构建带 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`
+（PE Subsystem 2）。这对用户体验是必需的——否则双击会弹出一个黑窗口。
+但它给自动化带来两个坑，**两者都在本项目实际踩过**：
+
+### 坑 1：直接 `& $exe` 不会可靠等待，`$LASTEXITCODE` 为空
+
+```powershell
+& $exe --version
+Write-Output "exit=$LASTEXITCODE"   # 输出 "exit=" —— 空！
+```
+
+GUI 子系统程序不继承控制台，PowerShell 不保证同步等待它结束。
+
+**正确写法**：
+
+```powershell
+$p = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow
+if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+```
+
+`scripts/check-oracle.ps1` 已按此写法。
+
+### 坑 2：`Start-Process` 配合输出重定向会让 `ExitCode` 变成空
+
+```powershell
+$p = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow *> $null
+Write-Output $p.ExitCode    # 空！尽管程序本身 exit 0
+```
+
+加了 `*> $null` 之后退出码就丢了。**不要重定向**，让输出直接显示即可——
+自检输出本来就应该被人看见。
+
+### 退出码约定
+
+| 命令 | 退出码 |
+|---|---|
+| `--version` | 0 |
+| `--self-test` | 0 通过 / 1 数值回归 |
+| `--dump-reference <path>` | 0 |
+| `--dump-reference`（缺路径） | 2 |
+
+## 9. 工具链升级
 
 `rust-toolchain.toml` 固定 `1.99.0`。升级时：
 

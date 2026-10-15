@@ -36,43 +36,56 @@
 | `--self-test` 无窗口 DSP 自检 | 通过 |
 | 架构边界检查 | 通过（正反用例均已验证） |
 
+### M0.5：UI 技术栈切换至 Tauri（已完成 2026-10-15）
+
+状态：**已完成**
+
+- [x] `auralis-ui`（egui，1716 行）废弃，保留 git tag `m0-egui-baseline`
+- [x] `apps/desktop` Tauri 2 + React 19 + TS + Vite 骨架
+- [x] 设计令牌迁移到 CSS Variables；声道颜色+线型双编码保留
+- [x] 五区工作区 + 可拖拽分隔条
+- [x] 自研 `SpectrumView` / `WaveformView`（Canvas 2D）
+- [x] 二进制 IPC 通路打通：`analyze_synthetic_signal` Command
+- [x] **IPC 载荷实测**（ADR-018 修正依据）：二进制 12.5 KB/帧 vs JSON 34.8 KB/帧
+- [x] `check-boundaries.ps1` 扩展为同时守护前端（禁止 React 做音频运算）
+- [x] CI 改为双栈：Rust job + 前端 job + DSP oracle job
+
+验收：合成信号可跑通「Rust 计算 → 二进制 IPC → Canvas 渲染」全链路。
+
+> **未做**：未在真实图形会话中打开过窗口；IPC **端到端延迟未测**（只有载荷体积）。
+> 下一步 M1 接入真实文件时应补这个数据。
+
 ### M1：文件与 PCM（约 1–2 周）
 
 状态：未开始
 
 - [ ] 创建 `auralis-codec`（symphonia）
 - [ ] 创建 `auralis-task`（任务队列、进度、取消）
-- [ ] WAV 首个可靠路径
-- [ ] 元数据、分块 PCM
-- [ ] 任务进度和取消
-- 验收：正常、空、损坏文件均有明确行为
+- [ ] 文件选择器 + 拖放
+- [ ] 元数据探测、分块 PCM 解码
+- [ ] **实测 IPC 端到端延迟**（补 M0.5 缺的数据）
+- 验收：正常、空、损坏文件均有明确行为；取消能真正中止
 
 ### M2：基础 DSP 与波形（约 1–2 周）
 
 状态：未开始
 
 - [ ] 创建 `auralis-visualization`（多级 min/max 包络）
-- [ ] 创建 `auralis-analysis`（分析管线、参数校验）
 - [ ] 引入 `rustfft`（已验证可解析：6.4.1）
 - [ ] 建立 criterion 基准（ADR-014 要求：没有基准就无法判断 Rust 是否够快）
-- [ ] Peak、RMS、DC Offset（与 M0 内核对接，补齐导出）
 - [ ] FFT、窗函数、幅值校正（按
       [M0 设计文档](superpowers/specs/2026-10-14-auralis-studio-design.md) §5.3 的归一化约定）
 - [ ] 峰值检测与抛物线插值
-- [ ] 多级波形包络
-- [ ] **扩展 `scripts/oracle.py`，覆盖 FFT 幅值谱**（ADR-015 硬性要求：
-      新算法若无独立实现交叉验证，不得声称可信）
-- 验收：合成信号测试通过（含设计文档 §5.7 的 T1–T15），
-  且 oracle 对新算法全部一致
+- [ ] **扩展 `scripts/oracle.py` 覆盖 FFT**（ADR-015 硬性要求）
+- 验收：设计文档 §5.7 的 T1–T15 全通过，且 oracle 对 FFT 全部一致
 
 ### M3：频谱 UI（约 1–2 周）
 
 状态：未开始
 
-- [ ] 引入 `egui_plot`（已验证可解析：0.37.0）
-- [ ] 深色仪器风格图表（坐标轴、网格、刻度）
-- [ ] 频率/幅值坐标、游标、缩放
-- [ ] 参数检查器接入真实参数、峰值标记
+- [ ] 频率游标、缩放、平移、峰值标记
+- [ ] 参数检查器接入真实参数
+- [ ] 声谱图：WebGL 纹理（整块矩阵一次传输，见 ADR-018）
 - 验收：视图数据映射与 DSP 输出一致
 
 ### M4：实时输入与声谱图（约 2 周）
@@ -80,30 +93,28 @@
 状态：未开始
 
 - [ ] 创建 `auralis-audio`（cpal + `rtrb` 有界 SPSC）
-- [ ] CPAL 设备枚举和输入
-- [ ] 实时 Peak/RMS/FFT
-- [ ] STFT 与纹理渲染（inferno 色阶）
-- [ ] 任务线程 `catch_unwind` 隔离（见 ADR-009）
+- [ ] **决策实时高频通道**（ADR-018 留待实测：WebSocket / SAB+Worklet / 原生插件）
+- [ ] 实时电平表与频谱
+- [ ] 任务线程 `catch_unwind` 隔离（ADR-009）
 - 验收：溢出可观测、UI 不阻塞回调
 
 ### M5：导出与可靠性（约 1 周）
 
 状态：未开始
 
-- [ ] 创建 `auralis-app`（用例编排 + 持久化 + 导出）
+- [ ] 创建 `auralis-app` / `auralis-storage`（用例、持久化、导出）
 - [ ] CSV/JSON（含算法版本、单位、参数）
-- [ ] 配置和历史记录
-- [ ] 异常恢复、长文件性能
+- [ ] 工作区布局持久化（`Workspace` 面板尺寸）
 - 验收：结果可追溯
 
 ### M6：发布候选（约 1–2 周）
 
 状态：未开始
 
-- [ ] Windows 安装包
+- [ ] NSIS/MSI 安装包（`tauri build` 已配置）
 - [ ] 用户手册
-- [ ] 依赖许可证清单
-- [ ] 回归、性能与长时间运行
+- [ ] 依赖许可证清单（含 npm 侧）
+- [ ] 长时间运行与崩溃恢复
 - 验收：发布检查表通过
 
 上述周期是有经验开发者的初始规划，不构成承诺。首次使用 Rust、桌面 GUI 或 DSP 时应增加学习缓冲。
