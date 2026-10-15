@@ -53,12 +53,17 @@
 
 - [ ] 创建 `auralis-visualization`（多级 min/max 包络）
 - [ ] 创建 `auralis-analysis`（分析管线、参数校验）
+- [ ] 引入 `rustfft`（已验证可解析：6.4.1）
+- [ ] 建立 criterion 基准（ADR-014 要求：没有基准就无法判断 Rust 是否够快）
 - [ ] Peak、RMS、DC Offset（与 M0 内核对接，补齐导出）
 - [ ] FFT、窗函数、幅值校正（按
       [M0 设计文档](superpowers/specs/2026-10-14-auralis-studio-design.md) §5.3 的归一化约定）
 - [ ] 峰值检测与抛物线插值
 - [ ] 多级波形包络
-- 验收：合成信号测试通过（含设计文档 §5.7 的 T1–T15）
+- [ ] **扩展 `scripts/oracle.py`，覆盖 FFT 幅值谱**（ADR-015 硬性要求：
+      新算法若无独立实现交叉验证，不得声称可信）
+- 验收：合成信号测试通过（含设计文档 §5.7 的 T1–T15），
+  且 oracle 对新算法全部一致
 
 ### M3：频谱 UI（约 1–2 周）
 

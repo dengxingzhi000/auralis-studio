@@ -120,6 +120,16 @@ jobs:
           }
           Write-Host "全部 $($required.Count) 个必需 DSP 测试均存在"
 
+  # docs/TEST_PLAN.md §8：关键算法需要「参考实现或黄金数据集」。
+      # 这里用 numpy 独立重算同一批信号，与 Rust 产品代码逐项对照。
+      # 它与上面的单元测试是互补关系：单元测试证明「实现符合作者预期」，
+      # oracle 证明「作者预期本身是对的」。
+      - name: DSP 参考实现交叉验证（numpy）
+        shell: pwsh
+        run: |
+          # Windows runner 自带 Python + numpy，无需 setup-python
+          ./scripts/check-oracle.ps1
+
   # ---------------------------------------------------------------- 构建产物
   artifact:
     name: 上传 Windows Release 产物

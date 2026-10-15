@@ -46,20 +46,32 @@ M0 已实现的、**可验证**的能力：
 本机的具体安装方式见 [docs/DEV_ENVIRONMENT.md](docs/DEV_ENVIRONMENT.md)。
 
 ```powershell
-cargo run --release -p auralis-desktop              # 启动图形界面
-cargo run --release -p auralis-desktop -- --version # 版本信息
-cargo run --release -p auralis-desktop -- --self-test  # 无窗口 DSP 自检
+cargo run --release -p auralis-desktop                  # 启动图形界面
+cargo run --release -p auralis-desktop -- --version     # 版本信息
+cargo run --release -p auralis-desktop -- --self-test   # 无窗口 DSP 自检
+cargo run --release -p auralis-desktop -- --dump-reference out.json  # 导出 DSP 数值
 ```
 
 ### 本地质量检查（与 CI 完全一致）
 
 ```powershell
-./scripts/check-boundaries.ps1   # 架构边界
+./scripts/check-boundaries.ps1   # 架构边界：core/dsp 不许依赖 UI/设备/文件系统
+./scripts/check-oracle.ps1       # numpy 独立参考实现交叉验证 DSP 数值
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build --workspace --release
 ```
+
+### 数值可信度：为什么要跑两个 oracle
+
+`cargo test` 里的 DSP 测试只能证明「实现符合作者的预期」，无法排除
+「实现和预期**同时**错了」——M0 期间就发生过一次：把 0.5 FS 正弦的 RMS
+期望值误写成 −3.01 dBFS（那其实是波峰因数），实现与测试一起错，测试照样全绿。
+
+`check-oracle.ps1` 让 numpy **独立重算**同一批信号再逐项对照
+（当前 101 项）。两个独立实现得出同一个数，才算可信。
+详见 [ADR-015](docs/ADR.md)。
 
 ## 工程原则
 

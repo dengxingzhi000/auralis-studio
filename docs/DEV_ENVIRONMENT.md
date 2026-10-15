@@ -174,21 +174,69 @@ cmd /c mklink /J "C:\Program Files (x86)\Windows Kits" "D:\DevTools\WindowsKits"
 ## 6. 日常命令
 
 ```powershell
-# 进入项目后（PowerShell）
-$env:CARGO_HOME='D:\DevTools\cargo'; $env:RUSTUP_HOME='D:\DevTools\rustup'
-$env:Path = "D:\DevTools\cargo\bin;$env:Path"
+# 进入项目后（PowerShell），最省事的方式：
+. .\scripts\activate-dev.ps1
 
 # 完整检查（等同 CI）
-./scripts/check-boundaries.ps1
+./scripts/check-boundaries.ps1     # 架构边界
+./scripts/check-oracle.ps1         # numpy 参考实现交叉验证
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build --workspace --release
+
+# 产物自检
+.\target\release\auralis-studio.exe --self-test
 ```
 
-新开一个终端时，用户级环境变量会自动生效，无需重复设置。
+新开一个终端时，用户级环境变量会自动生效；
+`activate-dev.ps1` 主要是给**当前**会话补设 `CARGO_HOME` / `PATH`。
 
-## 7. 工具链升级
+## 7. Python + numpy（DSP 参考实现用）
+
+`scripts/check-oracle.ps1` 需要 Python 3.9+ 与 numpy（ADR-015）。
+Python **不进入产品二进制**，只是验证层工具。
+
+### 本机的坑：PATH 上的 `python.exe` 是失效存根
+
+Windows 上 `python.exe` 默认指向 Microsoft Store 的执行别名，
+直接运行会报 `Python was not found`，但真实解释器其实存在：
+
+```text
+C:\Users\Deng\AppData\Local\Microsoft\WindowsApps\python.exe   <- 失效存根
+C:\Users\Deng\AppData\Local\Programs\Python\Python313\python.exe  <- 真实解释器
+```
+
+验证：
+
+```powershell
+python --version                                  # 失败：Python was not found
+& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" --version
+```
+
+已装版本：**Python 3.13.10 / numpy 2.5.0 / scipy 1.18.0**（scipy 当前未使用，
+保留备用）。
+
+`check-oracle.ps1` 的探测顺序是 `py` → `python3` → `python`，
+并且会用 `-c "import sys; sys.version_info>=..."` 实测，
+自动跳过失效存根。因此本机直接运行该脚本即可，无需手动指定路径。
+
+### 手动指定 Python
+
+```powershell
+./scripts/check-oracle.ps1 -Python "C:\Users\Deng\AppData\Local\Programs\Python\Python313\python.exe"
+```
+
+### 缺 numpy 时
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" -m pip install numpy
+```
+
+> 注意：本机直连 PyPI 很慢（与 crates.io 同因），必要时加镜像：
+> `-i https://pypi.tuna.tsinghua.edu.cn/simple`
+
+## 8. 工具链升级
 
 `rust-toolchain.toml` 固定 `1.99.0`。升级时：
 
