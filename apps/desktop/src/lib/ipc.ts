@@ -11,10 +11,13 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
 import {
   decodeF32,
   type AppInfo,
+  type FileAnalysis,
+  type FileInfo,
   type SyntheticAnalysis,
   type SyntheticRequest,
 } from "./contracts";
@@ -61,4 +64,67 @@ export async function analyzeSynthetic(
     waveformEnvelope: decodeF32(raw.waveformEnvelope),
     roundTripMicros: (t1 - t0) * 1000,
   };
+}
+
+/* ============================================================
+ * M1: real files
+ * ============================================================ */
+
+/** File extensions offered in the open dialog. */
+const AUDIO_EXTENSIONS = ["wav", "flac", "mp3", "aiff", "aif", "ogg", "wav"];
+
+/**
+ * Show the native file picker.
+ *
+ * Returns null when the user cancels - cancellation is not an error,
+ * so callers must not surface it as one.
+ */
+export async function pickAudioFile(): Promise<string | null> {
+  const picked = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Audio", extensions: AUDIO_EXTENSIONS }],
+  });
+  if (typeof picked === "string") return picked;
+  if (Array.isArray(picked)) return picked[0] ?? null;
+  return null;
+}
+
+/** Probe file metadata. Reads the header only, does not decode. */
+export async function probeFile(path: string): Promise<FileInfo> {
+  return invoke<FileInfo>("probe_file", { path });
+}
+
+/**
+ * Analyse a real file: probe + block decode + metrics + waveform envelope.
+ *
+ * Returns the analysis with the measured end-to-end round-trip attached,
+ * which is the number M0.5 left unmeasured.
+ */
+export interface TimedFileAnalysis extends FileAnalysis {
+  /** measured client-observed round trip, milliseconds */
+  __elapsedMeasuredMs: number;
+}
+
+export async function analyzeFile(
+  path: string,
+  envelopePoints?: number,
+): Promise<TimedFileAnalysis> {
+  const t0 = performance.now();
+  const raw = await invoke<
+    Omit<FileAnalysis, "waveformEnvelope"> & { waveformEnvelope: Uint8Array }
+  >("analyze_file", {
+    path,
+    envelopePoints: envelopePoints ?? 2048,
+  });
+  return {
+    ...raw,
+    waveformEnvelope: decodeF32(raw.waveformEnvelope),
+    __elapsedMeasuredMs: performance.now() - t0,
+  };
+}
+
+/** Cancel a running task. Returns false when the task id is unknown. */
+export async function cancelTask(taskId: number): Promise<boolean> {
+  return invoke<boolean>("cancel_task", { taskId });
 }

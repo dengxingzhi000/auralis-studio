@@ -59,12 +59,37 @@
 
 状态：未开始
 
-- [ ] 创建 `auralis-codec`（symphonia）
-- [ ] 创建 `auralis-task`（任务队列、进度、取消）
-- [ ] 文件选择器 + 拖放
-- [ ] 元数据探测、分块 PCM 解码
-- [ ] **实测 IPC 端到端延迟**（补 M0.5 缺的数据）
-- 验收：正常、空、损坏文件均有明确行为；取消能真正中止
+状态：**已完成（文件路径）；IPC 延迟实测待补**
+
+- [x] 创建 `auralis-codec`（symphonia，显式开启 mp3/aiff feature）
+- [x] 创建 `auralis-task`（取消令牌、任务事件、panic 隔离）
+- [x] 文件选择器（`tauri-plugin-dialog`）；拖放待补
+- [x] 元数据探测（只读文件头，O(1)）
+- [x] 分块 PCM 解码（内存与文件长度解耦）
+- [x] `probe_file` / `analyze_file` / `cancel_task` 命令
+- [x] **WAV 真实样本端到端验证**：写入 → 解码 → DSP → 期望数值
+- [ ] **实测 IPC 端到端延迟**（M0.5 欠项；`--self-test` 覆盖不到 IPC，
+      必须在 GUI 中点一次并读状态栏）
+- [ ] 拖放导入
+
+### 格式支持现状（必须如实呈现）
+
+| 容器 | 编译进产物 | **已用真实样本验证** |
+|---|---|---|
+| WAV  | 是 | **是**（13 项集成测试） |
+| FLAC | 是 | 否 |
+| MP3  | 是（显式开 feature） | 否 |
+| AIFF | 是（显式开 feature） | 否 |
+
+`auralis_codec::verified_containers()` 是 UI 的硬约束：
+只有 WAV 会被标记为「已验证」，其余格式在界面上显示「未验证」角标。
+依据 `TEST_PLAN.md` §3「不支持的格式必须明确报错，不得崩溃」与
+`AGENTS.md`「不宣称未经验证的格式」。
+
+> symphonia 的 default features **不含** mp3 / aiff / aacc —— 这是实测结论。
+> 若不显式开启，UI 会出现 MP3 入口但打开失败。
+
+验收：正常、空、截断、损坏文件均有明确行为（不 panic）；取消能真正中止。
 
 ### M2：基础 DSP 与波形（约 1–2 周）
 

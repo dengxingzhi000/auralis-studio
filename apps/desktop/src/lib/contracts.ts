@@ -88,3 +88,59 @@ export function decodeF32(bytes: Uint8Array): Float32Array {
   );
   return new Float32Array(buffer);
 }
+
+/* ============================================================
+ * M1: real files
+ * Mirrors src-tauri/src/file_commands.rs on the Rust side.
+ * ============================================================ */
+
+/** File metadata (probed from the header only). */
+export interface FileInfo {
+  path: string;
+  fileName: string;
+  fileSizeBytes: number;
+  /** container id: wav / flac / mp3 / aiff / ogg / ... */
+  container: string;
+  containerName: string;
+  codec: string;
+  sampleRate: number;
+  channels: number;
+  /** duration in seconds; null when unknown - never faked as 0 */
+  durationSeconds: number | null;
+  /**
+   * Whether this container has been verified against a real sample.
+   * The UI **must** use this to decide what it promises to support;
+   * an unverified container may only be reported as "decodable, unverified".
+   */
+  verified: boolean;
+  verificationNote: string;
+}
+
+/** Terminal state of an analysis. */
+export type AnalysisOutcome = "succeeded" | "cancelled" | "failed" | "panicked";
+
+/** Result of analysing a real file. */
+export interface FileAnalysis {
+  info: FileInfo;
+  /** peak dBFS; null = true silence (-inf) */
+  peakDbfs: number | null;
+  /** RMS dBFS; null = silence */
+  rmsDbfs: number | null;
+  /** DC offset, linear, sign preserved */
+  dc: number;
+  /** crest factor dB; null = undefined when RMS is 0 */
+  crestDb: number | null;
+  /** per-channel peak dBFS, length = channel count */
+  peakDbfsPerChannel: (number | null)[];
+  /** over-full-scale sample count (|x| > 1.0) */
+  overFullScaleSamples: number;
+  /** flat-top region count (heuristic, NOT evidence of analogue clipping) */
+  clippingRegions: number;
+  sanitizedSamples: number;
+  framesDecoded: number;
+  elapsedMs: number;
+  /** Float32Array in [-1, 1] */
+  waveformEnvelope: Float32Array;
+  waveformPoints: number;
+  outcome: AnalysisOutcome;
+}

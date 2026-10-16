@@ -12,12 +12,14 @@
 resolver = "3"
 members = [
     "apps/desktop/src-tauri",
+    "crates/auralis-codec",
     "crates/auralis-core",
     "crates/auralis-dsp",
+    "crates/auralis-task",
 ]
 
-# ADR-007: do not pre-create empty crates. auralis-codec / auralis-analysis /
-# auralis-audio join `members` in M1-M4 when they actually have content.
+# ADR-007: do not pre-create empty crates. Remaining crates join `members`
+# in the milestone where they actually get content.
 
 [workspace.package]
 version = "0.1.0"
@@ -41,24 +43,29 @@ authors = ["Auralis Studio contributors"]
 
 [workspace.dependencies]
 # --- 内部 crate ---
+auralis-codec = { path = "crates/auralis-codec" }
 auralis-core = { path = "crates/auralis-core" }
 auralis-dsp = { path = "crates/auralis-dsp" }
-auralis-codec = { path = "crates/auralis-codec" }
-auralis-analysis = { path = "crates/auralis-analysis" }
+auralis-task = { path = "crates/auralis-task" }
 
-# --- 外部：DSP（只允许 auralis-dsp / auralis-analysis 使用）---
-# 已解析验证：rustfft 6.4.1。M2 接入 FFT 时再由 auralis-dsp 引用。
+# --- 外部：DSP（只允许 auralis-dsp 使用）---
 rustfft = "6.4"
 
 # --- 外部：通用 ---
+crossbeam-channel = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# --- 外部：文件解码（M1 接入）---
-symphonia = "0.6"
+# --- 外部：文件解码 ---
+# feature 决定**实际能解码什么**，因此必须显式声明，不能依赖默认值。
+# 实测 symphonia 0.6.1 的 default = [opt-simd, all-meta, adpcm, flac, mkv,
+# ogg, pcm, vorbis, wav]，**不含 mp3 / aiff / aac**。
+# 若不显式开启，UI 上出现 MP3 入口但打开会失败 —— 这正是 TAD §4 说的
+# 「按需启用 codec features」，也是 AGENTS.md 说的「不宣称未验证的格式」。
+symphonia = { version = "0.6", features = ["mp3", "aiff"] }
 
 [profile.release]
 opt-level = 3
@@ -69,8 +76,8 @@ strip = "debuginfo"
 # 故意不设置 `panic = "abort"`。
 # AGENTS.md 要求「异常文件不能导致整个应用崩溃」「后台任务失败应可以
 # 定位、取消或重试」。`panic = "abort"` 会让任意工作线程里的 panic
-# 直接终止整个进程，与该要求冲突。M3 起工作线程用 `catch_unwind`
-# 做任务级隔离，因此必须保留 unwinding。
+# 直接终止整个进程，与该要求冲突。工作线程用 `catch_unwind` 做任务级
+# 隔离，因此必须保留 unwinding。
 #
 # 另见 ADR-013：本项目对 msvc 目标启用 +crt-static，使产物是
 # 真正独立的单文件 exe。

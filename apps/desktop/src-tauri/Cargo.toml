@@ -21,13 +21,16 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+auralis-codec = { workspace = true }
 auralis-core = { workspace = true }
 auralis-dsp = { workspace = true }
+auralis-task = { workspace = true }
 rustfft = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

@@ -15,11 +15,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod app_state;
 pub mod commands;
+pub mod file_commands;
 pub mod ipc_bench;
 pub mod selftest;
 
 pub use selftest::{dump_reference, run_self_test};
+
+use app_state::AppState;
 
 /// 桌面应用入口。
 ///
@@ -30,9 +34,14 @@ pub use selftest::{dump_reference, run_self_test};
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::analyze_synthetic_signal,
+            file_commands::probe_file,
+            file_commands::analyze_file,
+            file_commands::cancel_task,
         ])
         .setup(|_app| {
             tracing::info!(

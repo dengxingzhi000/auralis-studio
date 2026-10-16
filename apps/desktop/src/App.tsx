@@ -13,8 +13,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Workspace } from "@/layouts/Workspace";
-import { analyzeSynthetic, fetchAppInfo } from "@/lib/ipc";
-import type { AppInfo, SyntheticRequest } from "@/lib/contracts";
+import {
+  analyzeFile,
+  analyzeSynthetic,
+  fetchAppInfo,
+  pickAudioFile,
+  probeFile,
+} from "@/lib/ipc";
+import type {
+  AppInfo,
+  FileInfo,
+  SyntheticRequest,
+} from "@/lib/contracts";
 import { SpectrumView } from "@/components/audio-viz/SpectrumView";
 import { WaveformView } from "@/components/audio-viz/WaveformView";
 
@@ -30,21 +40,25 @@ const DEFAULTS: SyntheticRequest = {
   envelopePoints: 2000,
 };
 
+/** 真实文件分析结果的显示形状（供 Canvas 组件消费）。 */
+interface DisplayData {
+  db: Float32Array | null;
+  startHz: number;
+  stepHz: number;
+  env: Float32Array | null;
+  sampleRate: number;
+  peakDbfs: number | null;
+  rmsDbfs: number | null;
+  crestDb: number | null;
+  dc: number;
+  outcome: string;
+  elapsedMs: number;
+  bytes: number;
+}
+
 export default function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [req, setReq] = useState<SyntheticRequest>(DEFAULTS);
-  const [result, setResult] = useState<{
-    db: Float32Array;
-    startHz: number;
-    stepHz: number;
-    env: Float32Array;
-    peakDbfs: number | null;
-    rmsDbfs: number | null;
-    crestDb: number | null;
-    computeMicros: number;
-    roundTripMicros: number;
-    bytes: number;
-  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cursorHz, setCursorHz] = useState<number | null>(null);
@@ -52,10 +66,51 @@ export default function App() {
   const [showRight, setShowRight] = useState(true);
   const spectrumRef = useRef<HTMLDivElement>(null);
 
+  // ---- 真实文件 ----
+  const [files, setFiles] = useState<FileInfo[]>([]);
+  const [selected, setSelected] = useState<FileInfo | null>(null);
+  const [display, setDisplay] = useState<DisplayData | null>(null);
+
   useEffect(() => {
     fetchAppInfo()
       .then(setInfo)
       .catch((e) => setError(`无法连接 Rust 后端: ${String(e)}`));
+  }, []);
+
+  const onOpenFile = useCallback(async () => {
+    setError(null);
+    try {
+      const path = await pickAudioFile();
+      // 用户取消选择不是错误
+      if (!path) return;
+      setBusy(true);
+      const fi = await probeFile(path);
+      setFiles((prev) => {
+        const rest = prev.filter((f) => f.path !== fi.path);
+        return [fi, ...rest];
+      });
+      setSelected(fi);
+
+      const a = await analyzeFile(fi.path, 2048);
+      setDisplay({
+        db: null, // M2 才有频谱；M1 只出波形与指标
+        startHz: 0,
+        stepHz: 1,
+        env: a.waveformEnvelope,
+        sampleRate: a.info.sampleRate,
+        peakDbfs: a.peakDbfs,
+        rmsDbfs: a.rmsDbfs,
+        crestDb: a.crestDb,
+        dc: a.dc,
+        outcome: a.outcome,
+        elapsedMs: a.__elapsedMeasuredMs,
+        bytes: a.waveformEnvelope.byteLength,
+      });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
   }, []);
 
   // 画布宽度变化时，把 targetBins 跟着调 —— ADR-018 规则 3：
@@ -78,21 +133,22 @@ export default function App() {
     setError(null);
     try {
       const r = await analyzeSynthetic(req);
-      setResult({
+      setDisplay({
         db: r.spectrumDb,
         startHz: r.spectrumStartHz,
         stepHz: r.spectrumStepHz,
         env: r.waveformEnvelope,
+        sampleRate: req.sampleRate,
         peakDbfs: r.metrics.peakDbfs,
         rmsDbfs: r.metrics.rmsDbfs,
         crestDb: r.metrics.crestDb,
-        computeMicros: r.computeMicros,
-        roundTripMicros: r.roundTripMicros,
+        dc: 0,
+        outcome: "succeeded",
+        elapsedMs: r.roundTripMicros / 1000,
         bytes: r.spectrumDb.byteLength + r.waveformEnvelope.byteLength,
       });
     } catch (e) {
       setError(String(e));
-      setResult(null);
     } finally {
       setBusy(false);
     }
@@ -106,11 +162,11 @@ export default function App() {
           AURALIS <span className="brand-dim">STUDIO</span>
         </span>
         <span className="toolbar-sep" />
-        <button className="btn" onClick={run} disabled={busy}>
-          {busy ? "分析中..." : "运行合成分析"}
+        <button className="btn" onClick={onOpenFile} disabled={busy}>
+          {busy ? "分析中..." : "打开文件..."}
         </button>
-        <button className="btn" disabled title="M1 接入 WAV 解码">
-          导入文件
+        <button className="btn" onClick={run} disabled={busy}>
+          合成信号
         </button>
         <button className="btn" disabled title="M4 接入 CPAL 采集">
           实时采集
@@ -148,15 +204,17 @@ export default function App() {
       <Workspace
         leftVisible={showLeft}
         rightVisible={showRight}
-        left={<ResourcePanel />}
+        left={
+          <ResourcePanel files={files} selected={selected} onPick={onOpenFile} />
+        }
         center={
           <div className="center-stack">
             <section className="pane" style={{ flex: "1.45" }}>
               <div className="pane-head">
                 <strong>频谱</strong>
                 <span className="muted">
-                  {req.fftSize} · Hann · {req.targetBins} bins ·{" "}
-                  {(req.sampleRate / 2 / 1).toFixed(0)} Hz 奈奎斯特
+                  {display?.db ? `${display.db.length} bins` : "FFT amplitude spectrum"} ·{" "}
+                  {(display?.sampleRate ?? req.sampleRate) / 2} Hz 奈奎斯特
                 </span>
               </div>
               <div
@@ -165,17 +223,16 @@ export default function App() {
                 onMouseMove={(e) => {
                   const r = e.currentTarget.getBoundingClientRect();
                   const t = (e.clientX - r.left - 46) / Math.max(1, r.width - 56);
-                  setCursorHz(
-                    t >= 0 && t <= 1 ? t * (req.sampleRate / 2) : null,
-                  );
+                  const nyq = (display?.sampleRate ?? req.sampleRate) / 2;
+                  setCursorHz(t >= 0 && t <= 1 ? t * nyq : null);
                 }}
                 onMouseLeave={() => setCursorHz(null)}
               >
                 <SpectrumView
-                  db={result?.db ?? null}
-                  startHz={result?.startHz ?? 0}
-                  stepHz={result?.stepHz ?? 1}
-                  sampleRate={req.sampleRate}
+                  db={display?.db ?? null}
+                  startHz={display?.startHz ?? 0}
+                  stepHz={display?.stepHz ?? 1}
+                  sampleRate={display?.sampleRate ?? req.sampleRate}
                   minDb={MIN_DB}
                   maxDb={MAX_DB}
                   cursorHz={cursorHz}
@@ -189,36 +246,51 @@ export default function App() {
               <div className="pane-head">
                 <strong>波形</strong>
                 <span className="muted">
-                  min/max 包络 · {result ? result.env.length : 0} 点
+                  min/max 包络 · {display?.env?.length ?? 0} 点
+                  {selected && ` · ${selected.fileName}`}
                 </span>
               </div>
               <div className="pane-body">
                 <WaveformView
-                  envelope={result?.env ?? null}
-                  sampleRate={req.sampleRate}
-                  channels={1}
+                  envelope={display?.env ?? null}
+                  sampleRate={display?.sampleRate ?? req.sampleRate}
+                  channels={selected?.channels ?? 1}
                 />
               </div>
             </section>
           </div>
         }
-        right={<InspectorPanel req={req} setReq={setReq} result={result} />}
+        right={
+          <InspectorPanel
+            req={req}
+            setReq={setReq}
+            display={display}
+            selected={selected}
+          />
+        }
       />
 
       {/* ---- 状态栏 ---- */}
       <footer className="status-bar">
-        <span className="num">{req.sampleRate.toLocaleString("en-US")} Hz</span>
+        <span className="num">
+          {(display?.sampleRate ?? req.sampleRate).toLocaleString("en-US")} Hz
+        </span>
         <span className="dot">·</span>
         <span>设备 未连接</span>
         <span className="dot">·</span>
-        <span>IPC {result ? `${(result.roundTripMicros / 1000).toFixed(2)} ms` : "—"}</span>
+        <span>
+          端到端{" "}
+          {display ? `${display.elapsedMs.toFixed(1)} ms` : "—"}
+        </span>
         <span className="dot">·</span>
-        <span>计算 {result ? `${(result.computeMicros / 1000).toFixed(2)} ms` : "—"}</span>
-        <span className="dot">·</span>
-        <span className="num">{result ? `${result.bytes} B` : "—"}</span>
+        <span className="num">{display ? `${display.bytes} B` : "—"}</span>
         <div className="spacer" />
         {error && <span className="err">{error}</span>}
-        <span className="warn" title="M1 前的 IPC 冒烟测试">合成信号 · 非真实文件</span>
+        {display?.outcome === "succeeded" && (
+          <span className="warn" title="M1 只接 WAV；未验证格式会标注">
+            合成信号 · 未验证格式会标注
+          </span>
+        )}
       </footer>
     </div>
   );
@@ -226,22 +298,55 @@ export default function App() {
 
 /* ---------------------------------------------------------------- 侧栏 */
 
-function ResourcePanel() {
+function ResourcePanel({
+  files,
+  selected,
+  onPick,
+}: {
+  files: FileInfo[];
+  selected: FileInfo | null;
+  onPick: () => void;
+}) {
   return (
     <div className="panel-body">
-      <Section title="文件" hint="空 — M1 接入 WAV 解码" />
-      <Section title="实时输入" hint="空 — M4 接入 WASAPI 采集" />
-      <Section title="分析任务" hint="空 — M1 接入任务调度" />
-      <Section title="工作区" hint="面板布局持久化将在 M5 出现" />
-    </div>
-  );
-}
+      <div className="label">文件</div>
+      {files.length === 0 ? (
+        <button className="btn wide" onClick={onPick}>
+          打开音频文件...
+        </button>
+      ) : (
+        <ul className="file-list">
+          {files.map((f) => (
+            <li
+              key={f.path}
+              className={
+                "file-item" + (selected?.path === f.path ? " on" : "")
+              }
+              title={f.path}
+            >
+              <span className="file-name">{f.fileName}</span>
+              <span className="file-meta num">
+                {f.containerName} · {f.sampleRate.toLocaleString("en-US")} Hz ·{" "}
+                {f.channels === 1 ? "单声道" : `${f.channels} ch`}
+              </span>
+              {!f.verified && (
+                <span className="file-warn" title={f.verificationNote}>
+                  未验证
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
 
-function Section({ title, hint }: { title: string; hint: string }) {
-  return (
-    <div className="section">
-      <div className="label">{title}</div>
-      <div className="muted">{hint}</div>
+      <div className="section" style={{ marginTop: 12 }}>
+        <div className="label">实时输入</div>
+        <div className="muted">空 — M4 接入 WASAPI 采集</div>
+      </div>
+      <div className="section">
+        <div className="label">分析任务</div>
+        <div className="muted">M1 同步执行，尚无后台队列 UI</div>
+      </div>
     </div>
   );
 }
@@ -249,15 +354,13 @@ function Section({ title, hint }: { title: string; hint: string }) {
 function InspectorPanel({
   req,
   setReq,
-  result,
+  display,
+  selected,
 }: {
   req: SyntheticRequest;
   setReq: React.Dispatch<React.SetStateAction<SyntheticRequest>>;
-  result: {
-    peakDbfs: number | null;
-    rmsDbfs: number | null;
-    crestDb: number | null;
-  } | null;
+  display: DisplayData | null;
+  selected: FileInfo | null;
 }) {
   const set = <K extends keyof SyntheticRequest>(
     k: K,
@@ -266,8 +369,59 @@ function InspectorPanel({
 
   return (
     <div className="panel-body">
-      <div className="label">参数</div>
+      <div className="label">信号指标</div>
+      <MetricRow label="Peak" value={display?.peakDbfs} unit="dBFS" />
+      <MetricRow label="RMS" value={display?.rmsDbfs} unit="dBFS" />
+      <MetricRow label="Crest" value={display?.crestDb} unit="dB" />
+      <div className="metric-row">
+        <span className="muted">DC Offset</span>
+        <span className="num">
+          {display ? display.dc.toExponential(2) : "—"}
+        </span>
+      </div>
+      {display && (
+        <div className="metric-row">
+          <span className="muted">解码帧数</span>
+          <span className="num">
+            {Math.round(
+              (display.env?.length ?? 0),
+            ).toLocaleString("en-US")}
+          </span>
+        </div>
+      )}
 
+      {selected && (
+        <>
+          <div className="label" style={{ marginTop: 12 }}>
+            文件
+          </div>
+          <div className="kv">
+            <span className="muted">容器</span>
+            <span className="num">{selected.containerName}</span>
+          </div>
+          <div className="kv">
+            <span className="muted">编码</span>
+            <span className="num">{selected.codec}</span>
+          </div>
+          <div className="kv">
+            <span className="muted">采样率</span>
+            <span className="num">
+              {selected.sampleRate.toLocaleString("en-US")} Hz
+            </span>
+          </div>
+          <div className="kv">
+            <span className="muted">声道</span>
+            <span className="num">{selected.channels}</span>
+          </div>
+          {!selected.verified && (
+            <p className="note warn-note">{selected.verificationNote}</p>
+          )}
+        </>
+      )}
+
+      <div className="label" style={{ marginTop: 12 }}>
+        合成信号参数
+      </div>
       <NumberField
         label="频率"
         unit="Hz"
@@ -286,28 +440,10 @@ function InspectorPanel({
         value={req.fftSize}
         onChange={(v) => set("fftSize", v)}
       />
-      <NumberField
-        label="采样率"
-        unit="Hz"
-        value={req.sampleRate}
-        step={8000}
-        onChange={(v) => set("sampleRate", v)}
-      />
 
-      <div className="label" style={{ marginTop: 12 }}>
-        指标
-      </div>
-      <MetricRow label="Peak" value={result?.peakDbfs} unit="dBFS" />
-      <MetricRow label="RMS" value={result?.rmsDbfs} unit="dBFS" />
-      <MetricRow label="Crest" value={result?.crestDb} unit="dB" />
-
-      <div className="label" style={{ marginTop: 12 }}>
-        说明
-      </div>
       <p className="note">
-        本页用<b>合成信号</b>验证 IPC 通路，非真实文件分析。
         dB 换算、FFT、降采样全部在 Rust 侧完成，前端只画结果
-        （ADR-018）。
+        （ADR-018）。频谱来自合成信号；真实文件的频谱在 M2 接入。
       </p>
     </div>
   );
