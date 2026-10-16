@@ -13,6 +13,7 @@
 
 pub mod spectrum;
 pub mod stats;
+pub mod stft;
 pub mod window;
 
 pub use spectrum::{
@@ -21,4 +22,5 @@ pub use spectrum::{
 };
 pub use stats::{ClippingConfig, ClippingFeatures, DcOffset, PeakLevel, Rms, SignalStats};
 pub use stats::{analyze_channel, detect_flat_top};
+pub use stft::{MIN_DB as STFT_MIN_DB, Stft, StftConfig, StftFrame};
 pub use window::WindowFunction;

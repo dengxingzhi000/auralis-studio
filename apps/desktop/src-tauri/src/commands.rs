@@ -255,6 +255,21 @@ pub(crate) fn dbfs_of(amp: f32) -> Option<f32> {
     }
 }
 
+/// 解码小端 f32 字节序列。仅供测试断言二进制载荷内容。
+#[cfg(test)]
+pub(crate) fn decode_test_f32s(bytes: &[u8]) -> Vec<f32> {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<()> = OnceLock::new();
+    let _ = CELL.get_or_init(|| ());
+    assert_eq!(bytes.len() % 4, 0, "字节数必须是 4 的倍数");
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
+        .collect()
+}
+
 /// `&[f32]` -> 小端字节序列。WebView 端用 `new Float32Array(buf)` 还原。
 ///
 /// 显式按小端编码，不依赖宿主字节序，保证跨机器一致。

@@ -147,6 +147,12 @@ export interface FileAnalysis {
   spectrumBins: number;
   spectrumStepHz: number;
   peaks: PeakInfo[];
+  /** STFT dB matrix, row-major [frame][bin] (M3) */
+  spectrogramDb: Float32Array;
+  spectrogramFrames: number;
+  spectrogramBins: number;
+  /** milliseconds per spectrogram column, for the time axis */
+  spectrogramHopMs: number;
   /** FFT size used, so results are reproducible (DSP_SPEC 9) */
   fftSize: number;
   window: string;

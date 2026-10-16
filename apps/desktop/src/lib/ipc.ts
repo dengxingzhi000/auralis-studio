@@ -112,9 +112,10 @@ export async function analyzeFile(
 ): Promise<TimedFileAnalysis> {
   const t0 = performance.now();
   const raw = await invoke<
-    Omit<FileAnalysis, "waveformEnvelope" | "spectrumDb"> & {
+    Omit<FileAnalysis, "waveformEnvelope" | "spectrumDb" | "spectrogramDb"> & {
       waveformEnvelope: Uint8Array;
       spectrumDb: Uint8Array;
+      spectrogramDb: Uint8Array;
     }
   >("analyze_file", {
     path,
@@ -124,6 +125,7 @@ export async function analyzeFile(
     ...raw,
     waveformEnvelope: decodeF32(raw.waveformEnvelope),
     spectrumDb: decodeF32(raw.spectrumDb),
+    spectrogramDb: decodeF32(raw.spectrogramDb),
     __elapsedMeasuredMs: performance.now() - t0,
   };
 }

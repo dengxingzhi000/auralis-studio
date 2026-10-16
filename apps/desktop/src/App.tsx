@@ -27,6 +27,7 @@ import type {
   SyntheticRequest,
 } from "@/lib/contracts";
 import { SpectrumView } from "@/components/audio-viz/SpectrumView";
+import { SpectrogramView } from "@/components/audio-viz/SpectrogramView";
 import { WaveformView } from "@/components/audio-viz/WaveformView";
 
 const MIN_DB = -140;
@@ -58,6 +59,10 @@ interface DisplayData {
   peaks: PeakInfo[];
   fftSize: number;
   window: string;
+  spectrogram: Float32Array | null;
+  spectrogramFrames: number;
+  spectrogramBins: number;
+  spectrogramHopMs: number;
 }
 
 export default function App() {
@@ -66,6 +71,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cursorHz, setCursorHz] = useState<number | null>(null);
+  const [viewRange, setViewRange] = useState<[number, number] | null>(null);
   const [showLeft, setShowLeft] = useState(true);
   const [showRight, setShowRight] = useState(true);
   const spectrumRef = useRef<HTMLDivElement>(null);
@@ -113,6 +119,13 @@ export default function App() {
         peaks: a.peaks,
         fftSize: a.fftSize,
         window: a.window,
+        spectrogram:
+          a.spectrogramFrames > 0 && a.spectrogramBins > 0
+            ? a.spectrogramDb
+            : null,
+        spectrogramFrames: a.spectrogramFrames,
+        spectrogramBins: a.spectrogramBins,
+        spectrogramHopMs: a.spectrogramHopMs,
       });
     } catch (e) {
       setError(String(e));
@@ -157,6 +170,10 @@ export default function App() {
         peaks: [],
         fftSize: req.fftSize,
         window: "hann",
+        spectrogram: null,
+        spectrogramFrames: 0,
+        spectrogramBins: 0,
+        spectrogramHopMs: 0,
       });
     } catch (e) {
       setError(String(e));
@@ -220,33 +237,67 @@ export default function App() {
         }
         center={
           <div className="center-stack">
-            <section className="pane" style={{ flex: "1.45" }}>
+            <section className="pane" style={{ flex: "1.2" }}>
               <div className="pane-head">
                 <strong>频谱</strong>
                 <span className="muted">
-                  {display?.db ? `${display.db.length} bins` : "FFT amplitude spectrum"} ·{" "}
+                  {display?.db ? `${display.db.length} bins` : "FFT"} ·{" "}
                   {(display?.sampleRate ?? req.sampleRate) / 2} Hz 奈奎斯特
+                  {viewRange && (
+                    <>
+                      {" "}
+                      · <span className="num">{fmtHz(viewRange[0])}</span>–
+                      <span className="num">{fmtHz(viewRange[1])}</span> Hz
+                    </>
+                  )}
                 </span>
+                <span className="spacer" />
+                {viewRange && (
+                  <button className="btn tiny" onClick={() => setViewRange(null)}>
+                    复位缩放
+                  </button>
+                )}
               </div>
-              <div
-                ref={spectrumRef}
-                className="pane-body"
-                onMouseMove={(e) => {
-                  const r = e.currentTarget.getBoundingClientRect();
-                  const t = (e.clientX - r.left - 46) / Math.max(1, r.width - 56);
-                  const nyq = (display?.sampleRate ?? req.sampleRate) / 2;
-                  setCursorHz(t >= 0 && t <= 1 ? t * nyq : null);
-                }}
-                onMouseLeave={() => setCursorHz(null)}
-              >
+              <div className="pane-body">
                 <SpectrumView
                   db={display?.db ?? null}
-                  startHz={display?.startHz ?? 0}
                   stepHz={display?.stepHz ?? 1}
                   sampleRate={display?.sampleRate ?? req.sampleRate}
                   minDb={MIN_DB}
                   maxDb={MAX_DB}
                   cursorHz={cursorHz}
+                  peaks={display?.peaks ?? []}
+                  viewRange={viewRange}
+                  onViewRangeChange={setViewRange}
+                  onHoverHz={setCursorHz}
+                />
+              </div>
+            </section>
+
+            <div className="splitter splitter-h" />
+
+            <section className="pane" style={{ flex: 1 }}>
+              <div className="pane-head">
+                <strong>声谱图</strong>
+                <span className="muted">
+                  STFT 2048/512 ·{" "}
+                  {display
+                    ? `${display.spectrogramFrames}x${display.spectrogramBins}`
+                    : "—"}
+                  {display && display.spectrogramHopMs > 0 && (
+                    <> · {display.spectrogramHopMs.toFixed(2)} ms/列</>
+                  )}
+                </span>
+              </div>
+              <div className="pane-body">
+                <SpectrogramView
+                  matrix={display?.spectrogram ?? null}
+                  width={display?.spectrogramFrames ?? 0}
+                  height={display?.spectrogramBins ?? 0}
+                  minDb={MIN_DB}
+                  maxDb={MAX_DB}
+                  cursorHz={cursorHz}
+                  nyquistHz={(display?.sampleRate ?? req.sampleRate) / 2}
                 />
               </div>
             </section>

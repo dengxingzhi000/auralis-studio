@@ -128,6 +128,14 @@ pub struct FileAnalysisDto {
     pub spectrum_step_hz: f64,
     /// 检出的峰值（M2）。
     pub peaks: Vec<PeakDto>,
+    /// 声谱图矩阵，行优先 `[frame][bin]`，f32 dB（M3）。
+    pub spectrogram_db: Vec<u8>,
+    /// 声谱图宽度（时间格数）。
+    pub spectrogram_frames: usize,
+    /// 声谱图高度（频率 bin 数）。
+    pub spectrogram_bins: usize,
+    /// 每帧代表的时间（毫秒），供时间轴标注。
+    pub spectrogram_hop_ms: f64,
     /// 分析所用 FFT 长度，保证结果可复现。
     pub fft_size: usize,
     /// 窗函数标识。
@@ -214,6 +222,14 @@ fn run_analysis(
         window: auralis_dsp::WindowFunction::Hann,
         remove_dc: false,
     };
+    // 声谱图用更短的帧换取时间分辨率：2048 点 @48k ≈ 43 ms，
+    // 足够看清瞬态又不会太慢。
+    let stft_cfg = auralis_dsp::StftConfig {
+        frame_len: 2048,
+        hop_size: 512,
+        window: auralis_dsp::WindowFunction::Hann,
+        remove_dc: false,
+    };
 
     let info = probe(path).map_err(|e| e.to_string())?;
     let channels = info.format.channels.get();
@@ -233,9 +249,10 @@ fn run_analysis(
     let mut envelope = Vec::<f32>::new();
     let mut frames_seen = 0_u64;
 
-    // 频谱只需文件开头 fft_size 帧。在此定长缓冲里留存，
-    // 内存占用恒为 fft_size，与文件长度无关。
-    let mut spectrum_capture: Vec<f32> = Vec::with_capacity(fft_size);
+    // 频谱/声谱图的取样缓冲：只留开头 SPECTRUM_WINDOW_SECONDS 秒，
+    // 内存占用恒定，与文件长度无关。
+    let capture_frames = (u64::from(sample_rate) * u64::from(SPECTRUM_WINDOW_SECONDS)) as usize;
+    let mut spectrum_capture: Vec<f32> = Vec::with_capacity(capture_frames.min(1 << 20));
 
     loop {
         // 取消检查放在每块之前——取消立即生效
@@ -278,9 +295,9 @@ fn run_analysis(
                 frames_seen += block_frames as u64;
                 collect_envelope(samples, n_ch, &mut envelope, frames_seen, envelope_points);
 
-                // 频谱取样：只留开头 fft_size 帧的通道 0
-                if spectrum_capture.len() < fft_size {
-                    let need = fft_size - spectrum_capture.len();
+                // 频谱取样：只留开头 SPECTRUM_WINDOW_SECONDS 秒的通道 0
+                if spectrum_capture.len() < capture_frames {
+                    let need = capture_frames - spectrum_capture.len();
                     for &v in samples.iter().step_by(n_ch).take(need) {
                         spectrum_capture.push(if v.is_finite() { v } else { 0.0 });
                     }
@@ -317,10 +334,11 @@ fn run_analysis(
     // 削波检测用逐声道视图
     let clipping_regions = detect_clipping_regions(total_frames, channels);
 
-    // --- 频谱：只用开头 fft_size 帧，内存恒定 ---
-    let spectrum_result = if spectrum_capture.len() >= fft_size {
+    // --- 频谱：取开头 fft_size 帧（FFT 用更长窗，频率分辨率更高）---
+    let fft_input: &[f32] = &spectrum_capture[..spectrum_capture.len().min(fft_size)];
+    let spectrum_result = if fft_input.len() >= fft_size {
         Some(compute_spectrum(
-            &spectrum_capture,
+            fft_input,
             sample_rate,
             spectrum_cfg,
             spectrum_points(channels),
@@ -331,6 +349,26 @@ fn run_analysis(
     };
     let (spectrum_db, spectrum_bins, spectrum_step_hz, peaks) =
         spectrum_result.unwrap_or_else(|| (Vec::new(), 0, 0.0, Vec::new()));
+
+    let (matrix, _step, hop_ms) = if spectrum_capture.len() >= stft_cfg.frame_len {
+        let stft = auralis_dsp::Stft::new(stft_cfg).map_err(|e| e.to_string())?;
+        let frames = stft
+            .compute(&spectrum_capture, sample_rate)
+            .map_err(|e| e.to_string())?;
+        let (m, step) = auralis_dsp::Stft::to_matrix(
+            &frames,
+            SPECTROGRAM_FRAMES,
+            SPECTROGRAM_BINS,
+            auralis_dsp::STFT_MIN_DB,
+            0.0,
+        );
+        (m, step, stft.hop_seconds(sample_rate) * 1000.0)
+    } else {
+        (Vec::new(), 1.0, 0.0)
+    };
+    let spectrogram_frames = matrix.len();
+    let spectrogram_bins = matrix.first().map_or(0, Vec::len);
+    let flat: Vec<f32> = matrix.into_iter().flatten().collect();
 
     Ok(FileAnalysisDto {
         info: dto_of(info, sample_rate, channels, total_frames),
@@ -364,11 +402,30 @@ fn run_analysis(
         spectrum_bins,
         spectrum_step_hz,
         peaks,
+        spectrogram_db: f32s_to_le_bytes(&flat),
+        spectrogram_frames,
+        spectrogram_bins,
+        spectrogram_hop_ms: hop_ms,
         fft_size: spectrum_cfg.fft_size,
         window: spectrum_cfg.window.id().to_string(),
         outcome: "succeeded".to_string(),
     })
 }
+
+/// 频谱/声谱图分析的时间窗（秒）。
+///
+/// 内存必须有界：3 小时文件全量 STFT 是数 GB。这里只取开头一段，
+/// 内存恒为 `sample_rate * WINDOW * 4` 字节（30 秒 @48k ≈ 5.8 MB）。
+/// 看文件其它位置需要带偏移再调用一次（M4 做视口分块）。
+pub const SPECTRUM_WINDOW_SECONDS: u32 = 30;
+
+/// 声谱图时间格数上限。
+///
+/// 超过一屏像素宽度的分辨率对观察没有额外价值，却会线性放大矩阵与传输量。
+/// 缩放时按视口重算，而不是一次性提高分辨率（ADR-018 规则 3）。
+pub const SPECTROGRAM_FRAMES: usize = 1024;
+/// 声谱图频率格数上限。
+pub const SPECTROGRAM_BINS: usize = 512;
 
 /// 频谱分析的目标点数（画布像素宽度的量级）。
 fn spectrum_points(channels: u32) -> usize {
@@ -422,6 +479,10 @@ fn finish_cancelled(
         spectrum_bins: 0,
         spectrum_step_hz: 0.0,
         peaks: Vec::new(),
+        spectrogram_db: Vec::new(),
+        spectrogram_frames: 0,
+        spectrogram_bins: 0,
+        spectrogram_hop_ms: 0.0,
         fft_size: 0,
         window: String::new(),
         outcome: "cancelled".to_string(),
@@ -709,6 +770,40 @@ mod tests {
         // 但指标与波形仍应有
         assert_eq!(d.frames_decoded, 4_800);
         assert_eq!(d.waveform_points, 512);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn file_spectrogram_has_expected_shape_and_is_flat_where_silent() {
+        let dir = scratch("spectrogram");
+        let path = dir.join("sg.wav");
+        // 前 0.5 秒 1 kHz，后 0.5 秒静音：应能在声谱图上看到时间分界
+        let n = 48_000_usize;
+        let mut samples = sine_i16(1_000.0, 0.5, 48_000, n / 2);
+        samples.extend(std::iter::repeat_n(0i16, n / 2));
+        write_wav_s16(&path, 48_000, 1, &samples);
+
+        let d = run_analysis(&path, &CancelToken::new(), 512).expect("analysis");
+
+        assert!(d.spectrogram_frames > 0, "应产出声谱图矩阵");
+        assert_eq!(d.spectrogram_bins, SPECTROGRAM_BINS);
+        assert_eq!(
+            d.spectrogram_db.len(),
+            d.spectrogram_frames * d.spectrogram_bins * 4,
+            "矩阵字节数必须与行列数严格对应"
+        );
+        assert!(d.spectrogram_hop_ms > 0.0);
+
+        // 尾部静音区域的 dB 应贴近下限
+        let decoded = crate::commands::decode_test_f32s(&d.spectrogram_db);
+        let last_row: Vec<f32> =
+            decoded[(d.spectrogram_frames - 1) * d.spectrogram_bins..].to_vec();
+        let tail_peak = last_row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            tail_peak <= auralis_dsp::STFT_MIN_DB + 1.0,
+            "静音段应贴近显示下限，实得 {tail_peak}"
+        );
 
         std::fs::remove_file(&path).ok();
     }
