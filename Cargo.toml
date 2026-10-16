@@ -12,6 +12,7 @@
 resolver = "3"
 members = [
     "apps/desktop/src-tauri",
+    "crates/auralis-audio",
     "crates/auralis-codec",
     "crates/auralis-core",
     "crates/auralis-dsp",
@@ -47,6 +48,7 @@ authors = ["Auralis Studio contributors"]
 auralis-codec = { path = "crates/auralis-codec" }
 auralis-core = { path = "crates/auralis-core" }
 auralis-dsp = { path = "crates/auralis-dsp" }
+auralis-audio = { path = "crates/auralis-audio" }
 auralis-task = { path = "crates/auralis-task" }
 auralis-visualization = { path = "crates/auralis-visualization" }
 
@@ -55,6 +57,7 @@ rustfft = "6.4"
 
 # --- 外部：通用 ---
 crossbeam-channel = "0.5"
+criterion = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

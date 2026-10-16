@@ -11,7 +11,7 @@
 状态：**已完成（2026-10-14）**
 
 - [x] Cargo workspace 和工具链（`rust-toolchain.toml` 固定 1.99.0，`Cargo.lock` 已提交）
-- [x] 最小桌面窗口（`eframe`，可运行、深色、可调整面板比例）
+- [x] 最小桌面窗口（eframe，当时的技术栈；已在 M0.5 换成 Tauri）
 - [x] 主题 Token（`auralis-ui::theme`，含 inferno 256 级色阶与颜色+线型双编码）
 - [x] 五区布局骨架（顶部命令栏 / 资源栏 / 中央画布 / 检查器 / 状态栏）
 - [x] 日志（`tracing` + `tracing-subscriber`，`RUST_LOG` 可调）
@@ -31,7 +31,7 @@
 |---|---|
 | `cargo fmt --all -- --check` | 见 CI 流水线 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 见 CI 流水线 |
-| `cargo test --workspace` | 51 项 DSP/core 测试通过 |
+| `cargo test --workspace` | 当时 51 项 DSP/core 测试通过（现已 199 项） |
 | `cargo build --workspace --release` | 见 CI 流水线 |
 | `--self-test` 无窗口 DSP 自检 | 通过 |
 | 架构边界检查 | 通过（正反用例均已验证） |
@@ -56,8 +56,6 @@
 > 下一步 M1 接入真实文件时应补这个数据。
 
 ### M1：文件与 PCM（约 1–2 周）
-
-状态：未开始
 
 状态：**已完成（文件路径）；IPC 延迟实测待补**
 
@@ -103,8 +101,8 @@
 - [x] **扇贝损失判据**替代原「能量集中度」判据（见下）
 - [x] 真实文件频谱接入 `analyze_file`，峰值带「估算」标记
 - [x] **oracle 扩展到覆盖 FFT**：137 项（原 101 项）
-- [ ] 建立 criterion 基准（ADR-014 要求）—— **仍缺**，见「遗留」
-- [x] **扩展 `scripts/oracle.py` 覆盖 FFT**（ADR-015 硬性要求）：137 项
+- [x] **oracle 扩展到覆盖 FFT**（ADR-015 硬性要求）：137 项
+- [x] 建立 criterion 基准：**在 M4 完成**（见 M4 与 [BENCHMARKS.md](BENCHMARKS.md)）
 
 验收：设计文档 §5.7 的 T1–T15 全通过，oracle 对 FFT 全部一致。
 
@@ -128,9 +126,8 @@
 
 #### 遗留
 
-- **criterion 基准未建**。ADR-014 要求「没有基准就无法判断 Rust 是否够快」，
-  本次仍未做基准，因此**不能**声称 FFT 性能达标。
-- 声谱图（STFT + WebGL）属 M3/M4，未实现。
+- ~~criterion 基准未建~~ → **已在 M4 完成**（[BENCHMARKS.md](BENCHMARKS.md)）。
+- 声谱图（STFT）属 M3，已完成。
 - 削波平顶检测仍返回 0（原因见 M1）。
 
 ### M3：频谱 UI（约 1–2 周）
@@ -159,19 +156,48 @@ ADR-018 初稿建议声谱图用 WebGL。实现时改为 **Canvas 2D + ImageData
 
 #### 遗留
 
-- **criterion 基准仍未建**，因此仍**不能**声称 FFT/STFT 性能达标。
-- 实时采集（CPAL）属 M4，未实现。
+- ~~criterion 基准仍未建~~ → **已在 M4 完成**（[BENCHMARKS.md](BENCHMARKS.md)）。
+- 实时采集（CPAL 流）属 M4，未接通。
 - 削波平顶检测仍返回 0。
 
-### M4：实时输入与声谱图（约 2 周）
+### M4：实时采集骨架 + 性能基准
 
-状态：未开始
+状态：**部分完成（2026-10-16）** —— 实时内核与基准就绪，**CPAL 流未接通**
 
-- [ ] 创建 `auralis-audio`（cpal + `rtrb` 有界 SPSC）
-- [ ] **决策实时高频通道**（ADR-018 留待实测：WebSocket / SAB+Worklet / 原生插件）
-- [ ] 实时电平表与频谱
-- [ ] 任务线程 `catch_unwind` 隔离（ADR-009）
-- 验收：溢出可观测、UI 不阻塞回调
+- [x] **建立 criterion 基准**（清偿 M2/M3 欠项）：`crates/auralis-dsp/benches/dsp_bench.rs`
+- [x] 实测数据写入 [docs/BENCHMARKS.md](BENCHMARKS.md)
+- [x] 创建 `auralis-audio`：`SampleRing` 有界无锁 SPSC（`crossbeam-queue::ArrayQueue`）
+- [x] 溢出策略明确：**丢最新 + 计数**，每次丢弃都记入 `dropped_frames`
+- [x] 实时安全论证 + 23 项测试（容量不超限、丢帧全计数、关闭后拒写、并发不死锁）
+- [x] 设备枚举（不依赖真实声卡，CI 可跑）
+- [ ] **CPAL 输入流未接通**（只有 `list_input_devices`）
+- [ ] 视口分块声谱图（带 offset 参数）
+- [ ] 实时高频通道决策（WebSocket / SAB+Worklet / 原生插件）
+- [ ] ASIO 评估
+
+#### 基准给出的关键结论
+
+48 kHz 回调预算 ≈ **20.8 µs**，实测中位数：
+
+| 操作 | 中位数 | 预算倍数 |
+|---|---|---|
+| FFT 4096 | **271 µs** | **13.0 倍** |
+| FFT 1024 | 77 µs | 3.7 倍 |
+| 峰值检测 | 65 µs | 3.1 倍 |
+| STFT 1 秒 | 3.47 ms | — |
+| STFT 区间 0.1 秒 | 264 µs | — |
+
+**这从猜测变成了数据：FFT 绝对不能放进音频回调。**
+即使最小的 1024 点 FFT 也超预算 3.7 倍。
+ADR-018「回调只做拷贝、全部 DSP 在工作线程」的架构由实测确认。
+
+另外，设计文档 §7.5 曾写「FFT 4096 < 100 µs」——**实测 271 µs，未达标**。
+应以 [BENCHMARKS.md](BENCHMARKS.md) 为准，目前**不宣称**任何 FFT 性能指标。
+
+#### 环形缓冲为什么用 `crossbeam-queue` 而不是自己写
+
+- 本项目 `#![forbid(unsafe_code)]`，自己写环形缓冲必须引入 `unsafe`
+- `rtrb` 会多一个依赖，而 `ArrayQueue` 无锁、定长、SPSC，且已在依赖树里
 
 ### M5：导出与可靠性（约 1 周）
 
@@ -197,7 +223,7 @@ ADR-018 初稿建议声谱图用 WebGL。实现时改为 **Canvas 2D + ImageData
 ## 3. 第一条垂直切片
 
 1. 创建 workspace 和 desktop app。
-2. 使用 egui/eframe 显示主窗口。
+2. 显示主窗口（M0 用 egui，M0.5 起为 Tauri）。
 3. 实现统一深色主题与五区域布局。
 4. 导入一个受支持 WAV 文件并读取元数据。
 5. 解码为 PCM block。

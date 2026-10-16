@@ -14,7 +14,16 @@ rustfft = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 serde_json = { workspace = true }
+
+# 性能基准。ADR-014 要求「没有基准就无法判断 Rust 是否够快」，
+# 而 M0-M3 期间一直没有基准，因此**不能**声称 DSP 性能达标。
+#
+# 运行：cargo bench -p auralis-dsp
+[[bench]]
+name = "dsp_bench"
+harness = false
 
 [lints.rust]
 missing_docs = "warn"

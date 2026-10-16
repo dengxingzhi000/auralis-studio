@@ -1,0 +1,25 @@
+[package]
+name = "auralis-audio"
+description = "实时音频采集：有界无锁环形缓冲、设备枚举与溢出可观测"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+auralis-core = { workspace = true }
+# ArrayQueue 在 crossbeam-queue 而非 crossbeam-channel 里
+crossbeam-queue = "0.3"
+cpal = "0.18"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"
+
+# 实时路径：绝不使用 `alloc` 之外的阻塞设施，也不使用 `std::sync::Mutex`。
+# 该约束靠 `check-boundaries.ps1` 与本文件的测试共同保证。
+[lints.clippy]
+await_holding_lock = "deny"
