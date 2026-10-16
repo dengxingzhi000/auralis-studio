@@ -120,8 +120,40 @@ pub struct FileAnalysisDto {
     pub waveform_envelope: Vec<u8>,
     /// 包络点数。
     pub waveform_points: usize,
+    /// 频谱 dB，`Float32Array`，已按画布宽度降采样（M2）。
+    pub spectrum_db: Vec<u8>,
+    /// 频谱点数（降采样后）。
+    pub spectrum_bins: usize,
+    /// 频谱频率间隔 Hz。
+    pub spectrum_step_hz: f64,
+    /// 检出的峰值（M2）。
+    pub peaks: Vec<PeakDto>,
+    /// 分析所用 FFT 长度，保证结果可复现。
+    pub fft_size: usize,
+    /// 窗函数标识。
+    pub window: String,
     /// 终态。取消时为 `cancelled`，失败时为 `failed`。
     pub outcome: String,
+}
+
+/// 一个检出峰。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeakDto {
+    /// 插值后频率 Hz。
+    pub frequency_hz: f64,
+    /// bin 读数 dBFS。
+    pub amplitude_dbfs: f32,
+    /// 抛物线插值后的幅值 dBFS。
+    pub interpolated_dbfs: f32,
+    /// 未插值的 bin 频率 Hz（供验证插值是否跑偏）。
+    pub bin_frequency_hz: f64,
+    /// 插值偏移，范围 [-0.5, 0.5]。
+    pub bin_offset: f32,
+    /// 扇贝损失 dB。
+    pub scalloping_db: f32,
+    /// 读数是否应标为「估算」。
+    pub estimated: bool,
 }
 
 /// 分析一个文件（探测 + 分块解码 + 指标 + 波形包络）。
@@ -173,6 +205,16 @@ fn run_analysis(
     // 否则一个离谱的 points 值会直接决定内存分配量。
     let envelope_points = envelope_points.clamp(1, MAX_ENVELOPE_POINTS);
 
+    // FFT 取不超过 4 秒的一段：足够稳定地展示频谱特征，
+    // 又不会让内存随文件长度增长（3 小时的实时频谱是 M4 的事）。
+    let fft_size = 8192usize;
+    let spectrum_cfg = auralis_dsp::SpectrumConfig {
+        fft_size,
+        hop_size: fft_size / 2,
+        window: auralis_dsp::WindowFunction::Hann,
+        remove_dc: false,
+    };
+
     let info = probe(path).map_err(|e| e.to_string())?;
     let channels = info.format.channels.get();
     let sample_rate = info.format.sample_rate.get();
@@ -190,6 +232,10 @@ fn run_analysis(
     // 波形包络：按块累积 min/max，最后重采样
     let mut envelope = Vec::<f32>::new();
     let mut frames_seen = 0_u64;
+
+    // 频谱只需文件开头 fft_size 帧。在此定长缓冲里留存，
+    // 内存占用恒为 fft_size，与文件长度无关。
+    let mut spectrum_capture: Vec<f32> = Vec::with_capacity(fft_size);
 
     loop {
         // 取消检查放在每块之前——取消立即生效
@@ -232,6 +278,14 @@ fn run_analysis(
                 frames_seen += block_frames as u64;
                 collect_envelope(samples, n_ch, &mut envelope, frames_seen, envelope_points);
 
+                // 频谱取样：只留开头 fft_size 帧的通道 0
+                if spectrum_capture.len() < fft_size {
+                    let need = fft_size - spectrum_capture.len();
+                    for &v in samples.iter().step_by(n_ch).take(need) {
+                        spectrum_capture.push(if v.is_finite() { v } else { 0.0 });
+                    }
+                }
+
                 token.bail_if_cancelled().map_err(|_| ()).ok();
             }
         }
@@ -263,6 +317,21 @@ fn run_analysis(
     // 削波检测用逐声道视图
     let clipping_regions = detect_clipping_regions(total_frames, channels);
 
+    // --- 频谱：只用开头 fft_size 帧，内存恒定 ---
+    let spectrum_result = if spectrum_capture.len() >= fft_size {
+        Some(compute_spectrum(
+            &spectrum_capture,
+            sample_rate,
+            spectrum_cfg,
+            spectrum_points(channels),
+        )?)
+    } else {
+        // 文件比一个 FFT 帧还短：不产出频谱，而不是报一个假结果
+        None
+    };
+    let (spectrum_db, spectrum_bins, spectrum_step_hz, peaks) =
+        spectrum_result.unwrap_or_else(|| (Vec::new(), 0, 0.0, Vec::new()));
+
     Ok(FileAnalysisDto {
         info: dto_of(info, sample_rate, channels, total_frames),
         peak_dbfs: peak_dbfs_per_channel
@@ -291,8 +360,20 @@ fn run_analysis(
         elapsed_ms: 0,
         waveform_envelope: f32s_to_le_bytes(&resample_envelope(&envelope, envelope_points)),
         waveform_points: envelope_points,
+        spectrum_db,
+        spectrum_bins,
+        spectrum_step_hz,
+        peaks,
+        fft_size: spectrum_cfg.fft_size,
+        window: spectrum_cfg.window.id().to_string(),
         outcome: "succeeded".to_string(),
     })
+}
+
+/// 频谱分析的目标点数（画布像素宽度的量级）。
+fn spectrum_points(channels: u32) -> usize {
+    let _ = channels;
+    MAX_SPECTRUM_BINS.min(2048)
 }
 
 /// 把 `AudioFileInfo` 转成 DTO（补上实际解码帧数）。
@@ -337,6 +418,12 @@ fn finish_cancelled(
         elapsed_ms: 0,
         waveform_envelope: Vec::new(),
         waveform_points: points,
+        spectrum_db: Vec::new(),
+        spectrum_bins: 0,
+        spectrum_step_hz: 0.0,
+        peaks: Vec::new(),
+        fft_size: 0,
+        window: String::new(),
         outcome: "cancelled".to_string(),
     }
 }
@@ -392,6 +479,55 @@ fn resample_envelope(src: &[f32], points: usize) -> Vec<f32> {
 /// **这里返回 0 而不是猜一个数**，避免 UI 显示虚假信息。
 fn detect_clipping_regions(_frames: u64, _channels: u32) -> u32 {
     0
+}
+
+/// 对已解码的信号做一次频谱分析（M2）。
+///
+/// 降采样在 Rust 侧完成（ADR-018 规则 3）：前端收到的就是最终要画的点数，
+/// 载荷与 FFT 长度无关。
+fn compute_spectrum(
+    samples: &[f32],
+    sample_rate: u32,
+    cfg: auralis_dsp::SpectrumConfig,
+    target_bins: usize,
+) -> Result<(Vec<u8>, usize, f64, Vec<PeakDto>), String> {
+    use auralis_dsp::SpectrumAnalyzer;
+
+    let analyzer = SpectrumAnalyzer::new(cfg).map_err(|e| e.to_string())?;
+    let frames = analyzer
+        .analyze(samples, sample_rate)
+        .map_err(|e| e.to_string())?;
+    // 多帧时取「各帧幅值谱逐 bin 取最大值」——这样瞬态不会被平均掉，
+    // 这正是声学工具展示峰值频谱的通行做法。
+    let last = frames.last().ok_or("no spectrum frames produced")?;
+    let mut merged = last.amplitudes.clone();
+    for f in &frames[..frames.len() - 1] {
+        for (m, a) in merged.iter_mut().zip(f.amplitudes.iter()) {
+            if *a > *m {
+                *m = *a;
+            }
+        }
+    }
+
+    let mut tmp = last.clone();
+    tmp.amplitudes = merged;
+    let (db, step) = tmp.downsample_db(target_bins);
+    let peaks = last
+        .peaks
+        .iter()
+        .take(8)
+        .map(|p| PeakDto {
+            frequency_hz: p.frequency_hz,
+            amplitude_dbfs: p.amplitude_dbfs,
+            interpolated_dbfs: p.interpolated_dbfs,
+            bin_frequency_hz: p.bin_frequency_hz,
+            bin_offset: p.bin_offset,
+            scalloping_db: p.scalloping_db(),
+            estimated: p.is_estimated(),
+        })
+        .collect();
+
+    Ok((f32s_to_le_bytes(&db), db.len(), step, peaks))
 }
 
 /// `&[f32]` -> 小端字节。
@@ -521,6 +657,58 @@ mod tests {
         // 请求超过上限时必须被钳住
         let d = run_analysis(&path, &CancelToken::new(), 999_999).expect("clamped");
         assert!(d.waveform_points <= MAX_ENVELOPE_POINTS);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn real_file_spectrum_peaks_at_the_tone_frequency() {
+        let dir = scratch("spectrum");
+        let path = dir.join("tone.wav");
+        // 必须 >= fft_size(8192) 帧才能出频谱
+        let samples = sine_i16(1_000.0, 0.5, 48_000, 48_000);
+        write_wav_s16(&path, 48_000, 1, &samples);
+
+        let d = run_analysis(&path, &CancelToken::new(), 1024).expect("analysis");
+
+        assert!(
+            d.spectrum_bins > 0,
+            "足够长的文件应产出频谱，实得 {} bins",
+            d.spectrum_bins
+        );
+        assert_eq!(d.spectrum_db.len(), d.spectrum_bins * 4);
+        assert_eq!(d.fft_size, 8192);
+        assert_eq!(d.window, "hann");
+
+        // 1000 Hz 在 8192 点 @ 48 kHz 下是 bin 170.67 -> 峰值应落在 ~1000 Hz
+        let peak = d.peaks.first().expect("应检出峰");
+        assert!(
+            (peak.frequency_hz - 1000.0).abs() < 30.0,
+            "峰频 {} 应接近 1000 Hz",
+            peak.frequency_hz
+        );
+        assert!(
+            (peak.amplitude_dbfs - -6.020_6).abs() < 1.0,
+            "半幅正弦峰应接近 -6.02 dBFS，实得 {}",
+            peak.amplitude_dbfs
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn file_shorter_than_one_fft_frame_yields_no_spectrum() {
+        let dir = scratch("short");
+        let path = dir.join("short.wav");
+        let samples = sine_i16(1_000.0, 0.5, 48_000, 4_800); // < 8192 帧
+        write_wav_s16(&path, 48_000, 1, &samples);
+
+        let d = run_analysis(&path, &CancelToken::new(), 512).expect("analysis");
+        assert_eq!(d.spectrum_bins, 0, "短于一个 FFT 帧时应不产出频谱");
+        assert_eq!(d.spectrum_db.len(), 0);
+        // 但指标与波形仍应有
+        assert_eq!(d.frames_decoded, 4_800);
+        assert_eq!(d.waveform_points, 512);
 
         std::fs::remove_file(&path).ok();
     }

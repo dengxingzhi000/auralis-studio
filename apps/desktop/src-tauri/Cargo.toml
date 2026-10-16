@@ -25,6 +25,7 @@ auralis-codec = { workspace = true }
 auralis-core = { workspace = true }
 auralis-dsp = { workspace = true }
 auralis-task = { workspace = true }
+auralis-visualization = { workspace = true }
 rustfft = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

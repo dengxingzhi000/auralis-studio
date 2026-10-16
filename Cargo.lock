@@ -120,6 +120,7 @@ dependencies = [
  "auralis-core",
  "auralis-dsp",
  "auralis-task",
+ "auralis-visualization",
  "rustfft",
  "serde",
  "serde_json",
@@ -136,7 +137,9 @@ name = "auralis-dsp"
 version = "0.1.0"
 dependencies = [
  "auralis-core",
+ "rustfft",
  "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -147,6 +150,13 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tracing",
+]
+
+[[package]]
+name = "auralis-visualization"
+version = "0.1.0"
+dependencies = [
+ "auralis-core",
 ]
 
 [[package]]

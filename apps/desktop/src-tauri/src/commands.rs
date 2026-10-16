@@ -243,6 +243,18 @@ pub fn analyze_synthetic_signal(
     })
 }
 
+/// 线性幅度 -> dBFS，零值返回 JSON `null`（对应真 `-inf`）。
+///
+/// 供 `--dump-reference` 使用，使 oracle 能区分「静音」与「很小的值」。
+#[must_use]
+pub(crate) fn dbfs_of(amp: f32) -> Option<f32> {
+    if amp == 0.0 || !amp.is_finite() {
+        None
+    } else {
+        Some(20.0 * amp.abs().log10())
+    }
+}
+
 /// `&[f32]` -> 小端字节序列。WebView 端用 `new Float32Array(buf)` 还原。
 ///
 /// 显式按小端编码，不依赖宿主字节序，保证跨机器一致。

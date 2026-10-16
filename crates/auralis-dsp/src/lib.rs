@@ -11,9 +11,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod spectrum;
 pub mod stats;
 pub mod window;
 
+pub use spectrum::{
+    ConfigError, Peak, SpectrumAnalyzer, SpectrumConfig, SpectrumFrame, detect_peaks,
+    power_spectral_density, single_sided_amplitude, single_sided_power,
+};
 pub use stats::{ClippingConfig, ClippingFeatures, DcOffset, PeakLevel, Rms, SignalStats};
 pub use stats::{analyze_channel, detect_flat_top};
 pub use window::WindowFunction;

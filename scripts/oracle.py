@@ -174,6 +174,98 @@ def sine(freq_hz: float, amp: float, n: int, fs: int = SAMPLE_RATE) -> np.ndarra
     return (amp * np.sin(TAU * freq_hz * i / fs)).astype(np.float32)
 
 
+# --------------------------------------------------------------------------
+# FFT 频谱参考实现（M2 新增）
+# --------------------------------------------------------------------------
+#
+# 这里刻意**不**调用 numpy.fft.fft 然后套同样的缩放因子 —— 那样只是把
+# Rust 的公式用 Python 重抄一遍，两边错在同一个地方就发现不了。
+# 这里从「连续傅里叶变换的定义」直接用 numpy 数值积分求 bin 处的幅值：
+#
+#   A(f) = (2/N)·|Σ x[n]·w[n]·e^{-j2πfn/fs}|      (0 < f < fs/2)
+#   A(0) = (1/N)·|Σ x[n]·w[n]|                    (DC)
+#
+# 这是与 FFT 实现**完全独立**的一条路径，能抓住缩放因子、窗校正、
+# 单边倍增等约定性错误。
+
+def window(kind: str, n: np.ndarray) -> np.ndarray:
+    """周期型窗，与 auralis-dsp::WindowFunction 定义一致。"""
+    phase = TAU * n / n.size
+    if kind == "rectangular":
+        return np.ones(n.size)
+    if kind == "hann":
+        return 0.5 - 0.5 * np.cos(phase)
+    if kind == "hamming":
+        return 0.54 - 0.46 * np.cos(phase)
+    if kind == "blackman":
+        return 0.42 - 0.5 * np.cos(phase) + 0.08 * np.cos(2 * phase)
+    raise ValueError(f"unknown window: {kind}")
+
+
+def dft_amplitude_at(signal: np.ndarray, w: np.ndarray, freq_hz: float, fs: float) -> float:
+    """用 DFT 定义式直接算某个频率处的单边幅值。
+
+    注意缩放因子是 **W = Σw[n]（窗系数和），不是 N**。
+    这是相干增益校正：加窗后，X[k] = (A/2)·W，所以 A = 2|X[k]|/W。
+    若误用 N，Hann 窗的结果会正好差一倍（CG = 0.5）。
+
+    DC 与 Nyquist 不乘 2（它们没有镜像伙伴），与 docs/DSP_SPEC.md §5 一致。
+    """
+    n = signal.size
+    idx = np.arange(n, dtype=np.float64)
+    phasor = np.exp(-2j * np.pi * freq_hz * idx / fs)
+    acc = np.sum(signal.astype(np.complex128) * w * phasor)
+    w_sum = float(np.sum(w))
+    nyq = fs / 2
+    scale = 1.0 / w_sum if (freq_hz == 0 or freq_hz >= nyq) else 2.0 / w_sum
+    return float(abs(acc) * scale)
+
+
+def dft_power(signal: np.ndarray, w: np.ndarray, freq_hz: float, fs: float) -> float:
+    """单边功率谱。内部 bin 减半，边缘 bin 不减。"""
+    a = dft_amplitude_at(signal, w, freq_hz, fs)
+    nyq = fs / 2
+    return a * a if (freq_hz == 0 or freq_hz >= nyq) else a * a / 2.0
+
+
+def enbw_hz(kind: str, n_size: int, fs: float) -> float:
+    """等效噪声带宽（Hz）。与 auralis-dsp 的解析值一致。"""
+    w = window(kind, np.arange(n_size, dtype=np.float64))
+    s = float(np.sum(w))
+    s2 = float(np.sum(w * w))
+    return fs * s2 / (s * s)
+
+
+def psd_at(signal: np.ndarray, w: np.ndarray, kind: str, freq_hz: float,
+           n_size: int, fs: float) -> float:
+    return dft_power(signal, w, freq_hz, fs) / enbw_hz(kind, n_size, fs)
+
+
+def coherent_tone(bin_index: int, amp: float, n_size: int, fs: int = SAMPLE_RATE) -> np.ndarray:
+    """相干正弦：频率精确落在整数 bin 上。"""
+    freq = bin_index * fs / n_size
+    i = np.arange(n_size, dtype=np.float64)
+    return (amp * np.sin(TAU * freq * i / fs)).astype(np.float32)
+
+
+def canonical_spectra() -> list[tuple[str, np.ndarray, str, list[int]]]:
+    """Rust 侧 --dump-reference 导出的 FFT 用例的等价重建。
+
+    必须与 src-tauri/src/selftest.rs 中的 spectra 完全一致。
+    """
+    n = 4096
+    tone1000 = (
+        np.sin(TAU * 1000.0 * np.arange(n, dtype=np.float64) / SAMPLE_RATE) * 0.5
+    ).astype(np.float32)
+    return [
+        ("tone_bin85_hann", coherent_tone(85, 0.5, n), "hann", [85, 86, 170]),
+        ("tone_bin85_rect", coherent_tone(85, 0.5, n), "rectangular", [85]),
+        ("tone_bin85_blackman", coherent_tone(85, 1.0, n), "blackman", [85]),
+        ("dc_0p1_hann", np.full(n, 0.1, dtype=np.float32), "hann", [0, 1]),
+        ("tone_1000hz_hann", tone1000, "hann", [85, 86]),
+    ]
+
+
 def canonical_signals() -> list[tuple[str, np.ndarray]]:
     """与 `auralis-desktop --dump-reference` 使用完全相同的一组信号。"""
     out: list[tuple[str, np.ndarray]] = []
@@ -206,10 +298,93 @@ def canonical_signals() -> list[tuple[str, np.ndarray]]:
 # --------------------------------------------------------------------------
 
 
+# 幅值用绝对容差（f32 FFT 与 f64 DFT 求和的差异），功率/PSD 用相对容差。
+TOL_AMP_ABS = 1.0e-3
+TOL_REL = 5.0e-3
+
+
+def check_spectra(rust_spectra: list, rep: "Report") -> None:
+    """FFT 频谱对照。
+
+    参考值来自 `dft_amplitude_at` —— 它按**傅里叶变换定义式**直接求和，
+    与 FFT 实现完全独立。这样才能抓住「两边套同一份错误缩放公式」的情况。
+    """
+    if not rust_spectra:
+        rep.failures.append("Rust 未导出任何频谱数据（spectra 为空）")
+        return
+
+    ours = {name: (sig, kind, bins) for name, sig, kind, bins in canonical_spectra()}
+    rust_names = {s["name"] for s in rust_spectra}
+    if rust_names != set(ours):
+        rep.failures.append(
+            f"频谱用例集合不一致: 仅 Rust 有={sorted(rust_names - set(ours))} "
+            f"仅 oracle 有={sorted(set(ours) - rust_names)}"
+        )
+        return
+
+    print(f"频谱用例: {len(rust_spectra)}")
+
+    for rs in rust_spectra:
+        sig, kind, bins = ours[rs["name"]]
+        n_fft = int(rs["fft_size"])
+        fs = float(rs["sample_rate"])
+        w = window(kind, np.arange(n_fft, dtype=np.float64))
+        bin_hz = fs / n_fft
+
+        for rb in rs["bins"]:
+            idx = int(rb["index"])
+            freq = idx * bin_hz
+            tag = f"spectrum[{rs['name']}].bin{idx}"
+
+            exp_amp = dft_amplitude_at(sig, w, freq, fs)
+            rep.close_rel(f"{tag}.amplitude", rb["amplitude"], exp_amp, TOL_REL)
+
+            exp_db = dbfs(exp_amp)
+            rust_db = rb["amplitude_dbfs"]
+            rep.checks += 1
+            if (exp_db is None) != (rust_db is None):
+                rep.failures.append(f"{tag}.amplitude_dbfs: rust={rust_db!r} dft={exp_db!r}")
+            elif exp_db is not None and rust_db is not None:
+                # 低于 -150 dBFS 时两端都已进入数值噪声区，
+                # 逐点比较只会比「两个 -inf 谁更大」，没有意义。
+                if max(exp_db, rust_db) > -150.0 and abs(rust_db - exp_db) > 0.05:
+                    rep.failures.append(
+                        f"{tag}.amplitude_dbfs: rust={rust_db:.4f} dft={exp_db:.4f} 差 > 0.05 dB"
+                    )
+
+            rep.close_rel(f"{tag}.power", rb["power"], dft_power(sig, w, freq, fs), TOL_REL)
+            rep.close_rel(
+                f"{tag}.psd",
+                rb["psd"],
+                psd_at(sig, w, kind, freq, n_fft, fs),
+                TOL_REL,
+            )
+
+
 class Report:
     def __init__(self) -> None:
         self.failures: list[str] = []
         self.checks = 0
+
+    def close_rel(self, name: str, rust, expect, rel: float) -> None:
+        """相对容差比较；同时用绝对下限兜住接近 0 的量。
+
+        用相对容差而非绝对：dB 很低时线性幅值可能小到 1e-9，
+        固定绝对容差会让这些 bin 的检查形同虚设。
+        """
+        self.checks += 1
+        if expect is None or rust is None:
+            if (expect is None) != (rust is None):
+                self.failures.append(
+                    f"{name}: rust={rust!r} 期望={expect!r}（一方为 None 而另一方不是）"
+                )
+            return
+        tol = max(rel * abs(expect), TOL_AMP_ABS)
+        if abs(rust - expect) > tol:
+            self.failures.append(
+                f"{name}: rust={rust:.9g} dft={expect:.9g} "
+                f"差={abs(rust - expect):.3g} > 容差 {tol:.3g}"
+            )
 
     def close(self, name: str, rust, expect, tol: float, unit: str = "") -> None:
         self.checks += 1
@@ -296,6 +471,9 @@ def main() -> int:
             rep.checks += 1
             if rust[key] != ours:
                 rep.failures.append(f"{name}.{key}: rust={rust[key]!r} numpy={ours!r}")
+
+    # ---- FFT 频谱对照（M2）----
+    check_spectra(data.get("spectra", []), rep)
 
     # ---- 窗函数对照 ----
     for rw in data["windows"]:

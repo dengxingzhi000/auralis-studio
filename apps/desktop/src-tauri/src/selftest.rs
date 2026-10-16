@@ -9,6 +9,20 @@
 
 use auralis_dsp::{ClippingConfig, WindowFunction, analyze_channel};
 
+/// 参考值导出用的采样率。
+const SAMPLE_RATE_HZ: u32 = 48_000;
+
+/// 相干正弦的 f32 样本：频率精确落在整数 bin 上。
+fn coherent_sine(bin: usize, amp: f32, n: usize) -> Vec<f32> {
+    let freq = bin as f64 * SAMPLE_RATE_HZ as f64 / n as f64;
+    (0..n)
+        .map(|i| {
+            let phase = std::f64::consts::TAU * freq * i as f64 / SAMPLE_RATE_HZ as f64;
+            (amp as f64 * phase.sin()) as f32
+        })
+        .collect()
+}
+
 /// 标准测试信号。与 `commands::analyze_synthetic_signal` 分开维护：
 /// 这里需要覆盖静音、直流、NaN/Inf、削波等 IPC 压测用不到的边界情况。
 fn canonical_signals() -> Vec<(&'static str, Vec<f32>)> {
@@ -243,6 +257,112 @@ pub fn dump_reference(path: &str) -> ! {
         });
     }
 
+    out.push_str("  ],\n  \"spectra\": [\n");
+
+    // --- FFT 参考值（ADR-015 要求 oracle 覆盖 FFT）---
+    // 每个用例 = (信号, 窗, fft 长度)
+    let fft_n = 4096usize;
+    // 信号本身在分析时用到（`analyze(sig, ..)`），因此这里每个用例都自带样本。
+    let spectra: Vec<(&str, Vec<f32>, auralis_dsp::WindowFunction, Vec<usize>)> = vec![
+        (
+            "tone_bin85_hann",
+            coherent_sine(85, 0.5, fft_n),
+            auralis_dsp::WindowFunction::Hann,
+            vec![85, 86, 170],
+        ),
+        (
+            "tone_bin85_rect",
+            coherent_sine(85, 0.5, fft_n),
+            auralis_dsp::WindowFunction::Rectangular,
+            vec![85],
+        ),
+        (
+            "tone_bin85_blackman",
+            coherent_sine(85, 1.0, fft_n),
+            auralis_dsp::WindowFunction::Blackman,
+            vec![85],
+        ),
+        (
+            "dc_0p1_hann",
+            vec![0.1_f32; fft_n],
+            auralis_dsp::WindowFunction::Hann,
+            vec![0, 1],
+        ),
+        (
+            "tone_1000hz_hann",
+            (0..fft_n)
+                .map(|i| {
+                    let phase = std::f64::consts::TAU * 1000.0 * i as f64 / 48_000.0;
+                    (0.5 * phase.sin()) as f32
+                })
+                .collect(),
+            auralis_dsp::WindowFunction::Hann,
+            vec![85, 86],
+        ),
+    ];
+
+    let analyzers: Vec<(String, auralis_dsp::SpectrumAnalyzer)> = spectra
+        .iter()
+        .map(|(name, _sig, win, _)| {
+            (
+                (*name).to_string(),
+                auralis_dsp::SpectrumAnalyzer::new(auralis_dsp::SpectrumConfig {
+                    fft_size: fft_n,
+                    hop_size: fft_n,
+                    window: *win,
+                    remove_dc: false,
+                })
+                .expect("valid spectrum config"),
+            )
+        })
+        .collect();
+
+    let total_spectra = spectra.len();
+    for (i, (name, sig, win, bins)) in spectra.iter().enumerate() {
+        let analyzer = &analyzers[i].1;
+        let frame = analyzer.analyze(sig, 48_000).expect("analyze")[0].clone();
+
+        out.push_str("    {\n");
+        out.push_str(&format!("      \"name\": {name:?},\n"));
+        out.push_str(&format!("      \"fft_size\": {fft_n},\n"));
+        out.push_str(&format!("      \"sample_rate\": {SAMPLE_RATE_HZ},\n"));
+        out.push_str(&format!("      \"window\": {:?},\n", win.id()));
+        out.push_str(&format!("      \"bin_hz\": {:?},\n", frame.bin_hz as f32));
+        out.push_str("      \"bins\": [\n");
+        for (j, b) in bins.iter().enumerate() {
+            let amp = *frame.amplitudes.get(*b).unwrap_or(&0.0);
+            let power = auralis_dsp::single_sided_power(&frame.amplitudes, fft_n);
+            let psd =
+                auralis_dsp::power_spectral_density(&frame.amplitudes, fft_n, SAMPLE_RATE_HZ, *win);
+            out.push_str("        {\n");
+            out.push_str(&format!("          \"index\": {b},\n"));
+            out.push_str(&format!("          \"amplitude\": {amp:?},\n"));
+            // Option 的 {:?} 会打印 Some(..)/None，不是合法 JSON —— 需手工渲染
+            match crate::commands::dbfs_of(amp) {
+                Some(v) => out.push_str(&format!("          \"amplitude_dbfs\": {v:?},\n")),
+                None => out.push_str("          \"amplitude_dbfs\": null,\n"),
+            }
+            out.push_str(&format!(
+                "          \"power\": {:?},\n",
+                power.get(*b).copied().unwrap_or(0.0) as f32
+            ));
+            out.push_str(&format!(
+                "          \"psd\": {:?}\n",
+                psd.get(*b).copied().unwrap_or(0.0) as f32
+            ));
+            out.push_str(if j + 1 == bins.len() {
+                "        }\n"
+            } else {
+                "        },\n"
+            });
+        }
+        out.push_str("      ]\n");
+        out.push_str(if i + 1 == total_spectra {
+            "    }\n"
+        } else {
+            "    },\n"
+        });
+    }
     out.push_str("  ],\n  \"windows\": [\n");
     let windows = [
         WindowFunction::Rectangular,

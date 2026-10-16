@@ -23,6 +23,7 @@ import {
 import type {
   AppInfo,
   FileInfo,
+  PeakInfo,
   SyntheticRequest,
 } from "@/lib/contracts";
 import { SpectrumView } from "@/components/audio-viz/SpectrumView";
@@ -54,6 +55,9 @@ interface DisplayData {
   outcome: string;
   elapsedMs: number;
   bytes: number;
+  peaks: PeakInfo[];
+  fftSize: number;
+  window: string;
 }
 
 export default function App() {
@@ -93,9 +97,9 @@ export default function App() {
 
       const a = await analyzeFile(fi.path, 2048);
       setDisplay({
-        db: null, // M2 才有频谱；M1 只出波形与指标
+        db: a.spectrumBins > 0 ? a.spectrumDb : null,
         startHz: 0,
-        stepHz: 1,
+        stepHz: a.spectrumStepHz,
         env: a.waveformEnvelope,
         sampleRate: a.info.sampleRate,
         peakDbfs: a.peakDbfs,
@@ -104,7 +108,11 @@ export default function App() {
         dc: a.dc,
         outcome: a.outcome,
         elapsedMs: a.__elapsedMeasuredMs,
-        bytes: a.waveformEnvelope.byteLength,
+        bytes:
+          a.waveformEnvelope.byteLength + a.spectrumDb.byteLength,
+        peaks: a.peaks,
+        fftSize: a.fftSize,
+        window: a.window,
       });
     } catch (e) {
       setError(String(e));
@@ -146,6 +154,9 @@ export default function App() {
         outcome: "succeeded",
         elapsedMs: r.roundTripMicros / 1000,
         bytes: r.spectrumDb.byteLength + r.waveformEnvelope.byteLength,
+        peaks: [],
+        fftSize: req.fftSize,
+        window: "hann",
       });
     } catch (e) {
       setError(String(e));
@@ -390,6 +401,34 @@ function InspectorPanel({
         </div>
       )}
 
+      {display && display.peaks.length > 0 && (
+        <>
+          <div className="label" style={{ marginTop: 12 }}>
+            峰值
+          </div>
+          {display.peaks.slice(0, 8).map((p, i) => (
+            <div className="metric-row" key={i}>
+              <span className="muted num">{i + 1}</span>
+              <span className="num">
+                {fmtHz(p.frequencyHz)}
+                <span className="muted"> Hz · </span>
+                {p.amplitudeDbfs.toFixed(2)}
+                <span className="muted"> dBFS</span>
+                {p.estimated && (
+                  <span className="est-tag" title={`扇贝损失 ${p.scallopingDb.toFixed(2)} dB，读数不可靠`}>
+                    估算
+                  </span>
+                )}
+              </span>
+            </div>
+          ))}
+          <div className="note">
+            FFT {display.fftSize} · {display.window} ·{" "}
+            <span className="num">{display.stepHz.toFixed(3)}</span> Hz/bin
+          </div>
+        </>
+      )}
+
       {selected && (
         <>
           <div className="label" style={{ marginTop: 12 }}>
@@ -516,6 +555,11 @@ function NumberField({
       </span>
     </label>
   );
+}
+
+/** 频率显示：12000 -> "12.0k" */
+function fmtHz(hz: number): string {
+  return hz >= 1000 ? `${(hz / 1000).toFixed(2)}k` : hz.toFixed(0);
 }
 
 function MetricRow({

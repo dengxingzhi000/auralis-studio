@@ -16,6 +16,7 @@ members = [
     "crates/auralis-core",
     "crates/auralis-dsp",
     "crates/auralis-task",
+    "crates/auralis-visualization",
 ]
 
 # ADR-007: do not pre-create empty crates. Remaining crates join `members`
@@ -47,6 +48,7 @@ auralis-codec = { path = "crates/auralis-codec" }
 auralis-core = { path = "crates/auralis-core" }
 auralis-dsp = { path = "crates/auralis-dsp" }
 auralis-task = { path = "crates/auralis-task" }
+auralis-visualization = { path = "crates/auralis-visualization" }
 
 # --- 外部：DSP（只允许 auralis-dsp 使用）---
 rustfft = "6.4"

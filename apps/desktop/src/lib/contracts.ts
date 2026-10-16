@@ -142,5 +142,32 @@ export interface FileAnalysis {
   /** Float32Array in [-1, 1] */
   waveformEnvelope: Float32Array;
   waveformPoints: number;
+  /** Float32Array of dB values, already downsampled to canvas width (ADR-018) */
+  spectrumDb: Float32Array;
+  spectrumBins: number;
+  spectrumStepHz: number;
+  peaks: PeakInfo[];
+  /** FFT size used, so results are reproducible (DSP_SPEC 9) */
+  fftSize: number;
+  window: string;
   outcome: AnalysisOutcome;
+}
+
+/** A detected spectral peak. */
+export interface PeakInfo {
+  frequencyHz: number;
+  /** bin reading, dBFS */
+  amplitudeDbfs: number;
+  /** parabolic-interpolated amplitude, dBFS */
+  interpolatedDbfs: number;
+  /** un-interpolated bin frequency, so the interpolation can be checked */
+  binFrequencyHz: number;
+  binOffset: number;
+  /**
+   * Scalloping loss in dB: how far the bin reading sits from the
+   * interpolated one. Large values mean the reading is unreliable.
+   */
+  scallopingDb: number;
+  /** true when the reading should be shown as an estimate, not a precise number */
+  estimated: boolean;
 }
