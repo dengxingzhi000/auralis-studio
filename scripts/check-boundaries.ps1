@@ -74,11 +74,7 @@ function Remove-RustComments([string]$text) {
 }
 
 foreach ($crate in $pureCrates) {
-    # 用 '/' 而非 '\'：CI 在 ubuntu-latest 上也跑这个脚本（矩阵 os），
-    # 而 Join-Path 在非 Windows 上以 '/' 为分隔符，写 '\' 会解析成
-    # /repo/crates\auralis-core —— 一个不存在的路径，于是直接
-    # "crate not found" 退出 1。PowerShell 在 Windows 上同样接受 '/'。
-    $dir = Join-Path $WorkspaceRoot "crates/$crate"
+    $dir = Join-Path $WorkspaceRoot "crates\$crate"
     if (-not (Test-Path $dir)) {
         $failures.Add("crate not found: $dir")
         continue
@@ -121,7 +117,7 @@ if ($failures.Count -gt 0) {
 # ---------------------------------------------------------------------------
 # React 不得参与音频计算。这里机械检查前端不出现 FFT / dB 对数等
 # 数值运算调用——它们必须留在 Rust 侧。
-$srcDir = Join-Path $WorkspaceRoot 'apps/desktop/src'   # 见上方说明：跨平台分隔符
+$srcDir = Join-Path $WorkspaceRoot 'apps\desktop\src'
 if (Test-Path $srcDir) {
     $tsFiles = Get-ChildItem $srcDir -Recurse -Include '*.ts', '*.tsx'
     $forbiddenTs = @(

@@ -20,7 +20,7 @@
 
 - name: question
   color: d876e3
-  description: Usage question - the discussion belongs in Discussions, not Issues
+  description: Usage question — the discussion belongs in Discussions, not Issues
 
 - name: needs-triage
   color: fbca04
@@ -40,7 +40,7 @@
 
 - name: wontfix
   color: c2e0c6
-  description: Will not be done - the issue stays open so the decision is visible
+  description: Will not be done — the issue stays open so the decision is visible
 
 - name: duplicate
   color: c2e0c6
@@ -52,11 +52,11 @@
 
 - name: area:dsp
   color: 1d76db
-  description: crates/auralis-dsp - RMS, Peak, DC, FFT, STFT, peak detection
+  description: crates/auralis-dsp — RMS, Peak, DC, FFT, STFT, peak detection
 
 - name: area:codec
   color: 1d76db
-  description: crates/auralis-codec and crates/auralis-audio - decoding and capture
+  description: crates/auralis-codec and crates/auralis-audio — decoding and capture
 
 - name: area:realtime
   color: 1d76db
