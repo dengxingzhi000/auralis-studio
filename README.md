@@ -1,88 +1,113 @@
+<div align="center">
+
+**English** · [简体中文](./README.zh-CN.md)
+
 # Auralis Studio
 
-Auralis Studio 是一款 Windows 优先的专业桌面音频分析软件。
+### A Windows-first desktop audio analyzer where every number is traceable.
 
-**架构：Tauri 2 + React 19 (TypeScript) 前端，Rust 音频内核。**
-React 只负责展示，**所有 DSP 在 Rust 侧完成**（ADR-016 / ADR-018）。
+**A Rust DSP kernel, a React display layer, and a hard rule against
+reporting a figure nobody measured.**
 
-**当前状态：M0 + M0.5 + M1 完成。** 可编译、可运行 CLI 自检；
-GUI 能打开 WAV 并得到元数据、Peak/RMS/DC/Crest 与波形包络。
-**频谱仍来自合成信号**——真实文件的频谱与声谱图在 M2/M3。
-未验证的格式在界面上带「未验证」角标，不会假装支持。
+[![CI](https://img.shields.io/github/actions/workflow/status/dengxingzhi000/auralis-studio/ci.yml?branch=master&style=flat-square&logo=github&label=ci)](https://github.com/dengxingzhi000/auralis-studio/actions/workflows/ci.yml)
+[![Stars](https://img.shields.io/github/stars/dengxingzhi000/auralis-studio?color=ffcb47&labelColor=black&style=flat-square&logo=github)](https://github.com/dengxingzhi000/auralis-studio/stargazers)
+[![Forks](https://img.shields.io/github/forks/dengxingzhi000/auralis-studio?color=8ae8ff&labelColor=black&style=flat-square&logo=github)](https://github.com/dengxingzhi000/auralis-studio/network/members)
+[![Issues](https://img.shields.io/github/issues/dengxingzhi000/auralis-studio?color=ff80eb&labelColor=black&style=flat-square&logo=github)](https://github.com/dengxingzhi000/auralis-studio/issues)
+[![Rust](https://img.shields.io/badge/Rust-1.99-007396?logo=rust&logoColor=white&style=flat-square)](https://www.rust-lang.org/)
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white&style=flat-square)](https://tauri.app/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black&style=flat-square)](https://react.dev/)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square)](#license)
 
-## 文档入口
-
-| 文档 | 内容 |
-|---|---|
-| [产品需求文档](docs/PRD.md) | 用户、版本范围、功能与非功能需求、产品边界 |
-| [技术架构设计](docs/TAD.md) | 分层、依赖方向、线程模型、错误分类 |
-| [DSP 算法规范](docs/DSP_SPEC.md) | RMS / Peak / DC Offset / FFT / STFT / 削波的定义与误差目标 |
-| [UI/UX 设计规范](docs/UI_SPEC.md) | 设计 Token、布局、视图组件、图表性能约束 |
-| [测试与验收计划](docs/TEST_PLAN.md) | 测试分层、合成信号集、验收目标、CI 命令 |
-| [开发实施计划](docs/IMPLEMENTATION_PLAN.md) | M0–M6 里程碑与垂直切片 |
-| [架构决策记录](docs/ADR.md) | ADR-001 … ADR-018 |
-| [开发环境设置](docs/DEV_ENVIRONMENT.md) | 本机工具链、镜像与路径约定 |
-
-## 技术栈
-
-| 层 | 选择 |
-|---|---|
-| 桌面外壳 | Tauri 2（系统 WebView2，不捆绑 Chromium） |
-| UI | React 19 + TypeScript + Vite |
-| 设计系统 | CSS Variables 令牌 + Radix Primitives（headless）+ 自研组件 |
-| 音频可视化 | 自研 Canvas 2D（波形 / 频谱），WebGL 预留给声谱图 |
-| 音频内核 | Rust：`auralis-core` / `auralis-dsp`，独立 workspace crate |
-| 通信 | Tauri Commands（标量）+ 二进制批量（视图数据） |
-| 验证 | Rust 单测 + numpy 独立参考实现 + CI |
-
-**不引入** Ant Design / MUI 等完整组件库（ADR-017）。
-
-## 里程碑进度
-
-| 里程碑 | 内容 | 状态 |
-|---|---|---|
-| **M0** | workspace、工具链、深色主题、DSP 内核骨架、CI | 已完成 |
-| **M0.5** | UI 栈切换至 Tauri/React、IPC 通路验证 | 已完成 |
-| **M1** | WAV 导入、元数据、分块 PCM、取消 | **已完成** |
-| M2 | FFT、幅值校正、峰值检测、多级波形包络 | 未开始 |
-| M3 | 频谱交互：游标、缩放、参数检查器、峰值标记 | 未开始 |
-| M4 | 实时采集（CPAL）+ STFT 声谱图 | 未开始 |
-| M5 | 导出、配置持久化、异常恢复 | 未开始 |
-| M6 | 安装包、用户手册、许可证清单 | 未开始 |
-
-### 格式支持（M1 实测结论）
-
-| 容器 | 编译进产物 | 已用真实样本验证 |
-|---|---|---|
-| **WAV** | 是 | **是**（13 项集成测试：写入→解码→DSP 全链路） |
-| FLAC | 是 | 否 |
-| MP3 | 是（显式开 symphonia feature） | 否 |
-| AIFF | 是（显式开 symphonia feature） | 否 |
-
-`verified_containers()` 是 UI 的硬约束：只有 WAV 标记为「已验证」。
-依据 `TEST_PLAN.md` §3 与 `AGENTS.md`「不宣称未经验证的格式」。
-
-> symphonia 的 default features **不含** mp3 / aiff —— 实测结论，不是推测。
-
-## 构建与运行
-
-需要 Rust `1.99.0`（`rust-toolchain.toml` 固定）、MSVC 链接器、Node.js 20+。
-本机安装方式见 [docs/DEV_ENVIRONMENT.md](docs/DEV_ENVIRONMENT.md)。
+**[Quick start](#quick-start) · [What it does](#what-it-does) · [Tech stack](#tech-stack) · [Architecture](#architecture) · [Verification](#verification) · [FAQ](#faq) · [Docs](#documentation)**
 
 ```powershell
-# 前端
-cd apps/desktop
+git clone https://github.com/dengxingzhi000/auralis-studio
+cd auralis-studio\apps\desktop && npm install && npm run tauri dev
+```
+
+</div>
+
+> [!IMPORTANT]
+> **Auralis Studio is not a calibrated measurement instrument, and this release
+> does not pretend to be.** There is no SPL, no LUFS, no SNR, no THD, and no
+> THD+N. Those algorithms are not implemented. Read
+> [Known limitations](#known-limitations) before you trust any number here —
+> it is a short list and it is honest.
+
+> [!NOTE]
+> **Windows-only.** macOS and Linux are unadapted. The kernel is portable in
+> principle; the shell, the CPAL capture path, and the static-CRT build are
+> not.
+
+---
+
+Most audio tools on a desktop are a UI wrapped around a black box. When a
+spectrum looks wrong, you cannot tell whether the window function was wrong,
+the normalization was wrong, the file was decoded wrong, or nobody checked.
+
+Auralis Studio is built the other way around. Every figure it displays comes
+from a Rust function with a deterministic unit test, and the test suite
+cross-validates that function against an **independent numpy implementation**
+(`scripts/oracle.py`) that shares no code with the Rust side. When a benchmark
+misses its target, the miss is recorded in
+[docs/BENCHMARKS.md](./docs/BENCHMARKS.md) rather than quietly dropped.
+
+The architectural spine is a single constraint: **the audio callback copies
+samples and increments counters. Nothing else.** This is not caution — it is
+measured. A 4096-point FFT takes 271 µs on the reference machine, against a
+20.8 µs callback budget at 48 kHz. Anything heavier in the callback drops
+frames by construction.
+
+The result is an analyzer that is deliberately boring about its claims.
+
+## Quick start
+
+> [!NOTE]
+> **The version is pinned.** `rust-toolchain.toml` fixes Rust 1.99.0. CI builds
+> the workspace with `--locked`, so `Cargo.lock` is committed and must stay
+> that way.
+
+### Prerequisites
+
+| Tool | Version | Why |
+|---|---|---|
+| **Rust** | 1.99.0 | Pinned by `rust-toolchain.toml` |
+| **MSVC build tools** | — | `+crt-static` is enabled so the exe is genuinely standalone (ADR-013) |
+| **Node.js** | 20 or 22 | CI tests both |
+| **Python** | 3.12 | Only for the numpy oracle cross-check |
+
+Local installation paths and mirror configuration are in
+[docs/DEV_ENVIRONMENT.md](./docs/DEV_ENVIRONMENT.md).
+
+### 1. Frontend only
+
+```powershell
+cd apps\desktop
 npm install
-npm run dev            # Vite dev server
+npm run dev          # Vite dev server
+```
 
-# 完整应用（Tauri dev：自动拉起 WebView）
-npm run tauri dev
+### 2. Full application
 
-# 生产构建
+```powershell
+cd apps\desktop
+npm run tauri dev    # Tauri dev — opens the WebView
+```
+
+### 3. Production build
+
+```powershell
+cd apps\desktop
 npm run tauri build
 ```
 
-### CLI（无需图形环境，CI 用）
+> [!WARNING]
+> **The release binary is a GUI-subsystem executable.** Calling it directly
+> from PowerShell does not reliably wait, so `$LASTEXITCODE` can come back
+> empty. Use `Start-Process -Wait -PassThru` in any script that needs the exit
+> code — `scripts/check-oracle.ps1` already does this.
+
+### CLI (no window required — what CI runs)
 
 ```powershell
 .\target\release\auralis-studio.exe --version
@@ -90,38 +115,445 @@ npm run tauri build
 .\target\release\auralis-studio.exe --dump-reference out.json
 ```
 
-> Release 构建带 `windows_subsystem = "windows"`，**PowerShell 直接调用不会
-> 可靠等待**，`$LASTEXITCODE` 可能为空。脚本中请用
-> `Start-Process -Wait -PassThru`。`scripts/check-oracle.ps1` 已按此写法。
+`--dump-reference` writes the reference vectors that the numpy oracle is
+compared against.
 
-## 质量检查
+## What it does
 
-```powershell
-./scripts/check-boundaries.ps1   # 架构边界：core/dsp 纯净 + 前端无音频运算
-./scripts/check-oracle.ps1       # numpy 独立参考实现交叉验证 DSP
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo test -p auralis-desktop ipc -- --nocapture   # IPC 载荷实测
-cd apps/desktop && npm run typecheck
+| Icon | Area | What works today |
+| ---- | ---- | ---------------- |
+| 📂 | **Import** | WAV with metadata inspection, cancellable chunked PCM decode. FLAC / MP3 / AIFF decode but are **not verified** — see [the table below](#container-support--measured-not-assumed) |
+| 📈 | **Time-domain** | Peak, RMS, DC offset, crest factor, over-full-scale sample counting, per-channel independence |
+| 📊 | **Frequency-domain** | FFT with explicit amplitude correction, peak detection with markers, zoom and pan, cursor readout |
+| 🌈 | **Spectrogram** | STFT with configurable window and hop, rendered to a texture-backed canvas |
+| 🔴 | **Real-time** | CPAL capture through a bounded lock-free ring buffer with buffer recycling and drop instrumentation |
+| 🧮 | **Verified DSP** | Criterion benchmarks plus cross-validation against an independent numpy implementation |
+| 🧱 | **Enforced boundaries** | CI fails if the DSP crates acquire I/O, or if audio math appears in the frontend |
+| 🪟 | **Instrument UI** | Dark measurement-instrument design system, custom Canvas 2D rendering, Radix headless primitives |
+
+## Tech stack
+
+| Layer | Choice |
+| ----- | ------ |
+| **Desktop shell** | Tauri 2 on the system WebView2 — no bundled Chromium |
+| **UI** | React 19 + TypeScript 5.6 + Vite 6 |
+| **Design system** | CSS custom-property tokens + Radix primitives (headless) + in-house components |
+| **Visualization** | In-house Canvas 2D for waveform and spectrum; texture-backed canvas for the spectrogram |
+| **DSP** | Rust: `auralis-dsp`, depending only on `rustfft` 6.4 |
+| **Codec** | `symphonia` 0.6 with `mp3` and `aiff` features declared explicitly |
+| **Concurrency** | Lock-free SPSC ring (`crossbeam-queue`), `catch_unwind` task isolation |
+| **IPC** | Tauri commands for scalars; pre-decimated binary buffers for view data |
+| **Verification** | Rust unit tests + numpy oracle + CI |
+| **Benchmarks** | Criterion 0.8 |
+
+**No Ant Design, no MUI** (ADR-017). The panels in this application are
+instruments, not forms.
+
+## Architecture
+
+```
+   ┌──────────────────────────────────────────────────────┐
+   │  React 19 · TypeScript · Vite                       │
+   │  ── displays finished buffers. Computes no DSP. ──   │
+   │                                                      │
+   │  Workspace · Spectrum · Spectrogram · Inspector      │
+   └───────────────────────┬──────────────────────────────┘
+                           │  Tauri IPC
+                 scalars  │  ──────────▶  (Hz, dB, counts)
+                 buffers  ◀───────────  (pre-decimated f32 / u8)
+   ┌───────────────────────▼──────────────────────────────┐
+   │  auralis-desktop  (Tauri shell)                     │
+   │  commands · capability set · tracing setup           │
+   └───────┬───────────────────────────┬──────────────────┘
+           │                           │
+   ┌───────▼────────┐         ┌────────▼─────────────────┐
+   │  Audio thread  │         │  Task engine             │
+   │  ┌───────────┐ │         │  auralis-task            │
+   │  │ CPAL      │ │         │  cancel token · progress │
+   │  │ callback  │ │         │  queue · catch_unwind    │
+   │  └─────┬─────┘ │         └────────┬─────────────────┘
+   │        │ recycle buffer          │ pull chunks
+   │        ▼                         ▼
+   │  ┌──────────────────────────────────┐
+   │  │  SPSC ring  (bounded, lock-free)  │  ◀── drops are counted, not hidden
+   │  └───────────────┬──────────────────┘
+   │                  │
+   │  ┌───────────────▼──────────────────┐
+   │  │  auralis-codec   auralis-dsp     │
+   │  │  decode          RMS · Peak · DC │
+   │  │  symphonia       FFT · STFT · peaks│
+   │  └───────────────┬──────────────────┘
+   │                  │
+   │  ┌───────────────▼──────────────────┐
+   │  │  auralis-core  (pure)            │  no UI · no device API
+   │  │  types · units · errors · time   │  no filesystem · no DB
+   │  └──────────────────────────────────┘
+   └──────────────────────────────────────┘
 ```
 
-## 工程原则
+**The one rule the whole diagram encodes:** React never computes audio. dB
+conversion, FFT, decimation, and envelope building all finish in Rust before
+anything crosses the IPC boundary. `scripts/check-boundaries.ps1` fails the
+build if that stops being true, or if `auralis-core` / `auralis-dsp` acquire a
+dependency on `std::fs`, `cpal`, `symphonia`, or anything UI-shaped.
 
-1. **React 不参与音频计算。** dB 换算、FFT、降采样全在 Rust 侧完成后才传输。
-2. DSP 与 UI、设备 API、文件系统解耦，由 `check-boundaries.ps1` 强制。
-3. 实时音频回调不阻塞、不进行无界分配、不等待 UI。
-4. 所有核心算法均有确定性数值测试，并由 **numpy 独立实现交叉验证**。
-5. 明确每个指标的单位、归一化方式、适用条件与算法版本。
-6. **不宣称未经验证的格式、性能或测量准确度**——包括对本项目自己的架构判断。
+### Buffer recycling — why the capture code looks the way it does
 
-## 已知限制
+A CPAL callback has roughly 20.8 µs at 48 kHz. Allocating a `Vec<f32>` per
+callback would be one allocation per callback forever, which the brief forbids
+outright. So the callback takes a buffer from a fixed pool of 64, `clear()`s
+it, refills it (capacity is already sufficient, so no reallocation), and pushes
+it into the ring. The consumer returns buffers to the pool when it is done.
 
-- **只有 WAV 被验证过**；FLAC/MP3/AIFF 能解码但未用真实样本验证。
-- **真实文件的频谱未实现**——频谱面板目前只响应合成信号按钮。
-- 拖放导入未实现（只有文件选择器）。
-- 未在真实图形会话中打开过窗口；**IPC 端到端延迟未实测**（载荷体积已测）。
-- CI 配置已写但从未在真实 runner 上执行过。
-- 削波平顶检测在命令层返回 0：完整实现需要逐样本轨迹，与「分块、内存有界」冲突，
-  将在 M2 随波形金字塔一起实现。**返回 0 而非猜测值**。
-- macOS/Linux 未适配。
+```rust
+// what the callback does, in full
+let mut buf = recycle.pop().unwrap_or_else(Vec::with_capacity);
+buf.clear();
+buf.extend_from_slice(input);
+let _ = ring.push(buf);   // Err(buf) on overflow — reuse it, don't drop it
+```
+
+The first few callbacks allocate while the pool fills. After that the steady
+state is zero allocations, and the pool is bounded, so it cannot grow without
+limit.
+
+This is also why `SampleRing::push` returns `Result<(), T>` rather than `bool`:
+on overflow the buffer has to come back to the caller, or recycling is
+impossible.
+
+## Container support — measured, not assumed
+
+A decoder that compiles is not a format that works. A format is marked verified
+only when a real sample round-trips through import → DSP and the result is
+checked.
+
+| Container | Compiled in | Verified against real samples |
+| --------- | ----------- | ------------------------------ |
+| **WAV** | yes | **yes** — 13 integration tests covering write → decode → DSP |
+| FLAC | yes | no |
+| MP3 | yes (`mp3` feature declared explicitly) | no |
+| AIFF | yes (`aiff` feature declared explicitly) | no |
+
+`verified_containers()` is a hard constraint in the UI: anything not in that
+list is rendered with an **unverified** marker rather than presented as
+supported. See `docs/TEST_PLAN.md` §3 and the "do not claim unverified formats"
+rule in [AGENTS.md](./AGENTS.md).
+
+> [!NOTE]
+> symphonia's default features **do not** include mp3 or aiff — measured
+> against symphonia 0.6.1, not assumed.
+
+## Verification
+
+This is the part of the project that is unusual, so it goes first in the docs
+and it is worth reading before trusting any figure.
+
+### Cross-validation against numpy
+
+`scripts/oracle.py` is a second implementation of the DSP written in numpy. It
+shares no code with the Rust side, so agreement between them is evidence that
+the Rust implementation is right rather than merely self-consistent.
+
+```powershell
+cargo build --workspace --release --locked
+./scripts/check-oracle.ps1
+```
+
+CI additionally asserts that eleven named DSP tests still exist, so the
+properties cannot be quietly dropped:
+
+| Test | What it pins down |
+| ---- | ----------------- |
+| `dc_offset_is_the_mean` / `dc_offset_is_signed` | DC offset is the mean, and sign is preserved |
+| `silence_produces_zeroes_not_nan` | Silence does not produce NaN |
+| `non_finite_samples_are_sanitized_and_counted` | NaN / Inf are handled and counted |
+| `over_full_scale_is_counted_not_clipped` | Out-of-range values are counted, not clamped |
+| `flat_topped_waveform_is_detected_as_suspicious` | Flat tops are flagged |
+| `clean_sine_is_not_reported_as_clipping` | …and a clean sine is not |
+| `channel_isolation_l_and_r_are_independent` | Channels do not bleed into each other |
+| `peak_of_sine_tracks_amplitude` | Peak amplitude is correct |
+| `rms_of_sine_is_amplitude_over_sqrt_two` | RMS normalization is correct |
+| `crest_factor_of_full_scale_sine_is_about_3_01_db` | Crest factor is ≈ 3.01 dB |
+
+### Benchmarks
+
+Criterion, release profile, 48 kHz. Full method and caveats are in
+[docs/BENCHMARKS.md](./docs/BENCHMARKS.md).
+
+| Benchmark | Median |
+| --------- | ------ |
+| `fft/fft_1024` | 77.2 µs |
+| `fft/fft_4096` | 270.7 µs |
+| `fft/fft_16384` | 1.054 ms |
+| `peak_detection/detect_peaks_2049_bins` | 65.4 µs |
+| `stft/stft_2048_512_1s` | 3.470 ms |
+| `stft/stft_range_2048_512_0p1s` | 263.8 µs |
+| `downsample/to_800_from_8193` | 19.8 µs |
+
+Against the 20.8 µs callback budget at 48 kHz, that makes the architecture a
+measurement rather than an opinion:
+
+| Operation | Median | × budget |
+| --------- | ------ | -------- |
+| FFT 4096 | 271 µs | **13.0×** |
+| FFT 1024 | 77 µs | 3.7× |
+| Peak detection | 65 µs | 3.1× |
+
+> [!WARNING]
+> **The FFT missed its original target, and the record says so.** The design
+> document set "< 100 µs for a 4096-point FFT". Measured, it is 271 µs — 2.7×
+> over. The target was an estimate written before any measurement existed;
+> the benchmark is the truth. This project does not claim that FFT meets any
+> performance target.
+
+### The full check suite
+
+```powershell
+./scripts/check-boundaries.ps1   # architecture boundaries
+./scripts/check-oracle.ps1       # numpy cross-validation of the DSP
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace           # 205 tests
+cargo test -p auralis-desktop ipc -- --nocapture   # IPC payload sizes
+cd apps\desktop && npm run typecheck
+```
+
+## Milestones
+
+| Milestone | Content | Status |
+| --------- | ------- | ------ |
+| **M0** | Rust workspace, toolchain, dark theme, DSP kernel skeleton, CI | ✅ done |
+| **M0.5** | UI stack switched to Tauri 2 + React, IPC path verified | ✅ done |
+| **M1** | WAV import, metadata, chunked PCM, cancellation | ✅ done |
+| **M2** | FFT, amplitude correction, peak detection, waveform pyramid | ✅ done |
+| **M3** | Spectrum interaction: cursor, zoom/pan, parameter inspector, peak markers | ✅ done |
+| **M4** | Real-time capture (CPAL) + live spectrogram | 🚧 in progress — ring buffer, benchmarks, and the capture session are in; the live path is not wired to the UI yet |
+| M5 | Export, config persistence, crash recovery | ⬜ not started |
+| M6 | Installer, user manual, license inventory | ⬜ not started |
+
+## Project structure
+
+```
+auralis-studio/
+├── crates/
+│   ├── auralis-core/            # shared vocabulary: types, units, errors, time — pure
+│   ├── auralis-dsp/             # RMS, Peak, DC, FFT, STFT, peak detection — pure
+│   ├── auralis-codec/           # container and PCM decoding (symphonia)
+│   ├── auralis-audio/           # SPSC ring, device enumeration, CPAL capture
+│   ├── auralis-task/            # offline task scheduling, progress, cancellation
+│   └── auralis-visualization/   # waveform pyramid, spectrogram frames
+├── apps/desktop/
+│   ├── src/                     # React 19 frontend — display only
+│   │   ├── components/
+│   │   │   ├── audio-viz/       # WaveformView · SpectrumView · SpectrogramView
+│   │   │   └── ui/              # primitives.tsx · icons.tsx
+│   │   ├── layouts/             # Workspace
+│   │   ├── lib/                 # contracts.ts · ipc.ts
+│   │   └── styles/              # tokens.css · layout.css · globals.css
+│   └── src-tauri/               # Tauri shell: commands, capabilities, tracing
+├── scripts/
+│   ├── check-boundaries.ps1     # fails if the architecture is violated
+│   ├── check-oracle.ps1         # drives the numpy cross-check
+│   ├── oracle.py                # independent numpy DSP implementation
+│   └── activate-dev.ps1         # local toolchain environment
+├── docs/
+│   ├── PRD.md  TAD.md  DSP_SPEC.md  UI_SPEC.md
+│   ├── TEST_PLAN.md  IMPLEMENTATION_PLAN.md  ADR.md  BENCHMARKS.md
+│   └── screenshots/
+└── AGENTS.md                    # the engineering contract this project is held to
+```
+
+## Design principles
+
+These are the rules the code is actually built around. They come from
+[AGENTS.md](./AGENTS.md), and `check-boundaries.ps1` and CI enforce the ones
+that can be enforced mechanically.
+
+1. **React never computes audio.** dB conversion, FFT, and decimation all
+   finish in Rust before anything crosses the IPC boundary.
+2. **The DSP crates stay pure.** No UI, no device APIs, no filesystem, no
+   database. They take data in and give data back.
+3. **The audio callback never blocks, allocates without bound, or waits on the
+   UI.** It copies samples and bumps counters. Dropped frames are instrumented,
+   never silently swallowed.
+4. **Every core algorithm has a deterministic numeric test** and is
+   cross-validated against an independent numpy implementation.
+5. **Every metric documents its units, reference level, normalization, and
+   preconditions**, and names the version of the algorithm.
+6. **No claim about a format, a performance figure, or a measurement accuracy
+   that has not been verified** — including claims about this project's own
+   architecture.
+
+## Known limitations
+
+Read this before trusting a number. It is short on purpose.
+
+- **No calibrated measurement.** No SPL, no LUFS, no SNR, no THD, no THD+N.
+  Those algorithms are not implemented. This release makes no accuracy claim
+  of any kind.
+- **Only WAV is verified.** FLAC, MP3, and AIFF decode, but no real sample has
+  been validated end to end. The UI marks them unverified.
+- **Real-time capture is not wired to the UI yet.** The CPAL session, the
+  bounded ring buffer, and the buffer recycling are implemented and tested;
+  the live spectrogram path lands in M4.
+- **FFT is 2.7× over its original design target.** 271 µs against < 100 µs.
+  See [docs/BENCHMARKS.md](./docs/BENCHMARKS.md).
+- **Clipping detection returns 0 at the command layer.** A real
+  flat-topped-waveform detector needs a per-sample trace, which conflicts with
+  chunked, memory-bounded decoding. It is scheduled for M2's waveform
+  pyramid work. Returning 0 is deliberate; guessing is not.
+- **Drag-and-drop import is not implemented** — only the file picker.
+- **IPC end-to-end latency has not been measured.** Payload sizes have been.
+- **The UI is Chinese-only.** There is no i18n layer yet.
+- **macOS and Linux are unadapted.**
+
+## FAQ
+
+<details>
+<summary><strong>Why is the FFT in a worker thread instead of the audio callback?</strong></summary>
+
+Because a 4096-point FFT takes 271 µs and the callback budget at 48 kHz is
+20.8 µs. That is a 13× overrun — it is not a close call, and no amount of
+careful coding closes a 13× gap. The measurement is in
+[docs/BENCHMARKS.md](./docs/BENCHMARKS.md).
+
+The callback therefore does the only two things it can afford to do: copy
+samples into a buffer, and increment counters.
+
+</details>
+
+<details>
+<summary><strong>Why does <code>SampleRing::push</code> return <code>Result&lt;(), T&gt;</code> instead of a bool?</strong></summary>
+
+Because on overflow the caller needs the buffer back. `push` used to return
+`bool` and drop the item, which means a full ring destroys the recycled buffer
+and forces the next callback to allocate — exactly the failure the recycling
+scheme exists to prevent.
+
+Returning `Err(item)` hands the buffer back so it can be reused. `DropOldest`
+does the same if the re-push fails.
+
+</details>
+
+<details>
+<summary><strong>Why does the project not claim calibrated measurements?</strong></summary>
+
+Because the algorithms are not implemented. Calibrated SPL needs a known
+reference level and a defined measurement bandwidth; LUFS needs the full
+ITU-R BS.1770 gating and K-weighting chain; THD needs distortion components
+isolated from the fundamental. None of that exists in this codebase.
+
+`AGENTS.md` says not to claim measurement accuracy until the algorithms and
+their preconditions are implemented and validated. Claiming it anyway would
+make every other number in the README less trustworthy.
+
+</details>
+
+<details>
+<summary><strong>FLAC, MP3, and AIFF compile in. Why are they not marked supported?</strong></summary>
+
+Because symphonia's default features do not include mp3 or aiff — that was
+measured, not assumed — so they are declared explicitly in the workspace
+manifest. That makes them *decode*. It does not make them *verified*.
+
+A format is marked verified only when a real sample round-trips through import
+→ DSP with checked results. WAV passes that today. The UI reflects this by
+showing an unverified marker rather than pretending.
+
+</details>
+
+<details>
+<summary><strong>Why an independent numpy implementation instead of more Rust tests?</strong></summary>
+
+Because Rust tests can only confirm that the code does what the code does. The
+oracle is written from the DSP spec, not from the Rust source, so when the two
+agree it is evidence that the implementation matches the specification — not
+just that it is internally consistent.
+
+The reference vectors come out of the binary itself
+(`--dump-reference out.json`), which is what keeps the two implementations
+honest about the same inputs.
+
+</details>
+
+<details>
+<summary><strong>Why is <code>tauri-plugin-log</code> removed?</strong></summary>
+
+Because it calls `log::set_boxed_logger` during setup, which collides with
+`tracing-subscriber` and panics when the window opens. The CLI subcommands
+never reach `run()`, which is exactly why this went unnoticed for as long as
+it did.
+
+`init_tracing()` in `lib.rs` is now the only logging exit point.
+
+</details>
+
+<details>
+<summary><strong>The CI badge says failing — is something wrong?</strong></summary>
+
+The badge reflects the last run on `master`. Early on it will be red because
+the workflow has never executed on a real runner before the first push. Watch
+the first run at
+[the Actions tab](https://github.com/dengxingzhi000/auralis-studio/actions).
+
+</details>
+
+## Documentation
+
+Start here for the reasoning behind the code:
+
+| Document | Contents |
+| -------- | -------- |
+| [Product requirements (PRD)](./docs/PRD.md) | Users, scope, functional and non-functional requirements, product boundaries |
+| [Technical architecture (TAD)](./docs/TAD.md) | Layering, dependency direction, threading model, error taxonomy |
+| [DSP specification](./docs/DSP_SPEC.md) | Definitions and error targets for RMS / Peak / DC / FFT / STFT / clipping |
+| [UI/UX specification](./docs/UI_SPEC.md) | Design tokens, layout, view components, rendering performance constraints |
+| [Test and acceptance plan](./docs/TEST_PLAN.md) | Test layering, synthetic signal set, acceptance targets, CI commands |
+| [Implementation plan](./docs/IMPLEMENTATION_PLAN.md) | M0–M6 milestones and vertical slices |
+| [Benchmarks](./docs/BENCHMARKS.md) | Criterion results, method, and what they imply about the architecture |
+| [Architecture decision records](./docs/ADR.md) | ADR-001 … ADR-018, including the ones that were reversed |
+| [Development environment](./docs/DEV_ENVIRONMENT.md) | Toolchain, mirrors, and path conventions |
+| [Engineering contract](././AGENTS.md) | The rules this project is held to |
+
+Security reports go through [SECURITY.md](./SECURITY.md) — not the issue
+tracker.
+
+## Star history
+
+<a href="https://www.star-history.com/?repos=dengxingzhi000%2Fauralis-studio&amp;type=date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=dengxingzhi000/auralis-studio&amp;type=date&amp;theme=dark&amp;legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=dengxingzhi000/auralis-studio&amp;type=date" />
+    <img alt="Auralis Studio GitHub star history" src="https://api.star-history.com/chart?repos=dengxingzhi000/auralis-studio&amp;type=date" />
+  </picture>
+</a>
+
+## Contributing
+
+Please read [CONTRIBUTING.md](./CONTRIBUTING.md) first — it covers the build,
+the branch conventions, and exactly what CI will check.
+
+The short version: this project holds a hard line on not claiming things it
+has not measured. A pull request that reports honestly what it could and could
+not verify is welcome. One that quietly overstates is not.
+
+1. Fork the repository
+2. Create a branch (`git checkout -b feature/…`)
+3. Run the full check suite before pushing — the commands are in
+   [CONTRIBUTING.md](./CONTRIBUTING.md#the-checks-ci-runs)
+4. Open a pull request and fill in the template's "How it was verified"
+
+Participation is governed by the [Code of Conduct](./CODE_OF_CONDUCT.md).
+
+## License
+
+Dual-licensed under [MIT](./LICENSE-MIT) **or** [Apache-2.0](./LICENSE-APACHE),
+at your option. This matches the `license` field in the workspace manifest.
+
+---
+
+<div align="center">
+
+**Built for people who need the number to be right.**
+
+</div>

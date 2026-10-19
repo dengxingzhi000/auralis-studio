@@ -1,0 +1,65 @@
+name: Feature request
+description: Suggest a capability or a change to an existing one
+title: "[feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Auralis Studio's scope is defined in [docs/PRD.md](https://github.com/dengxingzhi000/auralis-studio/blob/master/docs/PRD.md).
+        Requests that contradict the PRD are worth filing — but expect a
+        discussion about the PRD first, not a merge.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do that you cannot do today. Lead with the situation, not the feature name.
+      placeholder: |
+        I need to check whether two takes of the same take match within 0.1 dB
+        across the band I care about. Today I would have to export both spectra
+        as CSV and diff them by hand.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area
+      options:
+        - Analysis / DSP
+        - Visualization / UI
+        - Import / export
+        - Real-time capture
+        - Packaging / distribution
+        - Developer experience
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      description: >
+        This project holds a hard line on two things. If your request implies
+        either, say so up front — it is much easier to design around it early.
+      options:
+        - label: >
+            This does not move DSP into the frontend, and the audio callback
+            stays allocation-free and non-blocking.
+        - label: >
+            This does not claim calibrated SPL / LUFS / SNR / THD accuracy
+            without the corresponding algorithm and its validation.
+        - label: I am not sure which constraints apply

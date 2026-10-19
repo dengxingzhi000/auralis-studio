@@ -1,0 +1,96 @@
+name: Bug report
+description: Something behaves differently from what the docs say it does
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing this. The most useful bug reports in this project
+        include the actual numbers — what you fed in, and what came out.
+
+        **If this is a security problem, do not file it here.** Use
+        Security → Report a vulnerability instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you observed, and what you expected instead.
+      placeholder: |
+        The spectrum panel shows all bins at -6 dBFS regardless of input.
+        I expected the 1 kHz peak to be around -6 dBFS and everything else
+        near the noise floor.
+    validations:
+      required: true
+
+  - type: textarea
+    id: input
+    attributes:
+      label: Input
+      description: The file or signal. If it is a file, give the container, sample rate, channel count, and duration. A synthetic signal you can describe precisely is ideal.
+      placeholder: |
+        Container: WAV
+        Sample rate: 48000 Hz
+        Channels: 2
+        Duration: 1.0 s
+        Or: 1 kHz sine, full-scale half amplitude, generated in-app
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >
+        Commit SHA or version, Windows build, GPU, and audio device if
+        real-time capture is involved.
+      placeholder: |
+        Version: 0.1.0 (commit abc1234)
+        OS: Windows 11 23H2
+        Device: (if relevant)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area
+      options:
+        - DSP result is wrong (RMS, Peak, DC, FFT, STFT, peaks)
+        - Audio file import / decoding
+        - Real-time capture / spectrogram
+        - UI rendering or interaction
+        - Build or toolchain
+        - Documentation is inaccurate
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Output of the CLI self-test or the relevant cargo test, if you have it.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for this
+          required: true
+        - label: I read the Known Limitations section of the README — this is not one of them
+          required: false
