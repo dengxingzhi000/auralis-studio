@@ -136,7 +136,7 @@ compared against.
 | Layer | Choice |
 | ----- | ------ |
 | **Desktop shell** | Tauri 2 on the system WebView2 — no bundled Chromium |
-| **UI** | React 19 + TypeScript 5.6 + Vite 6 |
+| **UI** | React 19 + TypeScript 7 + Vite 8 |
 | **Design system** | CSS custom-property tokens + Radix primitives (headless) + in-house components |
 | **Visualization** | In-house Canvas 2D for waveform and spectrum; texture-backed canvas for the spectrogram |
 | **DSP** | Rust: `auralis-dsp`, depending only on `rustfft` 6.4 |
@@ -489,12 +489,18 @@ it did.
 </details>
 
 <details>
-<summary><strong>The CI badge says failing — is something wrong?</strong></summary>
+<summary><strong>The app is Windows-only. Why does CI run on Linux?</strong></summary>
 
-The badge reflects the last run on `master`. Early on it will be red because
-the workflow has never executed on a real runner before the first push. Watch
-the first run at
-[the Actions tab](https://github.com/dengxingzhi000/auralis-studio/actions).
+The kernel is portable and the crates are cross-platform, so the matrix job
+also builds on `ubuntu-latest`. It catches platform-specific breakage in the
+pure crates before it reaches Windows.
+
+That job installs Tauri's GTK/WebKit development headers first, because
+`auralis-desktop` depends on Tauri and Tauri will not compile on Linux
+without them. Without the step the failure is a confusing
+`gobject-sys: glib-2.0 not found` with exit code 101.
+
+No Linux artifact is produced — the artifact job is Windows-only.
 
 </details>
 

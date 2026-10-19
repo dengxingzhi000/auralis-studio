@@ -124,7 +124,7 @@ npm run tauri build
 | 层 | 选择 |
 |---|---|
 | **桌面外壳** | Tauri 2（系统 WebView2，不捆绑 Chromium） |
-| **UI** | React 19 + TypeScript 5.6 + Vite 6 |
+| **UI** | React 19 + TypeScript 7 + Vite 8 |
 | **设计系统** | CSS Variables 令牌 + Radix Primitives（headless）+ 自研组件 |
 | **可视化** | 自研 Canvas 2D（波形 / 频谱），纹理化 Canvas（声谱图） |
 | **DSP** | Rust：`auralis-dsp`，只依赖 `rustfft` 6.4 |
@@ -445,11 +445,17 @@ THD 或 THD+N」。硬要宣称，只会让这份 README 里其他所有数字�
 </details>
 
 <details>
-<summary><strong>CI 徽章是红的——出问题了？</strong></summary>
+<summary><strong>应用只支持 Windows，为什么 CI 还要跑 Linux？</strong></summary>
 
-徽章反映的是 `master` 上最近一次运行。首次推送前它必然是红的，
-因为这份 workflow 从未在真实 runner 上跑过。关注首次运行：
-[Actions 标签页](https://github.com/dengxingzhi000/auralis-studio/actions)。
+内核是可移植的，crate 也是跨平台的，所以矩阵任务会在 `ubuntu-latest` 上
+也构建一遍。这能在到达 Windows 之前先发现纯 crate 里的平台相关问题。
+
+该任务会先安装 Tauri 的 GTK/WebKit 开发头文件，因为 `auralis-desktop`
+依赖 Tauri，而 Tauri 在 Linux 上没有这些头文件根本编不过。
+少了这一步，报错是一个让人摸不着头脑的
+`gobject-sys: glib-2.0 not found`，退出码 101。
+
+不产出 Linux 产物——artifact 任务只跑 Windows。
 
 </details>
 

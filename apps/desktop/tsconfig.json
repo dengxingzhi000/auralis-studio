@@ -20,7 +20,8 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
 
-    "baseUrl": ".",
+    // 不设 baseUrl：TS 4.1 起 paths 可直接相对 tsconfig.json 解析，
+    // 且 baseUrl 在 TS 6 废弃、TS 7 停止生效（TS5101）。
     "paths": {
       "@/*": ["./src/*"]
     }

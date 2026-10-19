@@ -26,6 +26,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Tauri 2 在 Linux 上需要 GTK/WebKit 开发头文件，GitHub 的
+      # ubuntu-latest 镜像不带。缺失时不会报「找不到 crate」，而是
+      # gobject-sys 的构建脚本找不到 glib-2.0，退出码 101（CI run
+      # 39219183724 实际失败原因）。
+      # libasound2-dev 是 cpal（auralis-audio）在 Linux 上编译需要的。
+      - name: 安装 Linux 构建依赖
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libasound2-dev \
+            patchelf
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.0

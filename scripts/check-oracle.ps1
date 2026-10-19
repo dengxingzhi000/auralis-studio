@@ -48,25 +48,39 @@ if (-not $Exe -or -not (Test-Path $Exe)) {
 }
 
 # ---- 定位 Python ----
+# 关键点：**探测时就要求 numpy 能导入**，而不是选一个「版本够新」的解释器
+# 之后再检查 numpy。
+#
+# 之前的写法只按版本挑第一个可用的解释器。GitHub 的 windows-latest 上
+# C:\Windows\py.exe 排在前面，而它没有 numpy；setup-python 装好的、
+# 真正装了 numpy 的 python 排在后面。于是脚本明明有可用解释器，
+# 却报「Python 缺少 numpy」（CI run 39219183724 实际失败原因）。
 if (-not $Python) {
+    $versionOnly = ''   # 版本够但缺 numpy —— 仅用于给出更准的报错
     foreach ($cand in @('py', 'python3', 'python')) {
         $cmd = Get-Command $cand -ErrorAction SilentlyContinue
         if (-not $cmd) { continue }
         # 跳过 Microsoft Store 的失效存根
         try {
             $null = & $cmd.Source -c "import sys; sys.exit(0 if sys.version_info>=(3,9) else 1)" 2>$null
-            if ($LASTEXITCODE -eq 0) { $Python = $cmd.Source; break }
+            if ($LASTEXITCODE -ne 0) { continue }
         } catch { continue }
+
+        & $cmd.Source -c "import numpy" 2>$null
+        if ($LASTEXITCODE -eq 0) { $Python = $cmd.Source; break }
+        if (-not $versionOnly) { $versionOnly = $cmd.Source }
+    }
+    if (-not $Python) {
+        if ($versionOnly) {
+            Fail ("找到 Python $versionOnly，但它没有安装 numpy。" + [Environment]::NewLine +
+                  "请执行: $versionOnly -m pip install numpy")
+        }
+        Fail "找不到可用的 Python 3.9+"
     }
 }
-if (-not $Python) { Fail "找不到可用的 Python 3.9+" }
 
 Write-Host "python : $Python"
 Write-Host "exe    : $Exe"
-
-# ---- 确认 numpy ----
-& $Python -c "import numpy" 2>$null
-if ($LASTEXITCODE -ne 0) { Fail "Python 缺少 numpy，请先执行: $Python -m pip install numpy" }
 
 # ---- 导出参考值 ----
 # 注意：release 构建带 `windows_subsystem = "windows"`，是 GUI 子系统程序。
