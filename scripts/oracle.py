@@ -409,6 +409,16 @@ class Report:
 
 
 def main() -> int:
+    # 本脚本的输出全是中文，而 stdout 的编码取决于调用方：
+    #   - 本机控制台通常是 cp936(GBK) 或 UTF-8，能编码中文；
+    #   - GitHub 的 windows runner 上是 cp1252，print() 直接抛
+    #     UnicodeEncodeError（CI run 39221986868 的实际失败原因）。
+    # 这里显式切到 UTF-8，使脚本不依赖调用方的控制台编码。
+    # errors="replace" 保证即使遇到无法编码的字符也只是显示成 ? 而不是崩掉。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     ap = argparse.ArgumentParser(description="Auralis Studio DSP oracle")
     ap.add_argument("--rust-json", required=True, help="auralis-studio --dump-reference 的输出")
     ap.add_argument(
