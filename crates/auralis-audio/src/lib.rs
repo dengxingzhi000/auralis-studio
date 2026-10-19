@@ -36,8 +36,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod capture;
 pub mod devices;
 pub mod ring;
 
+pub use capture::{BufferRecycler, CallbackBuffer, CaptureSession, start_capture};
 pub use devices::{AudioDeviceInfo, CaptureConfig, DeviceError, list_input_devices};
 pub use ring::{DropPolicy, RingStats, SampleRing};

@@ -152,32 +152,33 @@ impl<T> SampleRing<T> {
 
     /// 写入一个样本项（由**音频回调**调用）。
     ///
-    /// 返回是否写入成功。**永不阻塞、永不分配。**
-    #[must_use]
-    pub fn push(&self, item: T) -> bool {
+    /// 返回 `Err(item)` 表示因队列满（或已关闭）而**未写入**，此时 item 被
+    /// 原样退回，调用方可继续复用它 —— 这正是实时路径上避免分配的关键
+    /// （见 [`crate::capture`] 的缓冲区回收）。
+    ///
+    /// 永不阻塞，成功路径永不分配。
+    pub fn push(&self, item: T) -> Result<(), T> {
         if self.is_closed() {
             self.dropped
                 .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
-            return false;
+            return Err(item);
         }
-        // ArrayQueue::push 在失败时把 item 原样还回来，必须接住，
-        // 否则 item 在这里就被移动走了，后面的溢出分支再用它是编译错误。
+        // ArrayQueue::push 失败时把 item 原样还回来，必须接住，
+        // 否则 item 在这里就被移动走了。
         let item = match self.queue.push(item) {
             Ok(()) => {
                 self.pushed
                     .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
-                return true;
+                return Ok(());
             }
             Err(item) => item,
         };
 
         match self.policy {
             DropPolicy::DropNewest => {
-                // 直接丢弃，不额外分配
-                drop(item);
                 self.dropped
                     .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
-                false
+                Err(item)
             }
             DropPolicy::DropOldest => {
                 if self.queue.pop().is_some() {
@@ -185,11 +186,16 @@ impl<T> SampleRing<T> {
                         .fetch_sub(self.frames_per_item as u64, Ordering::Relaxed);
                     self.pushed
                         .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
-                    self.queue.push(item).is_ok()
+                    // 刚腾出一个位置，正常不会失败；真失败也必须把 item 还回去
+                    if self.queue.push(item).is_err() {
+                        self.dropped
+                            .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
+                    }
+                    Ok(())
                 } else {
                     self.dropped
                         .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
-                    false
+                    Err(item)
                 }
             }
         }
@@ -234,7 +240,7 @@ mod tests {
         let r: SampleRing<u32> = SampleRing::new(8, 1, DropPolicy::DropNewest);
         assert!(r.is_empty());
         for i in 0..4 {
-            assert!(r.push(i));
+            assert!(r.push(i).is_ok());
         }
         let mut out = Vec::new();
         assert!(r.pop_chunk(&mut out));
@@ -313,7 +319,7 @@ mod tests {
         let _ = r.push(1);
         r.close();
         assert!(r.is_closed());
-        assert!(!r.push(2), "关闭后不应再接受写入");
+        assert!(r.push(2).is_err(), "关闭后不应再接受写入");
         assert_eq!(
             r.stats().dropped_frames,
             1,

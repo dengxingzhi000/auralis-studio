@@ -21,6 +21,11 @@ apps/desktop/src-tauri/gen/
 # Superpowers 可视化伴侣的临时产物
 /.superpowers/
 
+# 本地开发运行目录（.devrun/）：Vite / Tauri dev 的日志、pid、截图，
+# 以及 .devrun/webview2-data/ 下的整套 WebView2 用户数据（Cookies、
+# Cache、Code Cache、GPUCache…）。这些是运行期垃圾，绝不能入库。
+/.devrun/
+
 # IDE
 /.idea/
 *.iml

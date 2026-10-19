@@ -25,6 +25,31 @@ pub use selftest::{dump_reference, run_self_test};
 
 use app_state::AppState;
 
+/// 安装全局 `tracing` 订阅者（输出到 stderr）。
+///
+/// **必须只安装一次**，且 GUI 与 CLI 共用同一条路径。原先 `main.rs` 装
+/// `tracing_subscriber`、`run()` 里再注册 `tauri_plugin_log`，两者都写全局
+/// logger，于是插件注册时 panic：
+///
+/// ```text
+/// PluginInitialization("log", "attempted to set a logger after the logging
+/// system was already initialized")
+/// ```
+///
+/// CLI 子命令（`--version` / `--self-test`）在 `run()` 之前就 `return`/`exit`，
+/// 所以这条路径从未被走到——问题只在真正打开窗口时暴露。
+///
+/// 过滤器默认 `info`，可用 `RUST_LOG` 覆盖。`try_init` 的返回值被有意忽略：
+/// 重复安装不是错误，第二次调用应该是无操作而不是 panic。
+pub fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .try_init();
+}
+
 /// 桌面应用入口。
 ///
 /// # Panics
@@ -32,8 +57,9 @@ use app_state::AppState;
 /// CLI 子命令（`--version` / `--self-test`）不会走到这里。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    init_tracing();
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![

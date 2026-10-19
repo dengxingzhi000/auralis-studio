@@ -1,7 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "默认能力集。ADR-017 要求键盘可达与焦点管理，因此保留 core:default 的窗口/事件能力；业务 Command 权限在后续里程碑按需增补，不预先放开。",
+  "description": "默认能力集。ADR-017 要求键盘可达与焦点管理，因此保留 core:default 的窗口/事件能力；业务 Command 权限按需增补，不预先放开。",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open"
+  ]
 }

@@ -33,20 +33,5 @@ fn main() {
         }
     }
 
-    init_tracing();
     auralis_desktop_lib::run();
-}
-
-/// Initialise Rust-side logging to stderr.
-///
-/// The Tauri-side log plugin (which also forwards into the webview console)
-/// is registered inside `run()` with its own defaults -- configuring both
-/// here would double-install a global subscriber.
-fn init_tracing() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .try_init();
 }

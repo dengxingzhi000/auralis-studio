@@ -70,23 +70,48 @@ export interface SyntheticRequest {
 }
 
 /**
+ * Rust 侧 `Vec<u8>` 到达 JS 后的两种可能形态。
+ *
+ * 实测（Tauri 2 + WebView2，2026-10-16）：`invoke` 返回的是**普通数字数组**，
+ * 不是 `Uint8Array`。契约里写 `Uint8Array` 只是类型断言，运行时并不成立。
+ * 因此这里必须显式归一化，否则 `bytes.buffer` 为 `undefined`。
+ */
+type RawBytes = Uint8Array | ArrayLike<number>;
+
+/**
  * 把 Rust 返回的小端字节流还原为 Float32Array。
  *
- * 必须用 ArrayBuffer 视图而不是普通数组，否则 Tauri 的 IPC 代理
- * 会在两侧各做一次拷贝。
+ * `byteLength` 可能大于 `length`（视图带偏移），因此一律按
+ * `byteOffset`/`byteLength` 取窗口，而不是直接拿 `length` 算。
+ *
+ * 字节数不是 4 的倍数时抛错 —— 这类错误必须炸出来，静默截断会让
+ * 频谱曲线整体错位，且从画面上看不出来。
  */
-export function decodeF32(bytes: Uint8Array): Float32Array {
-  // 字节数必须是 4 的倍数，否则说明序列化层出了问题
-  if (bytes.length % 4 !== 0) {
+export function decodeF32(bytes: RawBytes): Float32Array {
+  const byteOffset =
+    bytes instanceof Uint8Array ? bytes.byteOffset : 0;
+  const byteLength =
+    bytes instanceof Uint8Array ? bytes.byteLength : bytes.length;
+
+  if (byteLength % 4 !== 0) {
     throw new Error(
-      `binary payload length ${bytes.length} is not a multiple of 4`,
+      `binary payload length ${byteLength} is not a multiple of 4`,
     );
   }
-  const buffer = bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength,
+
+  // 只在必要处拷贝：已经是 4 字节对齐的 Uint8Array 可直接建视图（零拷贝），
+  // 普通数组则必须先物化成 Uint8Array 才能取到 ArrayBuffer。
+  const aligned =
+    bytes instanceof Uint8Array && byteOffset % 4 === 0
+      ? bytes
+      : new Uint8Array(bytes);
+
+  return new Float32Array(
+    aligned.buffer.slice(
+      aligned.byteOffset,
+      aligned.byteOffset + aligned.byteLength,
+    ),
   );
-  return new Float32Array(buffer);
 }
 
 /* ============================================================

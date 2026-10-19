@@ -3,7 +3,7 @@
  * ============================================================================
  * 目标是「专业测量仪器」，不是 Web 产品：
  *   - 紧凑密度，不做大圆角大留白
- *   - 弱边框，明确层级
+ *   - 弱边框 + 分级表面，明确层级
  *   - 数值等宽
  * ========================================================================== */
 
@@ -27,15 +27,34 @@ body {
   font-family: var(--font-ui);
   font-size: var(--text-base);
   line-height: 1.45;
-  /* 桌面应用：不需要选中文本，否则拖图表时会误选 */
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   overflow: hidden;
+}
+
+/* 桌面应用：不需要选中文本，否则拖图表时会误选。
+   需要选中的地方（错误详情等）用 .selectable 显式打开。 */
+body {
+  user-select: none;
+}
+.selectable {
+  user-select: text;
+  cursor: text;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
 }
 
 /* 全局焦点样式：键盘可达性是 ADR-017 的硬要求 */
 :focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--border-focus);
   outline-offset: 1px;
+  border-radius: var(--radius-sm);
 }
 
 ::selection {
@@ -54,10 +73,10 @@ body {
   background: var(--border-subtle);
   border: 3px solid transparent;
   background-clip: content-box;
-  border-radius: 5px;
+  border-radius: var(--radius-full);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--axis-line);
+  background: var(--border-strong);
   border: 3px solid transparent;
   background-clip: content-box;
 }
@@ -68,15 +87,24 @@ body {
 .num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
+/* 分区标题：小号、大写、宽字距 —— 层级靠字重与颜色，不靠边框 */
 .label {
   color: var(--text-secondary);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
 }
 
 .muted {
   color: var(--text-disabled);
+}
+
+/* 次级说明文字 */
+.sub {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
 }

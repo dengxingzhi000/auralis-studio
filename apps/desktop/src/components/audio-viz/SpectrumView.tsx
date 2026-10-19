@@ -14,6 +14,12 @@
  *
  * 拖拽选区 = 设置新的频率视口；双击 = 复位到全带宽。
  * 平移通过鼠标中键或按住 Shift 拖拽完成。
+ *
+ * ## 视觉约定（2026-10 样式修订）
+ *
+ * 所有颜色从 CSS 令牌读取，画布里**不写死色值**。曲线下方的渐变填充、
+ * 网格与坐标轴的三级明度差、零线强调，都与 tokens.css 的
+ * --grid-minor / --grid-major / --axis-line / --trace-fill-* 对应。
  */
 
 import { useCallback, useEffect, useRef } from "react";
@@ -46,7 +52,11 @@ export interface SpectrumViewProps {
   onHoverHz?: (hz: number | null) => void;
 }
 
-const PAD = { left: 46, right: 10, top: 8, bottom: 22 };
+const PAD = { left: 46, right: 12, top: 10, bottom: 24 };
+
+/** 每格 dB 数与分格数：140 dB / 8 ≈ 17.5 dB 一格，与 M0 版一致 */
+const DB_STEPS = 8;
+const HZ_STEPS = 8;
 
 export function SpectrumView({
   db,
@@ -117,12 +127,12 @@ export function SpectrumView({
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
 
       const css = getComputedStyle(document.documentElement);
       const token = (n: string) => css.getPropertyValue(n).trim();
-
-      ctx.fillStyle = token("--bg-panel");
-      ctx.fillRect(0, 0, w, h);
+      const monoFont = token("--font-mono");
+      const uiFont = token("--font-ui");
 
       const plotX = PAD.left;
       const plotY = PAD.top;
@@ -141,38 +151,46 @@ export function SpectrumView({
         return plotY + (1 - (c - s.minDb) / span) * plotH;
       };
 
+      // 画布底：与卡片表面同色，用令牌而不是硬编码
+      ctx.fillStyle = token("--bg-panel");
+      ctx.fillRect(0, 0, w, h);
+
       // ---- 水平网格 + dB 刻度 ----
-      ctx.strokeStyle = token("--grid-major");
-      ctx.fillStyle = token("--axis-label");
+      // 网格三级明度：整数格用 major，半格用 minor，坐标轴单独一条
       ctx.lineWidth = 1;
-      ctx.font = "10px " + token("--font-mono");
+      ctx.font = `10px ${monoFont}`;
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      for (let i = 0; i <= 8; i++) {
-        const y = plotY + (plotH * i) / 8;
+      for (let i = 0; i <= DB_STEPS; i++) {
+        const y = Math.round(plotY + (plotH * i) / DB_STEPS) + 0.5;
+        ctx.strokeStyle = token("--grid-major");
         ctx.beginPath();
-        ctx.moveTo(plotX, Math.round(y) + 0.5);
-        ctx.lineTo(plotX + plotW, Math.round(y) + 0.5);
+        ctx.moveTo(plotX, y);
+        ctx.lineTo(plotX + plotW, y);
         ctx.stroke();
-        const v = s.maxDb - ((s.maxDb - s.minDb) * i) / 8;
-        ctx.fillText(v.toFixed(0), plotX - 6, y);
+
+        const v = s.maxDb - ((s.maxDb - s.minDb) * i) / DB_STEPS;
+        ctx.fillStyle = token("--axis-label");
+        ctx.fillText(v.toFixed(0), plotX - 7, y);
       }
 
       // ---- 垂直网格 + 频率刻度 ----
-      ctx.strokeStyle = token("--grid-minor");
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      for (let i = 0; i <= 8; i++) {
-        const hz = loHz + (spanHz * i) / 8;
-        const x = hzToX(hz);
+      for (let i = 0; i <= HZ_STEPS; i++) {
+        const hz = loHz + (spanHz * i) / HZ_STEPS;
+        const x = Math.round(hzToX(hz)) + 0.5;
+        ctx.strokeStyle = token("--grid-minor");
         ctx.beginPath();
-        ctx.moveTo(Math.round(x) + 0.5, plotY);
-        ctx.lineTo(Math.round(x) + 0.5, plotY + plotH);
+        ctx.moveTo(x, plotY);
+        ctx.lineTo(x, plotY + plotH);
         ctx.stroke();
-        ctx.fillText(formatHz(hz), x, plotY + plotH + 4);
+
+        ctx.fillStyle = token("--axis-label");
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillText(formatHz(hz), x, plotY + plotH + 6);
       }
 
-      // ---- axes ----
+      // ---- 坐标轴：左 + 下，1px 高对比 ----
       ctx.strokeStyle = token("--axis-line");
       ctx.beginPath();
       ctx.moveTo(plotX + 0.5, plotY);
@@ -180,91 +198,119 @@ export function SpectrumView({
       ctx.lineTo(plotX + plotW, plotY + plotH + 0.5);
       ctx.stroke();
 
-      // ---- curve ----
+      // ---- 曲线 ----
       if (s.db && s.db.length > 1) {
-        const tracePath = (color: string, width: number) => {
-          ctx.beginPath();
-          for (let i = 0; i < s.db!.length; i++) {
-            const hz = i * s.stepHz;
-            if (hz < loHz || hz > hiHz) continue;
-            const v = s.db![i]!;
-            const x = hzToX(hz);
-            const y = Number.isFinite(v) ? dbToY(v) : dbToY(s.minDb);
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-          }
-          ctx.strokeStyle = color;
-          ctx.lineWidth = width;
-          ctx.stroke();
-        };
-
-        // fill under the curve first
-        ctx.beginPath();
-        let started = false;
+        // 可见区间内的点，先收集再画：填充、描边、峰标记共用同一组坐标
+        const pts: { x: number; y: number }[] = [];
         for (let i = 0; i < s.db.length; i++) {
           const hz = i * s.stepHz;
           if (hz < loHz || hz > hiHz) continue;
           const v = s.db[i]!;
-          const x = hzToX(hz);
-          const y = Number.isFinite(v) ? dbToY(v) : dbToY(s.minDb);
-          if (!started) {
-            ctx.moveTo(x, plotY + plotH);
-            ctx.lineTo(x, y);
-            started = true;
-          } else ctx.lineTo(x, y);
+          pts.push({
+            x: hzToX(hz),
+            y: Number.isFinite(v) ? dbToY(v) : dbToY(s.minDb),
+          });
         }
-        if (started) {
-          const lastHz = (s.db.length - 1) * s.stepHz;
-          ctx.lineTo(hzToX(Math.min(lastHz, hiHz)), plotY + plotH);
+
+        if (pts.length > 1) {
+          const first = pts[0]!;
+          const last = pts[pts.length - 1]!;
+
+          // 曲线下方渐变填充：给曲线体积感，但不喧宾夺主
+          const grad = ctx.createLinearGradient(0, plotY, 0, plotY + plotH);
+          grad.addColorStop(0, token("--trace-fill-top"));
+          grad.addColorStop(1, token("--trace-fill-bottom"));
+          ctx.beginPath();
+          ctx.moveTo(first.x, plotY + plotH);
+          for (const p of pts) ctx.lineTo(p.x, p.y);
+          ctx.lineTo(last.x, plotY + plotH);
           ctx.closePath();
-          ctx.fillStyle = "rgba(87, 166, 255, 0.16)";
+          ctx.fillStyle = grad;
           ctx.fill();
+
+          // 曲线本体：外发光一层 + 实线一层，1.4px 在深色底上偏细
+          ctx.lineJoin = "round";
+          ctx.beginPath();
+          ctx.moveTo(first.x, first.y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.x, pts[i]!.y);
+
+          ctx.strokeStyle = token("--accent-primary");
+          ctx.globalAlpha = 0.22;
+          ctx.lineWidth = 3;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
         }
 
-        tracePath(token("--accent-primary"), 1.4);
-
-        // ---- peak markers ----
+        // ---- 峰值标记 ----
+        ctx.font = `10px ${monoFont}`;
         for (const p of s.peaks) {
           if (p.frequencyHz < loHz || p.frequencyHz > hiHz) continue;
           const x = hzToX(p.frequencyHz);
           const y = dbToY(p.amplitudeDbfs);
-          // 估算读数用空心 + 警示色，实测用实心
-          ctx.beginPath();
-          ctx.arc(x, y, 3, 0, Math.PI * 2);
-          ctx.strokeStyle = p.estimated ? token("--signal-warning") : token("--accent-primary");
-          ctx.fillStyle = p.estimated ? token("--bg-panel") : token("--accent-primary");
-          ctx.lineWidth = 1.5;
-          ctx.fill();
-          ctx.stroke();
-          // 竖线指向坐标轴
-          ctx.globalAlpha = 0.35;
+          const color = p.estimated
+            ? token("--signal-warning")
+            : token("--accent-primary");
+
+          // 竖线指向坐标轴，弱化到不干扰曲线
+          ctx.globalAlpha = 0.3;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
           ctx.beginPath();
           ctx.moveTo(x, y);
           ctx.lineTo(x, plotY + plotH);
-          ctx.strokeStyle = p.estimated
-            ? token("--signal-warning")
-            : token("--accent-primary");
           ctx.stroke();
           ctx.globalAlpha = 1;
+
+          // 估算读数用空心 + 警示色，实测用实心
+          ctx.beginPath();
+          ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = p.estimated ? token("--bg-panel") : color;
+          ctx.fill();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          // 峰值读数：贴在标记上方，避免与曲线重叠
+          const label = `${formatHz(p.frequencyHz)} Hz`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "bottom";
+          ctx.fillStyle = token("--text-secondary");
+          ctx.fillText(label, x, Math.max(plotY + 9, y - 6));
+          ctx.textAlign = "left";
         }
       } else {
-        ctx.fillStyle = token("--text-disabled");
-        ctx.font = "13px " + token("--font-ui");
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText("尚无频谱数据", plotX + plotW / 2, plotY + plotH / 2);
+        drawEmpty(ctx, plotX, plotY, plotW, plotH, uiFont, token);
       }
 
-      // ---- cursor ----
+      // ---- 游标 ----
       if (s.cursorHz != null && s.cursorHz >= loHz && s.cursorHz <= hiHz) {
-        const x = hzToX(s.cursorHz);
+        const x = Math.round(hzToX(s.cursorHz)) + 0.5;
         ctx.strokeStyle = token("--cursor");
-        ctx.globalAlpha = 0.55;
+        ctx.globalAlpha = 0.5;
+        ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(x, plotY);
         ctx.lineTo(x, plotY + plotH);
         ctx.stroke();
         ctx.globalAlpha = 1;
+
+        // 光标读数气泡：只显示数字与单位，单位用次级色
+        const text = `${formatHz(s.cursorHz)} Hz`;
+        ctx.font = `10px ${monoFont}`;
+        const tw = ctx.measureText(text).width + 10;
+        const bx = Math.min(Math.max(x - tw / 2, plotX), plotX + plotW - tw);
+        ctx.fillStyle = token("--bg-elevated");
+        ctx.strokeStyle = token("--border-subtle");
+        ctx.beginPath();
+        ctx.roundRect(bx, plotY + 2, tw, 16, 3);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = token("--text-primary");
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, bx + tw / 2, plotY + 10);
       }
 
       // ---- drag selection band ----
@@ -364,6 +410,33 @@ export function SpectrumView({
       <canvas ref={canvasRef} />
     </div>
   );
+}
+
+/**
+ * 空状态：主提示 + 次级原因。
+ *
+ * 只写「尚无数据」是没用的——用户不知道是没打开文件、还是后端出错。
+ * 这里明确说出数据来源，与 M1 的实际能力一致。
+ */
+function drawEmpty(
+  ctx: CanvasRenderingContext2D,
+  plotX: number,
+  plotY: number,
+  plotW: number,
+  plotH: number,
+  uiFont: string,
+  token: (n: string) => string,
+) {
+  const cx = plotX + plotW / 2;
+  const cy = plotY + plotH / 2;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = `13px ${uiFont}`;
+  ctx.fillStyle = token("--text-secondary");
+  ctx.fillText("尚无频谱数据", cx, cy);
+  ctx.font = `11px ${uiFont}`;
+  ctx.fillStyle = token("--text-disabled");
+  ctx.fillText("打开音频文件，或点击检查器里的「生成并分析」", cx, cy + 18);
 }
 
 /** 频率刻度格式化：12000 -> "12k" */

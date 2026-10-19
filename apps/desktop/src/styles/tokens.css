@@ -1,37 +1,54 @@
 /* ============================================================================
  * Auralis Design Tokens
  * ============================================================================
- * 唯一的设计令牌来源（ADR-017）。
+ * 唯一的设计令牌来源（ADR-017）。所有组件只引用令牌，不写死颜色；
+ * Tailwind / 任何 CSS 工具都不得覆盖这里的定义。
  *
- * 取值来自 docs/UI_SPEC.md §2，并延续 M0 egui 版 auralis-ui::theme 中
- * 已评审通过的配色。迁移到 CSS Variables 后，Rust 侧的 Tokens 结构被废弃，
- * 但这些色值本身是沉淀下来的资产。
+ * ## 视觉方向（2026-10 修订）
+ *
+ * M0 的第一版把「深色」直接做成了「接近纯黑」：#101318 的应用底色
+ * 加 #181D25 的面板，两者明度差只有 4%，整屏糊成一整块，看不出层级。
+ * 本版按参考界面（现代开发者工具 / SaaS 深色主题）重做：
+ *
+ *   1. **先定中性色阶，再把原有彩色令牌挂上去。**
+ *      色阶 bg-app < bg-panel < bg-elevated < bg-hover 逐级提亮，
+ *      每一级之间保持可辨识的明度差（约 4–6%），这才是层级的来源。
+ *   2. **彩色令牌语义不变，只做协调。** accent / signal / channel 的色相
+ *      保持 M0 已评审通过的值，避免破坏与声谱图色阶、通道配色的对应关系。
+ *   3. **形状与密度跟进。** 半径 3/4/6 -> 4/6/8，控件 26px 保持紧凑，
+ *      但补上 24/28/30 三档，让工具栏与卡片内控件各有合适尺寸。
  *
  * 规则（ADR-017 §4）：
  *   - 所有组件只引用令牌，不写死颜色
- *   - Tailwind / 任何 CSS 工具都不得覆盖这里的定义
  *   - 数值一律使用 var(--font-mono)，便于对齐比较小数点与位数
  * ========================================================================== */
 
 :root {
   color-scheme: dark;
 
-  /* ---- 背景与层级 ---- */
-  --bg-app: #101318; /* 应用背景 */
-  --bg-panel: #181d25; /* 面板背景 */
-  --bg-elevated: #202733; /* 弹层、悬浮工具栏 */
+  /* ---- 中性色阶（层级来源）---- */
+  --bg-app: #0a0c0f; /* 应用底色：最暗，画布与工作区 */
+  --bg-panel: #121519; /* 卡片 / 面板表面 */
+  --bg-sidebar: #0e1116; /* 侧栏：介于应用底色与面板之间 */
+  --bg-elevated: #191e25; /* 弹层、工具条、卡片头 */
+  --bg-input: #0c0f13; /* 输入框内凹底色 */
+  --bg-hover: #1d232b; /* 悬停态填充 */
+  --bg-active: #232a34; /* 按下 / 选中态填充 */
 
   /* ---- 描边 ---- */
-  --border-subtle: #303946;
-  --border-focus: #2f63a8;
+  --border-subtle: #272d37; /* 卡片与分区描边 */
+  --border-strong: #333b47; /* 强调分隔、输入框悬停 */
+  --border-focus: #3d7ec9; /* 聚焦环 */
 
   /* ---- 文本 ---- */
-  --text-primary: #e7ebf1;
-  --text-secondary: #98a3b3;
-  --text-disabled: #5b6472;
+  --text-primary: #e9edf3;
+  --text-secondary: #9aa5b4;
+  --text-disabled: #5d6675;
 
   /* ---- 强调 ---- */
   --accent-primary: #57a6ff;
+  --accent-hover: #74b6ff;
+  --accent-soft: rgb(87 166 255 / 14%); /* 选中行底色 */
 
   /* ---- 信号状态 ---- */
   --signal-positive: #54d6a0;
@@ -39,12 +56,15 @@
   --signal-critical: #ff657a;
 
   /* ---- 图表 ---- */
-  --grid-major: #262d38;
-  --grid-minor: #1d232c;
-  --axis-line: #3a4353;
-  --axis-label: #98a3b3;
+  --grid-major: #232a34;
+  --grid-minor: #1a2028;
+  --axis-line: #333b47;
+  --axis-label: #8b96a5;
   --cursor: #ffffff;
   --selection-fill: rgb(87 166 255 / 24%);
+  /* 曲线下方渐变填充：从强调色淡出到透明，比单一 alpha 更有体积感 */
+  --trace-fill-top: rgb(87 166 255 / 22%);
+  --trace-fill-bottom: rgb(87 166 255 / 2%);
 
   /* ---- 声道配色（与线型双编码，见 ChannelStyle.ts）---- */
   --channel-0: #57a6ff;
@@ -54,19 +74,31 @@
   --channel-4: #ff8fa3;
   --channel-5: #7fd1d9;
 
-  /* ---- 形状与密度 ---- */
-  --radius-sm: 3px;
-  --radius-md: 4px;
-  --radius-lg: 6px;
+  /* ---- 形状 ---- */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-full: 999px;
 
-  /* 密集测量仪器：控件比常规 Web 产品小一档 */
+  /* ---- 密度 ----
+   * 密集测量仪器：控件比常规 Web 产品小一档，但分三档以便区分层级。
+   * 卡片头与工具栏用 lg，卡片内表单用 md，标签内联按钮用 sm。 */
+  --control-height-lg: 30px;
   --control-height: 26px;
   --control-height-sm: 22px;
-  --panel-padding: 8px;
-  --panel-gap: 4px;
 
-  --top-bar-height: 32px;
-  --status-bar-height: 24px;
+  --panel-padding: 10px;
+  --panel-gap: 6px;
+
+  --top-bar-height: 44px;
+  --status-bar-height: 28px;
+  --sidebar-item-height: 28px;
+  --pane-head-height: 38px;
+
+  /* ---- 阴影 ---- */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 30%);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 35%);
+  --shadow-pop: 0 12px 32px rgb(0 0 0 / 45%);
 
   /* ---- 字体 ---- */
   /* 数值一律等宽，便于对齐比较频率与 dB 的位数和小数点 */
@@ -79,6 +111,11 @@
   --text-base: 12px;
   --text-md: 13px;
   --text-lg: 15px;
+  --text-title: 17px;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
 
   /* ---- dB 显示范围（与 auralis-core::LINEAR_TO_DB_FLOOR 保持一致）---- */
   --min-db: -140;

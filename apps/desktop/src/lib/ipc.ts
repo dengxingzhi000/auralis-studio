@@ -22,6 +22,13 @@ import {
   type SyntheticRequest,
 } from "./contracts";
 
+/**
+ * Rust `Vec<u8>` 在 WebView2 上实测到达的是普通数字数组。
+ * 这里如实描述，避免用 `Uint8Array` 做类型断言而掩盖运行时差异
+ * （那个断言正是「图表全空」这个 bug 的成因）。
+ */
+type RawBytes = number[] | Uint8Array;
+
 /** 取应用与算法版本。 */
 export async function fetchAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("app_info");
@@ -45,8 +52,8 @@ export async function analyzeSynthetic(
   const t0 = performance.now();
   const raw = await invoke<
     Omit<SyntheticAnalysis, "spectrumDb" | "waveformEnvelope"> & {
-      spectrumDb: Uint8Array;
-      waveformEnvelope: Uint8Array;
+      spectrumDb: RawBytes;
+      waveformEnvelope: RawBytes;
     }
   >("analyze_synthetic_signal", {
     frequencyHz: req.frequencyHz,
@@ -113,9 +120,9 @@ export async function analyzeFile(
   const t0 = performance.now();
   const raw = await invoke<
     Omit<FileAnalysis, "waveformEnvelope" | "spectrumDb" | "spectrogramDb"> & {
-      waveformEnvelope: Uint8Array;
-      spectrumDb: Uint8Array;
-      spectrogramDb: Uint8Array;
+      waveformEnvelope: RawBytes;
+      spectrumDb: RawBytes;
+      spectrogramDb: RawBytes;
     }
   >("analyze_file", {
     path,

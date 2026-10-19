@@ -30,7 +30,10 @@ rustfft = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
-tauri-plugin-log = "2"
+# 刻意不使用 tauri-plugin-log：它会在 setup 阶段调用 log::set_boxed_logger，
+# 与 tracing_subscriber 抢同一个全局 logger，导致**打开窗口时 panic**
+# （CLI 子命令不走 run()，所以此前从未暴露）。
+# 日志出口统一由 lib.rs 的 init_tracing() 负责。
 tauri-plugin-dialog = "2"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

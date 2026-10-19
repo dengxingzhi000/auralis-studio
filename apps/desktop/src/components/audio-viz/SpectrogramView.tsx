@@ -20,7 +20,13 @@
  *
  * - 横轴 = 时间，方向向右（与波形一致）
  * - 纵轴 = 频率，**低频在下**（专业音频工具的惯例，与频谱图读数一致）
- * - 颜色 = dB，经 `--dB` 变量定义的 inferno 色阶
+ * - 颜色 = dB，由下方 `INFERNO_STOPS` 定义的 inferno 色阶
+ *
+ * ## 视觉约定（2026-10 样式修订）
+ *
+ * - 时间轴按实际时长标注（µs / ms / s），M1 版标的是 0%/6%/13%… 的百分比，
+ *   读不出任何时间信息
+ * - 右侧 8px 色阶条 + dB 刻度，说明「亮 = 多少 dB」
  */
 
 import { useEffect, useRef } from "react";
@@ -38,7 +44,16 @@ export interface SpectrogramViewProps {
   cursorHz?: number | null;
   /** 奈奎斯特频率 */
   nyquistHz: number;
+  /**
+   * 分析覆盖的总时长，秒。用于时间轴；0 或未提供时退化为「相对时间」刻度。
+   * 由调用方按 Rust 给的 hop 与帧数换算，组件内不做 DSP 推算。
+   */
+  durationSeconds?: number;
 }
+
+const PAD = { left: 50, right: 34, top: 10, bottom: 24 };
+/** 色阶条宽度 */
+const BAR_W = 8;
 
 export function SpectrogramView({
   matrix,
@@ -48,13 +63,32 @@ export function SpectrogramView({
   maxDb,
   cursorHz,
   nyquistHz,
+  durationSeconds = 0,
 }: SpectrogramViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   // 色阶在渲染时从 CSS 变量解析，因此用 ref 传给 effect，
   // 避免把 Color 对象放进依赖数组导致每帧重建
-  const stateRef = useRef({ matrix, width, height, minDb, maxDb, cursorHz, nyquistHz });
-  stateRef.current = { matrix, width, height, minDb, maxDb, cursorHz, nyquistHz };
+  const stateRef = useRef({
+    matrix,
+    width,
+    height,
+    minDb,
+    maxDb,
+    cursorHz,
+    nyquistHz,
+    durationSeconds,
+  });
+  stateRef.current = {
+    matrix,
+    width,
+    height,
+    minDb,
+    maxDb,
+    cursorHz,
+    nyquistHz,
+    durationSeconds,
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -75,17 +109,20 @@ export function SpectrogramView({
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cw, ch);
 
       const css = getComputedStyle(document.documentElement);
       const token = (n: string) => css.getPropertyValue(n).trim();
+      const monoFont = token("--font-mono");
+      const uiFont = token("--font-ui");
 
       ctx.fillStyle = token("--bg-panel");
       ctx.fillRect(0, 0, cw, ch);
 
-      const padL = 46;
-      const padB = 20;
-      const plotW = cw - padL - 10;
-      const plotH = ch - 8 - padB;
+      const plotX = PAD.left;
+      const plotY = PAD.top;
+      const plotW = cw - PAD.left - PAD.right;
+      const plotH = ch - PAD.top - PAD.bottom;
       if (plotW <= 0 || plotH <= 0) return;
 
       const s = stateRef.current;
@@ -117,47 +154,102 @@ export function SpectrogramView({
         off.height = s.height;
         off.getContext("2d")?.putImageData(img, 0, 0);
         ctx.imageSmoothingEnabled = true;
-        ctx.drawImage(off, padL, 8, plotW, plotH);
-      } else {
-        ctx.fillStyle = token("--text-disabled");
-        ctx.font = "13px " + token("--font-ui");
-        ctx.textAlign = "center";
+        ctx.drawImage(off, plotX, plotY, plotW, plotH);
+
+        // ---- 色阶条：说明「亮 = 多少 dB」，否则颜色没有可解释性 ----
+        const barX = plotX + plotW + 10;
+        const barGrad = ctx.createLinearGradient(0, plotY, 0, plotY + plotH);
+        for (let i = 0; i <= 8; i++) {
+          const t = 1 - i / 8;
+          const [r, g, b] = lut[Math.round(t * 255)]!;
+          barGrad.addColorStop(i / 8, `rgb(${r} ${g} ${b})`);
+        }
+        ctx.fillStyle = barGrad;
+        ctx.fillRect(barX, plotY, BAR_W, plotH);
+        ctx.strokeStyle = token("--border-subtle");
+        ctx.strokeRect(barX + 0.5, plotY + 0.5, BAR_W - 1, plotH - 1);
+
+        ctx.fillStyle = token("--axis-label");
+        ctx.font = `10px ${monoFont}`;
+        ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.fillText("尚无声谱图数据", padL + plotW / 2, 8 + plotH / 2);
+        for (let i = 0; i <= 2; i++) {
+          const y = plotY + (plotH * i) / 2;
+          const v = s.maxDb - ((s.maxDb - s.minDb) * i) / 2;
+          ctx.fillText(v.toFixed(0), barX + BAR_W + 3, y);
+        }
+      } else {
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.font = `13px ${uiFont}`;
+        ctx.fillStyle = token("--text-secondary");
+        ctx.fillText("尚无声谱图数据", plotX + plotW / 2, plotY + plotH / 2);
+        ctx.font = `11px ${uiFont}`;
+        ctx.fillStyle = token("--text-disabled");
+        ctx.fillText(
+          "声谱图来自真实文件的 STFT（M3），合成信号没有时域数据",
+          plotX + plotW / 2,
+          plotY + plotH / 2 + 18,
+        );
       }
 
       // ---- 坐标轴 ----
       ctx.strokeStyle = token("--axis-line");
       ctx.lineWidth = 1;
-      ctx.strokeRect(padL + 0.5, 8.5, plotW, plotH);
+      ctx.beginPath();
+      ctx.moveTo(plotX + 0.5, plotY);
+      ctx.lineTo(plotX + 0.5, plotY + plotH + 0.5);
+      ctx.lineTo(plotX + plotW, plotY + plotH + 0.5);
+      ctx.stroke();
 
+      // 频率刻度（低频在下）
       ctx.fillStyle = token("--axis-label");
-      ctx.font = "10px " + token("--font-mono");
+      ctx.font = `10px ${monoFont}`;
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
       for (let i = 0; i <= 4; i++) {
-        const hz = ((s.nyquistHz * (4 - i)) / 4);
-        const y = 8 + (plotH * i) / 4;
-        ctx.fillText(fmtHz(hz), padL - 6, y);
+        const hz = (s.nyquistHz * (4 - i)) / 4;
+        const y = plotY + (plotH * i) / 4;
+        ctx.fillText(fmtHz(hz), plotX - 7, y);
       }
 
+      // 时间刻度：有时长就标真实时间，没有就退回相对位置
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       for (let i = 0; i <= 4; i++) {
-        const x = padL + (plotW * i) / 4;
-        ctx.fillText(`${((i * 25) / 4).toFixed(0)}%`, x, 8 + plotH + 4);
+        const x = plotX + (plotW * i) / 4;
+        const label =
+          s.durationSeconds > 0
+            ? formatTime((s.durationSeconds * i) / 4)
+            : `${((i * 25) / 4).toFixed(0)}%`;
+        ctx.fillText(label, x, plotY + plotH + 6);
       }
 
       // ---- 频率游标 ----
       if (s.cursorHz != null && s.cursorHz >= 0 && s.cursorHz <= s.nyquistHz) {
-        const y = 8 + plotH * (1 - s.cursorHz / s.nyquistHz);
+        const y = plotY + plotH * (1 - s.cursorHz / s.nyquistHz);
         ctx.strokeStyle = token("--cursor");
         ctx.globalAlpha = 0.55;
         ctx.beginPath();
-        ctx.moveTo(padL, y);
-        ctx.lineTo(padL + plotW, y);
+        ctx.moveTo(plotX, y);
+        ctx.lineTo(plotX + plotW, y);
         ctx.stroke();
         ctx.globalAlpha = 1;
+
+        // 游标读数：贴在左侧刻度上，避免遮挡频谱内容
+        const text = `${fmtHz(s.cursorHz)} Hz`;
+        ctx.font = `10px ${monoFont}`;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        const tw = ctx.measureText(text).width + 8;
+        ctx.fillStyle = token("--bg-elevated");
+        ctx.strokeStyle = token("--border-subtle");
+        ctx.beginPath();
+        ctx.roundRect(plotX + 4, y - 8, tw, 16, 3);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = token("--text-primary");
+        ctx.fillText(text, plotX + 8, y);
       }
     };
 
@@ -165,7 +257,16 @@ export function SpectrogramView({
     const ro = new ResizeObserver(draw);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [matrix, width, height, minDb, maxDb, cursorHz, nyquistHz]);
+  }, [
+    matrix,
+    width,
+    height,
+    minDb,
+    maxDb,
+    cursorHz,
+    nyquistHz,
+    durationSeconds,
+  ]);
 
   return (
     <div ref={wrapRef} className="viz-canvas">
@@ -177,6 +278,18 @@ export function SpectrogramView({
 function fmtHz(hz: number): string {
   if (hz >= 1000) return `${(hz / 1000).toFixed(1)}k`;
   return hz.toFixed(0);
+}
+
+/** 与 WaveformView 同一套时间格式：按量级选单位，避免满屏 "0:00.000"。 */
+function formatTime(sec: number): string {
+  if (sec === 0) return "0";
+  const abs = Math.abs(sec);
+  if (abs < 0.001) return `${(sec * 1e6).toFixed(0)} µs`;
+  if (abs < 1) return `${(sec * 1e3).toFixed(abs < 0.01 ? 1 : 0)} ms`;
+  if (abs < 60) return `${sec.toFixed(abs < 10 ? 2 : 1)} s`;
+  const m = Math.floor(sec / 60);
+  const s = sec - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
 }
 
 /**
