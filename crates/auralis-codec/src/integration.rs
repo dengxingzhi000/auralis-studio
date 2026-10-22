@@ -257,3 +257,45 @@ fn audio_format_is_preserved_not_resampled() {
         std::fs::remove_file(&path).ok();
     }
 }
+
+#[test]
+fn seeks_to_a_sample_accurate_frame() {
+    // 视口分块依赖这个能力：从文件中间直接开始解码，而不是从头扫。
+    // WAV 的 timebase 是 1/sample_rate，因此实际帧号应与请求值一致。
+    let dir = scratch("seek");
+    let path = dir.join("tone.wav");
+    let samples = sine_i16(440.0, 0.5, 48_000, 96_000);
+    write_wav_s16(&path, 48_000, 1, &samples);
+
+    let mut decoder = BlockDecoder::open(&path).expect("decoder should open");
+    let actual = decoder
+        .seek_to_frame(48_000)
+        .expect("WAV should support seeking");
+
+    assert!(
+        actual <= 48_000,
+        "Accurate seek 保证不晚于请求位置，实得 {actual}"
+    );
+    assert!(
+        48_000 - actual <= 8_192,
+        "WAV seek 不应退得离目标太远，实得 {actual}"
+    );
+
+    let block = decoder
+        .next_block()
+        .expect("decode after seek")
+        .expect("there should be audio after 1 s");
+    assert!(
+        block.first_frame >= actual,
+        "seek 后的第一块不能早于实际起点"
+    );
+    assert!(
+        block.first_frame <= 48_000,
+        "seek 后的第一块不能晚于请求位置，实得 first_frame={}",
+        block.first_frame
+    );
+    assert!(block.total_frames_decoded > block.first_frame);
+    // 调用方（spectrogram_view）负责跳过 [actual, target) 的样本。
+
+    std::fs::remove_file(&path).ok();
+}

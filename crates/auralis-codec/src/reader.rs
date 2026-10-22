@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 
 use auralis_core::{AudioFormat, PcmBlock};
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
-use symphonia::core::formats::{FormatReader, TrackType};
+use symphonia::core::formats::{FormatReader, SeekMode, SeekTo, TrackType};
+use symphonia::core::units::{Time, TimeBase};
 
 use crate::error::{CodecError, Result, map_symphonia};
 use crate::info::open_format;
@@ -50,6 +51,8 @@ pub struct BlockDecoder {
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
     format_info: AudioFormat,
+    /// 音轨时间基；用于把 seek 返回的时间戳换算回帧号。
+    time_base: Option<TimeBase>,
     /// 已解码的总帧数。
     frames_decoded: u64,
     finished: bool,
@@ -69,6 +72,7 @@ impl BlockDecoder {
             })?
             .clone();
         let track_id = track.id;
+        let time_base = track.time_base;
 
         // Bind the params before the decoder consumes them; `make_audio_decoder`
         // takes a reference, so clone first to avoid a partial move.
@@ -100,6 +104,7 @@ impl BlockDecoder {
             decoder,
             track_id,
             format_info,
+            time_base,
             frames_decoded: 0,
             finished: false,
         })
@@ -121,6 +126,47 @@ impl BlockDecoder {
     #[must_use]
     pub const fn is_finished(&self) -> bool {
         self.finished
+    }
+
+    /// 定位到指定帧（样本精确，尽力而为）。
+    ///
+    /// 返回**实际**定位到的帧号：`Accurate` 模式保证不晚于请求位置，
+    /// 但容器/编码器可能只能退到更早的包边界。调用方应把返回值当作
+    /// 真实起点，并从该位置继续解码。
+    ///
+    /// 这不是「跳表」：seek 之后仍需逐包解码。它的价值是把
+    /// 「从文件开头解码到 3 小时处」变成「从目标附近开始解码」。
+    ///
+    /// # Errors
+    /// 容器不支持 seek、目标超出范围，或底层读取失败。
+    pub fn seek_to_frame(&mut self, target_frame: u64) -> Result<u64> {
+        let sample_rate = self.format_info.sample_rate.get();
+        let seconds = target_frame as f64 / f64::from(sample_rate);
+        let time = Time::try_from_secs_f64(seconds).ok_or_else(|| {
+            CodecError::InvalidParameters(format!("seek target {seconds}s is not representable"))
+        })?;
+
+        let seeked = map_symphonia(self.format.seek(
+            SeekMode::Accurate,
+            SeekTo::Time {
+                time,
+                track_id: Some(self.track_id),
+            },
+        ))?;
+
+        self.decoder.reset();
+
+        // 把实际定位到的时间戳换算成帧号。时间基缺失时退回到请求值：
+        // 这只是显示用的起点，不影响解码本身。
+        let actual_seconds = self
+            .time_base
+            .and_then(|tb| tb.calc_time(seeked.actual_ts))
+            .map_or(seconds, |t| t.as_secs_f64().max(0.0));
+        let actual_frame = (actual_seconds * f64::from(sample_rate)).round() as u64;
+
+        self.frames_decoded = actual_frame;
+        self.finished = false;
+        Ok(actual_frame)
     }
 
     /// 解码下一块。返回 `Ok(None)` 表示已到末尾。
