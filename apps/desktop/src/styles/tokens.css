@@ -49,11 +49,24 @@
   --accent-primary: #57a6ff;
   --accent-hover: #74b6ff;
   --accent-soft: rgb(87 166 255 / 14%); /* 选中行底色 */
+  /* 以下三个是 accent 与黑/白混合后的**预计算值**。
+     M1 版用 color-mix() 现算，但那需要 Chrome 111+，与
+     `build.target: "chrome110"` 冲突（见 vite.config.ts）。
+     令牌层面算好就没有这个下限问题，也少一次运行时颜色解析。 */
+  --accent-border-strong: #3d74b3; /* accent 70% + black */
+  --accent-pressed: #4788d1; /* accent 82% + black */
 
   /* ---- 信号状态 ---- */
   --signal-positive: #54d6a0;
   --signal-warning: #f2b75b;
   --signal-critical: #ff657a;
+  --signal-critical-border: rgb(255 101 122 / 45%);
+  --signal-critical-surface: #2e1f25; /* critical 12% over bg-panel */
+
+  /* ---- 表面提亮（按钮/卡片顶部的 1px 渐变高光）---- */
+  --btn-top: #272c32; /* bg-elevated + 6% white */
+  --btn-top-strong: #2e3036; /* bg-elevated + 8% white */
+  --bg-note: #161a20; /* bg-elevated 60% + bg-panel 40% */
 
   /* ---- 图表 ---- */
   --grid-major: #232a34;

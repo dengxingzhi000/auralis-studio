@@ -38,3 +38,5 @@ desktop.ini
 
 # 运行期产物
 *.log
+# 本地预览 / 截图辅助（.devrun 不入库）
+/.devrun/

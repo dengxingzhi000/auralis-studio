@@ -181,6 +181,13 @@ export interface FileAnalysis {
   /** FFT size used, so results are reproducible (DSP_SPEC 9) */
   fftSize: number;
   window: string;
+  /**
+   * Task id the caller supplied when starting the analysis.
+   *
+   * Same value that `cancelTask()` accepts, so the UI can cancel a run that
+   * has not returned yet.
+   */
+  taskId: number;
   outcome: AnalysisOutcome;
 }
 
@@ -201,4 +208,44 @@ export interface PeakInfo {
   scallopingDb: number;
   /** true when the reading should be shown as an estimate, not a precise number */
   estimated: boolean;
+}
+
+/* ============================================================
+ * M4: realtime capture
+ * ============================================================ */
+
+/** An input device reported by the OS. */
+export interface DeviceInfo {
+  id: string;
+  name: string;
+  /** empty when the driver does not report its rates */
+  supportedSampleRates: number[];
+  inputChannels: number;
+}
+
+/** Capture status. */
+export interface CaptureStatus {
+  running: boolean;
+  sampleRate: number;
+  channels: number;
+  /** frames dropped because the analyser could not keep up */
+  droppedFrames: number;
+  /** snapshots overwritten because the UI could not keep up */
+  snapshotOverwrites: number;
+  processedFrames: number;
+}
+
+/** Latest realtime analysis snapshot. */
+export interface RealtimeSnapshot {
+  /** dB values, already downsampled to the target width (little-endian f32 bytes on the wire) */
+  spectrumDb: Float32Array;
+  binHz: number;
+  /** capture sample rate, Hz — the frequency axis needs it */
+  sampleRate: number;
+  /** null = silence (true -inf, not a clamped number) */
+  peakDbfs: number | null;
+  rmsDbfs: number | null;
+  processedFrames: number;
+  droppedFrames: number;
+  snapshotOverwrites: number;
 }

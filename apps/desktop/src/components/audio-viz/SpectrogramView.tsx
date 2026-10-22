@@ -126,32 +126,41 @@ export function SpectrogramView({
       if (plotW <= 0 || plotH <= 0) return;
 
       const s = stateRef.current;
+      // 数据契约（与 auralis-dsp::Stft::to_matrix 一致）：
+      //   matrix[row * bins + col]，row = 时间帧（0 在最左），col = 频率 bin（0 为 DC）
+      // 因此步长是**频率格数**，不是时间格数。M1 版按「[频率][时间] 且步长 = width」
+      // 读取，把 1024×512 的矩阵读成了错位数据 —— 屏幕上看到的是一列列竖条纹，
+      // 而不是 1 kHz 处的一条水平亮线。
+      const bins = s.height;
+      const frames = s.width;
+      const matrix = s.matrix;
+      const hasMatrix =
+        matrix != null && frames > 0 && bins > 0 && matrix.length >= frames * bins;
 
-      if (s.matrix && s.width > 0 && s.height > 0) {
+      if (hasMatrix) {
         // 把矩阵渲染到离屏 ImageData，再一次性 drawImage 缩放到绘图区。
         // 直接对主画布逐像素填充会按设备像素率放大 4 倍开销。
-        const img = new ImageData(s.width, s.height);
+        const img = new ImageData(frames, bins);
         const lut = infernoLut();
         const span = Math.max(1e-6, s.maxDb - s.minDb);
 
-        for (let y = 0; y < s.height; y++) {
-          // 低频在下：翻转行序
-          const srcRow = s.height - 1 - y;
-          for (let x = 0; x < s.width; x++) {
-            const v = s.matrix[srcRow * s.width + x] ?? s.minDb;
-            const t = Math.min(1, Math.max(0, (v - s.minDb) / span));
-            const [r, g, b] = lut[Math.round(t * 255)]!;
-            const o = (y * s.width + x) * 4;
+        for (let t = 0; t < frames; t++) {
+          for (let b = 0; b < bins; b++) {
+            const v = matrix[t * bins + b]!;
+            const u = Math.min(1, Math.max(0, (v - s.minDb) / span));
+            const [r, g, bl] = lut[Math.round(u * 255)]!;
+            // 低频在下：频率 bin 翻转成图像行
+            const o = ((bins - 1 - b) * frames + t) * 4;
             img.data[o] = r;
             img.data[o + 1] = g;
-            img.data[o + 2] = b;
+            img.data[o + 2] = bl;
             img.data[o + 3] = 255;
           }
         }
 
         const off = document.createElement("canvas");
-        off.width = s.width;
-        off.height = s.height;
+        off.width = frames;
+        off.height = bins;
         off.getContext("2d")?.putImageData(img, 0, 0);
         ctx.imageSmoothingEnabled = true;
         ctx.drawImage(off, plotX, plotY, plotW, plotH);
@@ -213,16 +222,21 @@ export function SpectrogramView({
         ctx.fillText(fmtHz(hz), plotX - 7, y);
       }
 
-      // 时间刻度：有时长就标真实时间，没有就退回相对位置
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      for (let i = 0; i <= 4; i++) {
-        const x = plotX + (plotW * i) / 4;
-        const label =
-          s.durationSeconds > 0
-            ? formatTime((s.durationSeconds * i) / 4)
-            : `${((i * 25) / 4).toFixed(0)}%`;
-        ctx.fillText(label, x, plotY + plotH + 6);
+      // 时间刻度：只有真的有声谱图数据时才标时间。
+      // 无数据时标一串时间码会让人以为那块区域有内容。
+      if (s.matrix && s.width > 0 && s.height > 0) {
+        ctx.fillStyle = token("--axis-label");
+        ctx.font = `10px ${monoFont}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        for (let i = 0; i <= 4; i++) {
+          const x = plotX + (plotW * i) / 4;
+          const label =
+            s.durationSeconds > 0
+              ? formatTime((s.durationSeconds * i) / 4)
+              : `${((i * 25) / 4).toFixed(0)}%`;
+          ctx.fillText(label, x, plotY + plotH + 6);
+        }
       }
 
       // ---- 频率游标 ----

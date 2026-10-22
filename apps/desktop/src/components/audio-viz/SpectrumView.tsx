@@ -50,6 +50,13 @@ export interface SpectrumViewProps {
   onViewRangeChange?: (r: [number, number]) => void;
   /** called on hover with the frequency under the cursor, or null on leave */
   onHoverHz?: (hz: number | null) => void;
+  /**
+   * 渲染形态：`area` = 曲线 + 渐变填充；`line` = 只画曲线（"声线"）。
+   *
+   * 线模式在密集频谱上更易读：填充会把窄峰之间的低电平区域也染上颜色，
+   * 掩盖 -100 dB 以下的细节。
+   */
+  mode?: "area" | "line";
 }
 
 const PAD = { left: 46, right: 12, top: 10, bottom: 24 };
@@ -69,13 +76,34 @@ export function SpectrumView({
   viewRange,
   onViewRangeChange,
   onHoverHz,
+  mode = "area",
 }: SpectrumViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ x0: number; x1: number } | null>(null);
 
-  const stateRef = useRef({ db, stepHz, sampleRate, minDb, maxDb, cursorHz, peaks, viewRange });
-  stateRef.current = { db, stepHz, sampleRate, minDb, maxDb, cursorHz, peaks, viewRange };
+  const stateRef = useRef({
+    db,
+    stepHz,
+    sampleRate,
+    minDb,
+    maxDb,
+    cursorHz,
+    peaks,
+    viewRange,
+    mode,
+  });
+  stateRef.current = {
+    db,
+    stepHz,
+    sampleRate,
+    minDb,
+    maxDb,
+    cursorHz,
+    peaks,
+    viewRange,
+    mode,
+  };
 
   /** 像素 x -> 频率 Hz（需要绘图区几何，故从 DOM 读） */
   const xToHz = useCallback((clientX: number, el: HTMLElement) => {
@@ -216,17 +244,20 @@ export function SpectrumView({
           const first = pts[0]!;
           const last = pts[pts.length - 1]!;
 
-          // 曲线下方渐变填充：给曲线体积感，但不喧宾夺主
-          const grad = ctx.createLinearGradient(0, plotY, 0, plotY + plotH);
-          grad.addColorStop(0, token("--trace-fill-top"));
-          grad.addColorStop(1, token("--trace-fill-bottom"));
-          ctx.beginPath();
-          ctx.moveTo(first.x, plotY + plotH);
-          for (const p of pts) ctx.lineTo(p.x, p.y);
-          ctx.lineTo(last.x, plotY + plotH);
-          ctx.closePath();
-          ctx.fillStyle = grad;
-          ctx.fill();
+          // 曲线下方渐变填充：给曲线体积感，但不喧宾夺主。
+          // line 模式刻意不填充——密集频谱上填充会盖住 -100 dB 以下的细节。
+          if (s.mode === "area") {
+            const grad = ctx.createLinearGradient(0, plotY, 0, plotY + plotH);
+            grad.addColorStop(0, token("--trace-fill-top"));
+            grad.addColorStop(1, token("--trace-fill-bottom"));
+            ctx.beginPath();
+            ctx.moveTo(first.x, plotY + plotH);
+            for (const p of pts) ctx.lineTo(p.x, p.y);
+            ctx.lineTo(last.x, plotY + plotH);
+            ctx.closePath();
+            ctx.fillStyle = grad;
+            ctx.fill();
+          }
 
           // 曲线本体：外发光一层 + 实线一层，1.4px 在深色底上偏细
           ctx.lineJoin = "round";
@@ -325,7 +356,7 @@ export function SpectrumView({
     const ro = new ResizeObserver(draw);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [db, stepHz, sampleRate, minDb, maxDb, cursorHz, peaks, viewRange]);
+  }, [db, stepHz, sampleRate, minDb, maxDb, cursorHz, peaks, viewRange, mode]);
 
   const onDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();

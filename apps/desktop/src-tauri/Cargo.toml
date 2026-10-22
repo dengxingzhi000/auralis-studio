@@ -21,9 +21,11 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+auralis-audio = { workspace = true }
 auralis-codec = { workspace = true }
 auralis-core = { workspace = true }
 auralis-dsp = { workspace = true }
+auralis-storage = { workspace = true }
 auralis-task = { workspace = true }
 auralis-visualization = { workspace = true }
 rustfft = { workspace = true }

@@ -38,6 +38,25 @@ impl AppState {
         }
     }
 
+    /// 用**调用方提供的** ID 注册令牌；ID 已被占用时返回 `false`。
+    ///
+    /// 为什么允许前端指定 ID：`analyze_file` 只能在**返回时**告诉前端任务号，
+    /// 而取消要发生在运行期间。由前端先分配 ID 再发起分析，才可能在中途取消；
+    /// 否则 `cancel_task` 永远只能取消一个已经结束的任务，等于没有取消能力。
+    /// 重复 ID 会被拒绝，避免两个任务共用一个取消令牌。
+    pub fn try_register_token(&self, id: u64, token: CancelToken) -> bool {
+        match self.tokens.lock() {
+            Ok(mut m) => match m.entry(id) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(token);
+                    true
+                }
+                std::collections::hash_map::Entry::Occupied(_) => false,
+            },
+            Err(_) => false,
+        }
+    }
+
     /// 注销令牌。任务结束时必须调用，否则注册表会无限增长。
     pub fn unregister_token(&self, id: u64) {
         if let Ok(mut m) = self.tokens.lock() {
@@ -104,5 +123,21 @@ mod tests {
         assert_eq!(s.registered_count(), 0, "注销后注册表不应增长");
         assert!(!s.cancel(id));
         assert!(!t.is_cancelled());
+    }
+
+    #[test]
+    fn caller_supplied_ids_must_be_unique() {
+        let s = AppState::new();
+        let t1 = CancelToken::new();
+        assert!(s.try_register_token(7, t1.clone()), "首次注册应成功");
+        let t2 = CancelToken::new();
+        assert!(
+            !s.try_register_token(7, t2.clone()),
+            "重复 ID 必须被拒绝，否则两个任务共用令牌"
+        );
+        // 被拒绝的那次不能覆盖已注册的令牌
+        assert!(s.cancel(7));
+        assert!(t1.is_cancelled());
+        assert!(!t2.is_cancelled());
     }
 }

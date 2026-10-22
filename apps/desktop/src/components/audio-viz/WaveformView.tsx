@@ -27,6 +27,11 @@ export interface WaveformViewProps {
    * 由 Rust 侧给出（FileInfo.durationSeconds），前端不做解码推算。
    */
   durationSeconds?: number | null;
+  /**
+   * 多声道排布：`lanes` = 每声道一条独立轨道；`overlay` = 叠加在同一条
+   * 轨道上（UI_SPEC §4 的「通道叠加」，便于看声道差异与相位问题）。
+   */
+  layout?: "lanes" | "overlay";
 }
 
 const PAD = { left: 50, right: 12, top: 10, bottom: 24 };
@@ -36,6 +41,7 @@ export function WaveformView({
   sampleRate,
   channels,
   durationSeconds = null,
+  layout = "lanes",
 }: WaveformViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -44,8 +50,9 @@ export function WaveformView({
     sampleRate,
     channels,
     durationSeconds,
+    layout,
   });
-  stateRef.current = { envelope, sampleRate, channels, durationSeconds };
+  stateRef.current = { envelope, sampleRate, channels, durationSeconds, layout };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -86,14 +93,19 @@ export function WaveformView({
 
       // ---- 声道分隔线 + 零线 ----
       const chCount = Math.max(1, s.channels);
-      const laneH = plotH / chCount;
+      const overlay = s.layout === "overlay" && chCount > 1;
+      // 叠加模式只有一条轨道；分道模式每声道一条
+      const lanes = overlay ? 1 : chCount;
+      const laneH = plotH / lanes;
+      const laneTop = (ch: number) => plotY + laneH * (overlay ? 0 : ch);
+      const laneCenter = (ch: number) => laneTop(ch) + laneH / 2;
 
       ctx.lineWidth = 1;
       ctx.font = `10px ${monoFont}`;
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
 
-      for (let ch = 0; ch < chCount; ch++) {
+      for (let ch = 0; ch < lanes; ch++) {
         const top = Math.round(plotY + laneH * ch) + 0.5;
         const baseY = Math.round(plotY + laneH * ch + laneH / 2) + 0.5;
 
@@ -113,8 +125,8 @@ export function WaveformView({
         ctx.lineTo(plotX + plotW, baseY);
         ctx.stroke();
 
-        // 幅值刻度：只在单声道时标注，多声道时标注会互相挤压
-        if (chCount === 1) {
+        // 幅值刻度：单轨时标注；分道时用声道名
+        if (lanes === 1) {
           ctx.fillStyle = token("--axis-label");
           for (const v of [1, -1]) {
             const y = Math.round(plotY + ((1 - v) / 2) * plotH) + 0.5;
@@ -146,36 +158,86 @@ export function WaveformView({
       if (s.envelope && s.envelope.length > 1) {
         const n = s.envelope.length;
 
-        // ---- 包络：逐声道 min/max 竖线 ----
-        // 点数通常远多于像素宽度，按列聚合而不是逐点连线：
-        // 逐点连线在 2000 点上会出现摩尔纹，且丢掉极值。
+        // ---- 包络 ----
+        // 采样点与像素是两种密度，必须分开处理：
+        //   · 每像素 ≥4 个样本 -> 按列聚合 min/max，画出竖线带
+        //   · 否则（合成信号这种短片段）-> 直接连线，避免出现摩尔纹
+        // M1 版只做逐点连线：2000 点在宽画布上看着还行，但在噪声上会糊成
+        // 一片，而且丢掉极值；反过来一味按列聚合又会让低频信号变成梳齿。
         for (let ch = 0; ch < chCount; ch++) {
-          const baseY = plotY + laneH * ch + laneH / 2;
+          const baseY = laneCenter(ch);
           const half = (laneH / 2) * 0.92;
           const color = token(`--channel-${ch % 6}`);
+          const samplesPerCol = n / Math.max(1, plotW);
 
-          ctx.strokeStyle = color;
-          ctx.globalAlpha = 0.85;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          const cols = Math.max(1, Math.floor(plotW));
-          for (let c = 0; c < cols; c++) {
-            const i0 = Math.floor((c * n) / cols);
-            const i1 = Math.max(i0 + 1, Math.floor(((c + 1) * n) / cols));
-            let lo = Infinity;
-            let hi = -Infinity;
-            for (let i = i0; i < i1 && i < n; i++) {
-              const v = s.envelope[i]!;
-              if (v < lo) lo = v;
-              if (v > hi) hi = v;
+          if (samplesPerCol >= 4) {
+            // 密集：逐列 min/max 竖线带
+            ctx.strokeStyle = color;
+            // 叠加模式下两条波形会互相覆盖，降低不透明度才看得出重叠
+            ctx.globalAlpha = overlay ? 0.72 : 0.9;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            const cols = Math.max(1, Math.floor(plotW));
+            for (let c = 0; c < cols; c++) {
+              const i0 = Math.min(n - 1, Math.floor((c * n) / cols));
+              const i1 = Math.min(n, Math.max(i0 + 1, Math.floor(((c + 1) * n) / cols)));
+              let lo = Infinity;
+              let hi = -Infinity;
+              for (let i = i0; i < i1; i++) {
+                const v = s.envelope[i]!;
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+              }
+              if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
+              const x = Math.round(plotX + c) + 0.5;
+              ctx.moveTo(x, baseY - Math.min(1, hi) * half);
+              ctx.lineTo(x, baseY - Math.max(-1, lo) * half);
             }
-            if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
-            const x = Math.round(plotX + c) + 0.5;
-            ctx.moveTo(x, baseY - Math.min(1, hi) * half);
-            ctx.lineTo(x, baseY - Math.max(-1, lo) * half);
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+          } else {
+            // 稀疏：逐点连线。单声道时额外加一层渐变填充，
+            // 与频谱曲线的视觉语言保持一致。
+            ctx.beginPath();
+            for (let i = 0; i < n; i++) {
+              const v = s.envelope[i]!;
+              const x = plotX + (i / (n - 1)) * plotW;
+              const y = baseY - Math.max(-1, Math.min(1, v)) * half;
+              if (i === 0) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            }
+
+            // 只有「单声道且不叠加」时才填充：叠加两条曲线各填一次会把
+            // 下层完全盖住，反而看不出差异。
+            if (lanes === 1 && chCount === 1) {
+              const grad = ctx.createLinearGradient(0, baseY - half, 0, baseY + half);
+              grad.addColorStop(0, token("--trace-fill-top"));
+              grad.addColorStop(0.5, token("--trace-fill-bottom"));
+              grad.addColorStop(1, token("--trace-fill-top"));
+              ctx.save();
+              ctx.lineTo(plotX + plotW, baseY);
+              ctx.lineTo(plotX, baseY);
+              ctx.closePath();
+              ctx.fillStyle = grad;
+              ctx.fill();
+              ctx.restore();
+
+              // 重画描边：fill 之后路径已被 closePath 污染
+              ctx.beginPath();
+              for (let i = 0; i < n; i++) {
+                const v = s.envelope[i]!;
+                const x = plotX + (i / (n - 1)) * plotW;
+                const y = baseY - Math.max(-1, Math.min(1, v)) * half;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+              }
+            }
+
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.2;
+            ctx.lineJoin = "round";
+            ctx.stroke();
           }
-          ctx.stroke();
-          ctx.globalAlpha = 1;
         }
 
         // ---- 时间刻度 ----
@@ -212,7 +274,7 @@ export function WaveformView({
     const ro = new ResizeObserver(draw);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [envelope, sampleRate, channels, durationSeconds]);
+  }, [envelope, sampleRate, channels, durationSeconds, layout]);
 
   return (
     <div ref={wrapRef} className="viz-canvas">

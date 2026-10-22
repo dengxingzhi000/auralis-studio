@@ -1,9 +1,9 @@
 /**
  * App —— Auralis Studio 主界面。
  *
- * M1 的范围：**打通 IPC 通路并压测**，不做任何真实音频分析。
- * 界面上用合成信号驱动频谱与波形，验证
- * 「Rust 计算 -> 二进制 IPC -> Canvas 渲染」整条链路（ADR-018）。
+ * 责任划分：Rust 做全部音频计算，前端只做展示与任务状态（ADR-018 规则 1）。
+ * 文件分析是**可取消**的长任务：任务号由前端分配，运行中可用 Esc 或状态栏
+ * 的「取消」按钮中止；取消不算失败，也不会清掉已有结果。
  *
  * 未实现的入口（实时采集、导出、其他分析视图）一律禁用并标注目标里程碑，
  * 避免做成「看起来能用但其实没功能」的样子。
@@ -13,30 +13,42 @@
  *   ┌ 顶栏：品牌 + 全局动作 ─────────────────────────────┐
  *   ├ 侧栏 ┬ 中央画布（卡片堆叠） ┬ 检查器 ──────────────┤
  *   └ 状态栏：设备 / 采样率 / 端到端 / 载荷 ─────────────┘
- *
- * 侧栏是**导航式**的：文件列表 + 未实现的视图入口（禁用并标里程碑），
- * 与参考界面一致；不再把「实时输入 / 分析任务」当纯文本堆在底部。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 import { Workspace } from "@/layouts/Workspace";
 import {
   analyzeFile,
   analyzeSynthetic,
+  cancelTask,
+  exportAnalysis,
   fetchAppInfo,
+  isAudioPath,
   pickAudioFile,
+  pickExportDestination,
   probeFile,
 } from "@/lib/ipc";
 import type {
   AppInfo,
   FileInfo,
   PeakInfo,
+  RealtimeSnapshot,
   SyntheticRequest,
 } from "@/lib/contracts";
+import { LevelMeter } from "@/components/audio-viz/LevelMeter";
+import { RealtimePanel } from "@/components/audio-viz/RealtimePanel";
 import { SpectrumView } from "@/components/audio-viz/SpectrumView";
 import { SpectrogramView } from "@/components/audio-viz/SpectrogramView";
 import { WaveformView } from "@/components/audio-viz/WaveformView";
+import {
+  asBoolean,
+  asNumberInRange,
+  readStoredJson,
+  writeStoredJson,
+} from "@/lib/persist";
 import {
   Button,
   Checkbox,
@@ -65,6 +77,18 @@ import {
 
 const MIN_DB = -140;
 const MAX_DB = 0;
+
+/** 面板可见性的持久化键。 */
+const VISIBILITY_KEY = "auralis.workspace.visibility.v1";
+
+/** 校验存下来的可见性；任何字段损坏都整条丢弃，回到默认值。 */
+function readVisibility(v: unknown): { left: boolean; right: boolean } | null {
+  if (typeof v !== "object" || v === null) return null;
+  const rec = v as Record<string, unknown>;
+  const left = asBoolean(rec.left);
+  const right = asBoolean(rec.right);
+  return left != null && right != null ? { left, right } : null;
+}
 
 const DEFAULTS: SyntheticRequest = {
   frequencyHz: 1000,
@@ -96,6 +120,57 @@ interface DisplayData {
   spectrogramFrames: number;
   spectrogramBins: number;
   spectrogramHopMs: number;
+  /** 每声道峰值 dBFS；空数组表示未提供（合成信号没有声道概念） */
+  peakPerChannel: (number | null)[];
+  /** 超过满刻度的样本数（|x| > 1）。> 0 时电平表显示削波警示 */
+  overFullScaleSamples: number;
+  /** 削波平顶片段数（启发式，不是模拟削波的证据） */
+  clippingRegions: number;
+  /** 被清理的非有限样本数（NaN / Inf） */
+  sanitizedSamples: number;
+}
+
+/** 频谱显示模式：填充（面积）或仅曲线。 */
+type SpectrumMode = "area" | "line";
+
+/** 多声道波形的排布：分道 / 叠加。 */
+type ChannelLayout = "lanes" | "overlay";
+
+/** dB 量程预设。 */
+const DB_RANGES = [
+  { label: "全量程 −140…0", min: MIN_DB, max: MAX_DB },
+  { label: "常用 −100…0", min: -100, max: MAX_DB },
+  { label: "细节 −80…−10", min: -80, max: -10 },
+  { label: "底噪 −140…−40", min: MIN_DB, max: -40 },
+] as const;
+
+const DISPLAY_KEY = "auralis.display.v1";
+
+/** 显示偏好。字段缺一个就整条丢弃，回到默认值（不猜用户意图）。 */
+interface DisplayPrefs {
+  mode: SpectrumMode;
+  dbRange: number;
+  channelLayout: ChannelLayout;
+}
+
+function readDisplayPrefs(v: unknown): DisplayPrefs | null {
+  if (typeof v !== "object" || v === null) return null;
+  const rec = v as Record<string, unknown>;
+  const mode = rec.mode === "line" || rec.mode === "area" ? rec.mode : null;
+  const dbRange = asNumberInRange(rec.dbRange, 0, DB_RANGES.length - 1);
+  const channelLayout =
+    rec.channelLayout === "lanes" || rec.channelLayout === "overlay"
+      ? rec.channelLayout
+      : null;
+  return mode != null && dbRange != null && channelLayout != null
+    ? { mode, dbRange, channelLayout }
+    : null;
+}
+
+/** 正在进行、可取消的文件分析。`null` = 没有在跑的文件任务。 */
+interface ActiveTask {
+  id: number;
+  label: string;
 }
 
 export default function App() {
@@ -103,16 +178,57 @@ export default function App() {
   const [req, setReq] = useState<SyntheticRequest>(DEFAULTS);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<UiError | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [cursorHz, setCursorHz] = useState<number | null>(null);
   const [viewRange, setViewRange] = useState<[number, number] | null>(null);
-  const [showLeft, setShowLeft] = useState(true);
-  const [showRight, setShowRight] = useState(true);
+  // 面板可见性也持久化：一上来就隐藏资源栏的人，不希望每次启动都重新勾一遍
+  const [showLeft, setShowLeft] = useState(
+    () => readStoredJson(VISIBILITY_KEY, readVisibility)?.left ?? true,
+  );
+  const [showRight, setShowRight] = useState(
+    () => readStoredJson(VISIBILITY_KEY, readVisibility)?.right ?? true,
+  );
   const spectrumRef = useRef<HTMLDivElement>(null);
+  /** 任务号由前端分配：见 AppState::try_register_token 的说明 */
+  const taskSeq = useRef(0);
+  const [activeTask, setActiveTask] = useState<ActiveTask | null>(null);
+  /** 上一个成功 probe 的路径，供「重试」使用 */
+  const lastPathRef = useRef<string | null>(null);
+
+  // ---- 显示偏好（持久化）----
+  const storedDisplay = useRef(readStoredJson(DISPLAY_KEY, readDisplayPrefs))
+    .current;
+  const [spectrumMode, setSpectrumMode] = useState<SpectrumMode>(
+    storedDisplay?.mode ?? "area",
+  );
+  const [dbRangeIdx, setDbRangeIdx] = useState(storedDisplay?.dbRange ?? 0);
+  const [channelLayout, setChannelLayout] = useState<ChannelLayout>(
+    storedDisplay?.channelLayout ?? "lanes",
+  );
 
   // ---- 真实文件 ----
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [selected, setSelected] = useState<FileInfo | null>(null);
   const [display, setDisplay] = useState<DisplayData | null>(null);
+
+  // ---- 实时采集（M4）----
+  const [livePeak, setLivePeak] = useState<number | null>(null);
+  const [liveRms, setLiveRms] = useState<number | null>(null);
+  const [liveDb, setLiveDb] = useState<Float32Array | null>(null);
+  const [liveStepHz, setLiveStepHz] = useState(1);
+  const [liveSampleRate, setLiveSampleRate] = useState<number | null>(null);
+
+  useEffect(() => {
+    writeStoredJson(VISIBILITY_KEY, { left: showLeft, right: showRight });
+  }, [showLeft, showRight]);
+
+  useEffect(() => {
+    writeStoredJson(DISPLAY_KEY, {
+      mode: spectrumMode,
+      dbRange: dbRangeIdx,
+      channelLayout,
+    });
+  }, [spectrumMode, dbRangeIdx, channelLayout]);
 
   useEffect(() => {
     fetchAppInfo()
@@ -120,21 +236,35 @@ export default function App() {
       .catch((e) => setError(describeError(e, "无法连接 Rust 后端")));
   }, []);
 
-  const onOpenFile = useCallback(async () => {
+  /** 取下一个任务号。毫秒时间戳 ×1000 + 序号，避开后端 0..N 的分配区间。 */
+  const nextTaskId = (): number => {
+    taskSeq.current += 1;
+    return Date.now() * 1000 + taskSeq.current;
+  };
+
+  /**
+   * 分析一个已知路径。文件选择器与拖放都走这里，保证两条入口行为一致。
+   */
+  const analyzePath = useCallback(async (path: string) => {
     setError(null);
+    setNotice(null);
+    setBusy(true);
+    const id = nextTaskId();
     try {
-      const path = await pickAudioFile();
-      // 用户取消选择不是错误
-      if (!path) return;
-      setBusy(true);
       const fi = await probeFile(path);
-      setFiles((prev) => {
-        const rest = prev.filter((f) => f.path !== fi.path);
-        return [fi, ...rest];
-      });
+      lastPathRef.current = fi.path;
+      setFiles((prev) => [fi, ...prev.filter((f) => f.path !== fi.path)]);
       setSelected(fi);
 
-      const a = await analyzeFile(fi.path, 2048);
+      setActiveTask({ id, label: fi.fileName });
+      const a = await analyzeFile(fi.path, 2048, id);
+
+      // 取消不是失败：保留上一次的数据，只在状态栏说明
+      if (a.outcome === "cancelled") {
+        setNotice(`已取消分析：${fi.fileName}`);
+        return;
+      }
+
       setDisplay({
         db: a.spectrumBins > 0 ? a.spectrumDb : null,
         startHz: 0,
@@ -158,13 +288,122 @@ export default function App() {
         spectrogramFrames: a.spectrogramFrames,
         spectrogramBins: a.spectrogramBins,
         spectrogramHopMs: a.spectrogramHopMs,
+        peakPerChannel: a.peakDbfsPerChannel,
+        overFullScaleSamples: a.overFullScaleSamples,
+        clippingRegions: a.clippingRegions,
+        sanitizedSamples: a.sanitizedSamples,
       });
     } catch (e) {
       setError(describeError(e, "打开文件失败"));
     } finally {
+      setActiveTask(null);
       setBusy(false);
     }
   }, []);
+
+  const onOpenFile = useCallback(async () => {
+    setError(null);
+    try {
+      const path = await pickAudioFile();
+      // 用户取消选择不是错误
+      if (!path) return;
+      await analyzePath(path);
+    } catch (e) {
+      setError(describeError(e, "打开文件失败"));
+    }
+  }, [analyzePath]);
+
+  /** 取消当前文件分析。任务号是前端给的，所以运行中也能取消。 */
+  const onCancelTask = useCallback(async () => {
+    const task = activeTask;
+    if (!task) return;
+    try {
+      const found = await cancelTask(task.id);
+      setNotice(found ? `正在取消：${task.label}` : "任务已经结束");
+    } catch (e) {
+      setError(describeError(e, "取消失败"));
+    }
+  }, [activeTask]);
+
+  const onRetry = useCallback(() => {
+    const path = lastPathRef.current;
+    if (path) void analyzePath(path);
+  }, [analyzePath]);
+
+  /**
+   * 导出当前文件的分析结果。
+   *
+   * 格式由保存对话框里选的扩展名决定（Rust 侧会校验两者一致），
+   * 这样只有一个按钮、没有额外的格式开关。用户取消保存不是错误。
+   */
+  const onExport = useCallback(async () => {
+    if (!selected) return;
+    setError(null);
+    setNotice(null);
+    try {
+      const base = selected.fileName.replace(/\.[^.]+$/, "");
+      const picked = await pickExportDestination(`${base}.csv`);
+      if (!picked) return;
+      // 用户可能把扩展名删掉，补一个默认值而不是让 Rust 端报错
+      const destination = /\.(csv|json)$/i.test(picked) ? picked : `${picked}.csv`;
+      const format = destination.toLowerCase().endsWith(".json")
+        ? ("json" as const)
+        : ("csv" as const);
+
+      setBusy(true);
+      const out = await exportAnalysis(selected.path, destination, format);
+      setNotice(
+        `已导出 ${out.format.toUpperCase()} · ${(out.bytesWritten / 1024).toFixed(1)} KiB → ${out.destination}`,
+      );
+    } catch (e) {
+      setError(describeError(e, "导出失败"));
+    } finally {
+      setBusy(false);
+    }
+  }, [selected]);
+
+  // ---- 键盘：Ctrl/Cmd+O 打开，Esc 取消，Ctrl/Cmd+R 重试 ----
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+      if (mod && key === "o") {
+        e.preventDefault();
+        void onOpenFile();
+      } else if (e.key === "Escape" && activeTask) {
+        e.preventDefault();
+        void onCancelTask();
+      } else if (mod && key === "r" && lastPathRef.current) {
+        e.preventDefault();
+        onRetry();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeTask, onCancelTask, onOpenFile, onRetry]);
+
+  // ---- 拖放：桌面音频应用的基本预期 ----
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type !== "drop") return;
+        const path = event.payload.paths.find(isAudioPath);
+        if (path) void analyzePath(path);
+        else setError({ title: "拖入的文件不是受支持的音频格式", detail: null });
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      // 浏览器里预览时没有 Tauri 后端，忽略即可
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [analyzePath]);
 
   // 画布宽度变化时，把 targetBins 跟着调 —— ADR-018 规则 3：
   // 频谱点数应等于像素宽度，不多传。
@@ -210,6 +449,12 @@ export default function App() {
         spectrogramFrames: 0,
         spectrogramBins: 0,
         spectrogramHopMs: 0,
+        peakPerChannel: [],
+        // 合成信号是纯正弦，超量程/削波/清理计数都为 0：
+        // 写 0 而不是省略，界面才能一致性地区分「没有」与「未知」
+        overFullScaleSamples: r.metrics.overFullScaleSamples,
+        clippingRegions: r.metrics.clippingRegions,
+        sanitizedSamples: r.metrics.sanitizedSamples,
       });
     } catch (e) {
       setError(describeError(e, "合成信号分析失败"));
@@ -218,7 +463,20 @@ export default function App() {
     }
   }, [req]);
 
-  const sampleRate = display?.sampleRate ?? req.sampleRate;
+  /**
+   * 当前用于画频率轴的采样率。
+   *
+   * 实时采集时**必须**用采集设备的采样率：沿用一个已打开文件的 44.1 kHz
+   * 会把 48 kHz 的实时数据画到错误的频率位置上，而界面看不出任何异常。
+   */
+  const sampleRate = liveDb
+    ? (liveSampleRate ?? req.sampleRate)
+    : (display?.sampleRate ?? req.sampleRate);
+
+  /** 当前 dB 量程。索引越界时回落到全量程，不让坏偏好把坐标轴画反。 */
+  const dbRange = DB_RANGES[dbRangeIdx] ?? DB_RANGES[0];
+  const minDb = dbRange.min;
+  const maxDb = dbRange.max;
 
   /**
    * 分析覆盖的时长，秒。
@@ -233,6 +491,17 @@ export default function App() {
     return n > 1 ? n / sampleRate : 0;
   }, [selected, display, sampleRate]);
 
+  /**
+   * 声谱图矩阵自身覆盖的时长。
+   *
+   * 矩阵列数 × 每列 hop 才是这张图的时间跨度；用文件总时长去标它会在大文件
+   * （只分析了开头一段）上错得离谱，所以这里单独算。
+   */
+  const spectrogramSeconds = useMemo(() => {
+    if (!display || display.spectrogramFrames <= 0) return 0;
+    return (display.spectrogramFrames * display.spectrogramHopMs) / 1000;
+  }, [display]);
+
   const version = useMemo(
     () => (info ? `v${info.version}` : "连接中…"),
     [info],
@@ -246,17 +515,34 @@ export default function App() {
           AURALIS <span className="brand-dim">STUDIO</span>
         </span>
         <span className="toolbar-sep" />
-        <Button onClick={onOpenFile} disabled={busy}>
+        <Button onClick={onOpenFile} disabled={busy} title="Ctrl+O">
           {busy ? "分析中…" : "打开文件…"}
         </Button>
         <Button onClick={run} disabled={busy}>
           合成信号
         </Button>
+        {activeTask && (
+          <Button
+            onClick={onCancelTask}
+            title="取消当前分析（Esc）"
+            className="danger"
+          >
+            取消
+          </Button>
+        )}
         <Button disabled title="M4 接入 CPAL 采集">
           实时采集
         </Button>
-        <Button disabled title="M5 接入 CSV/JSON 导出">
-          导出
+        <Button
+          onClick={onExport}
+          disabled={busy || !selected || display == null}
+          title={
+            selected
+              ? "导出 CSV / JSON（含算法版本与参数）"
+              : "先打开一个音频文件"
+          }
+        >
+          导出…
         </Button>
 
         <div className="spacer" />
@@ -282,21 +568,60 @@ export default function App() {
             files={files}
             selected={selected}
             onPick={onOpenFile}
+            onSelect={analyzePath}
             busy={busy}
             version={version}
+            livePeak={livePeak}
+            liveRms={liveRms}
+            onLiveSnapshot={(snap) => {
+              setLiveDb(snap ? snap.spectrumDb : null);
+              setLiveStepHz(snap ? snap.binHz : 1);
+              setLiveSampleRate(snap ? snap.sampleRate : null);
+              setLivePeak(snap ? snap.peakDbfs : null);
+              setLiveRms(snap ? snap.rmsDbfs : null);
+            }}
           />
         }
         center={
           <div className="center-stack">
+            {error && (
+              <div style={{ marginBottom: 8 }}>
+                <ErrorBar
+                  title={error.title}
+                  detail={error.detail}
+                  action={
+                    <>
+                      {lastPathRef.current && (
+                        <Button size="tiny" onClick={onRetry} title="Ctrl+R">
+                          重试
+                        </Button>
+                      )}
+                      <Button size="tiny" onClick={() => setError(null)}>
+                        关闭
+                      </Button>
+                    </>
+                  }
+                />
+              </div>
+            )}
             <section className="pane" style={{ flex: "1.35" }}>
               <div className="pane-head">
-                <span className="pane-title">频谱</span>
+                <span className="pane-title">
+                  频谱
+                  {liveDb && <span className="rt-badge">实时</span>}
+                </span>
                 <span className="pane-meta">
-                  {display?.db
-                    ? `${display.db.length} bins`
-                    : "等待数据"}
+                  {liveDb
+                    ? `${liveDb.length} bins`
+                    : display?.db
+                      ? `${display.db.length} bins`
+                      : "等待数据"}
                   <span className="sep">·</span>
-                  {display ? `${display.fftSize} 点 FFT` : "FFT 4096"}
+                  {liveDb
+                    ? `${liveStepHz.toFixed(1)} Hz/bin`
+                    : display
+                      ? `${display.fftSize} 点 FFT`
+                      : "FFT 4096"}
                   <span className="sep">·</span>
                   {fmtHzInt(sampleRate / 2)} Hz 奈奎斯特
                   {viewRange && (
@@ -309,9 +634,12 @@ export default function App() {
                   )}
                 </span>
                 <span className="spacer" />
-                <span className="pane-meta num">
-                  {cursorHz != null ? `${fmtHz(cursorHz)} Hz` : "—"}
-                </span>
+                {/* 光标读数只在悬停时出现：常驻一个 "—" 只是噪声 */}
+                {cursorHz != null && (
+                  <span className="pane-meta num" title="光标频率">
+                    {fmtHz(cursorHz)} Hz
+                  </span>
+                )}
                 {viewRange && (
                   <Button
                     size="tiny"
@@ -323,17 +651,20 @@ export default function App() {
                 )}
               </div>
               <div className="pane-body" ref={spectrumRef}>
+                {/* 实时数据上不能叠文件分析出的峰值标记：频率位置对不上，
+                    会让人以为那是当前信号的峰值。 */}
                 <SpectrumView
-                  db={display?.db ?? null}
-                  stepHz={display?.stepHz ?? 1}
+                  db={liveDb ?? display?.db ?? null}
+                  stepHz={liveDb ? liveStepHz : (display?.stepHz ?? 1)}
                   sampleRate={sampleRate}
-                  minDb={MIN_DB}
-                  maxDb={MAX_DB}
+                  minDb={minDb}
+                  maxDb={maxDb}
                   cursorHz={cursorHz}
-                  peaks={display?.peaks ?? []}
+                  peaks={liveDb ? [] : (display?.peaks ?? [])}
                   viewRange={viewRange}
                   onViewRangeChange={setViewRange}
                   onHoverHz={setCursorHz}
+                  mode={spectrumMode}
                 />
               </div>
               <div className="pane-note">
@@ -369,11 +700,11 @@ export default function App() {
                   matrix={display?.spectrogram ?? null}
                   width={display?.spectrogramFrames ?? 0}
                   height={display?.spectrogramBins ?? 0}
-                  minDb={MIN_DB}
-                  maxDb={MAX_DB}
+                  minDb={minDb}
+                  maxDb={maxDb}
                   cursorHz={cursorHz}
                   nyquistHz={sampleRate / 2}
-                  durationSeconds={durationSeconds}
+                  durationSeconds={spectrogramSeconds}
                 />
               </div>
             </section>
@@ -401,6 +732,7 @@ export default function App() {
                   sampleRate={sampleRate}
                   channels={selected?.channels ?? 1}
                   durationSeconds={durationSeconds}
+                  layout={channelLayout}
                 />
               </div>
             </section>
@@ -417,44 +749,69 @@ export default function App() {
             info={info}
             viewRange={viewRange}
             onResetViewRange={() => setViewRange(null)}
+            minDb={minDb}
+            maxDb={maxDb}
+            spectrumMode={spectrumMode}
+            onSpectrumModeChange={setSpectrumMode}
+            dbRangeIdx={dbRangeIdx}
+            onDbRangeChange={setDbRangeIdx}
+            channelLayout={channelLayout}
+            onChannelLayoutChange={setChannelLayout}
           />
         }
       />
 
       {/* ---- 状态栏 ---- */}
       <footer className="status-bar">
-        <span className="state" title="M4 接入 WASAPI 采集">
-          设备未连接
-        </span>
-        <span className="dot">·</span>
-        <span className="status-chip">
-          <span>采样率</span>
-          <span className="v num">
-            {sampleRate.toLocaleString("en-US")} Hz
-          </span>
-        </span>
-        <span className="status-chip">
-          <span>端到端</span>
-          <span className="v num">
-            {display ? `${display.elapsedMs.toFixed(1)} ms` : "—"}
-          </span>
-        </span>
-        <span className="status-chip">
-          <span>载荷</span>
-          <span className="v num">
-            {display ? `${(display.bytes / 1024).toFixed(1)} KiB` : "—"}
-          </span>
-        </span>
+        {activeTask ? (
+          <>
+            <span className="state warn">分析中</span>
+            <span className="num" style={{ maxWidth: "28ch" }}>
+              {activeTask.label}
+            </span>
+            <Button size="tiny" onClick={onCancelTask} title="Esc">
+              取消
+            </Button>
+          </>
+        ) : (
+          <>
+            <span className="state" title="M4 接入 WASAPI 采集">
+              设备未连接
+            </span>
+            <span className="dot">·</span>
+            <span className="status-chip">
+              <span>采样率</span>
+              <span className="v num">
+                {sampleRate.toLocaleString("en-US")} Hz
+              </span>
+            </span>
+            <span className="status-chip">
+              <span>端到端</span>
+              <span className="v num">
+                {display ? `${display.elapsedMs.toFixed(1)} ms` : "—"}
+              </span>
+            </span>
+            <span className="status-chip">
+              <span>载荷</span>
+              <span className="v num">
+                {display ? `${(display.bytes / 1024).toFixed(1)} KiB` : "—"}
+              </span>
+            </span>
+          </>
+        )}
         <div className="spacer" />
-        {error && (
+        {error ? (
           <span className="err" title={`${error.title}\n${error.detail ?? ""}`}>
             {error.title}
           </span>
-        )}
-        {!error && display?.outcome === "succeeded" && (
-          <span className="warn" title="M1 只接 WAV；未验证格式会标注">
-            未验证格式会标注
-          </span>
+        ) : notice ? (
+          <span className="sub">{notice}</span>
+        ) : (
+          display?.outcome === "succeeded" && (
+            <span className="warn" title="未经验证的容器会在文件列表里标注">
+              未验证格式会标注
+            </span>
+          )
         )}
       </footer>
     </div>
@@ -467,14 +824,26 @@ function ResourcePanel({
   files,
   selected,
   onPick,
+  onSelect,
   busy,
   version,
+  livePeak,
+  liveRms,
+  onLiveSnapshot,
 }: {
   files: FileInfo[];
   selected: FileInfo | null;
   onPick: () => void;
+  /** 点击历史文件重新分析，不必再过一遍文件对话框 */
+  onSelect: (path: string) => void;
   busy: boolean;
   version: string;
+  /** 实时 Peak dBFS；null = 未采集或静音 */
+  livePeak: number | null;
+  /** 实时 RMS dBFS；null = 未采集或静音 */
+  liveRms: number | null;
+  /** 实时快照回调（频谱 / 电平） */
+  onLiveSnapshot: (snap: RealtimeSnapshot | null) => void;
 }) {
   return (
     <>
@@ -497,23 +866,29 @@ function ResourcePanel({
           ) : (
             files.map((f) => (
               <li key={f.path}>
-                <div
+                <button
+                  type="button"
                   className={
                     "file-item" + (selected?.path === f.path ? " on" : "")
                   }
-                  title={f.path}
+                  title={`${f.path}\n点击重新分析`}
+                  disabled={busy}
+                  onClick={() => onSelect(f.path)}
                 >
                   <span className="file-name">{f.fileName}</span>
                   <span className="file-meta num">
-                    {f.containerName} · {f.sampleRate.toLocaleString("en-US")}{" "}
-                    Hz · {f.channels === 1 ? "单声道" : `${f.channels} ch`}
+                    <span className="meta-text">
+                      {f.containerName} ·{" "}
+                      {f.sampleRate.toLocaleString("en-US")} Hz ·{" "}
+                      {f.channels === 1 ? "单声道" : `${f.channels} ch`}
+                    </span>
                     {!f.verified && (
                       <span className="file-warn" title={f.verificationNote}>
                         未验证
                       </span>
                     )}
                   </span>
-                </div>
+                </button>
               </li>
             ))
           )}
@@ -539,6 +914,22 @@ function ResourcePanel({
             实时输入
           </NavItem>
         </NavGroup>
+
+        {/* M4：实时采集。放在导航之外，因为它是一个真正的控制面板，
+            不是切换视图的入口。 */}
+        <div className="nav-divider" />
+        <RealtimePanel onSnapshot={onLiveSnapshot} />
+        {livePeak !== null && (
+          <LevelMeter
+            peakDbfs={livePeak}
+            rmsDbfs={liveRms}
+            peakPerChannel={[]}
+            minDb={MIN_DB}
+            maxDb={MAX_DB}
+            overFullScale={0}
+            clippingRegions={0}
+          />
+        )}
 
         <NavGroup label="工程">
           <NavItem icon={<IconSettings />} disabled tag="M5">
@@ -584,6 +975,14 @@ function InspectorPanel({
   info,
   viewRange,
   onResetViewRange,
+  minDb,
+  maxDb,
+  spectrumMode,
+  onSpectrumModeChange,
+  dbRangeIdx,
+  onDbRangeChange,
+  channelLayout,
+  onChannelLayoutChange,
 }: {
   req: SyntheticRequest;
   setReq: React.Dispatch<React.SetStateAction<SyntheticRequest>>;
@@ -594,9 +993,17 @@ function InspectorPanel({
   info: AppInfo | null;
   viewRange: [number, number] | null;
   onResetViewRange: () => void;
+  /** 当前 dB 量程（与中央画布一致） */
+  minDb: number;
+  maxDb: number;
+  spectrumMode: SpectrumMode;
+  onSpectrumModeChange: (m: SpectrumMode) => void;
+  dbRangeIdx: number;
+  onDbRangeChange: (idx: number) => void;
+  channelLayout: ChannelLayout;
+  onChannelLayoutChange: (l: ChannelLayout) => void;
 }) {
-  const set = <K extends keyof SyntheticRequest>(
-    k: K,
+  const set = <K extends keyof SyntheticRequest>(    k: K,
     v: SyntheticRequest[K],
   ) => setReq((r) => ({ ...r, [k]: v }));
 
@@ -609,6 +1016,21 @@ function InspectorPanel({
       )}
 
       <div className="label" style={{ marginBottom: 5 }}>
+        电平
+      </div>
+      <div className="readout">
+        <LevelMeter
+          peakDbfs={display?.peakDbfs ?? null}
+          rmsDbfs={display?.rmsDbfs ?? null}
+          peakPerChannel={display?.peakPerChannel ?? []}
+          minDb={minDb}
+          maxDb={maxDb}
+          overFullScale={display?.overFullScaleSamples ?? 0}
+          clippingRegions={display?.clippingRegions ?? 0}
+        />
+      </div>
+
+      <div className="label" style={{ marginBottom: 5, marginTop: 12 }}>
         信号指标
       </div>
       <div className="readout">
@@ -624,6 +1046,33 @@ function InspectorPanel({
           value={
             display ? display.env?.length.toLocaleString("en-US") ?? "—" : "—"
           }
+        />
+        {/* 多声道文件的逐声道峰值：单声道时与上面的 Peak 完全重复，不显示 */}
+        {display && display.peakPerChannel.length > 1 && (
+          <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid var(--grid-minor)" }}>
+            {display.peakPerChannel.map((p, i) => (
+              <DataRow
+                key={i}
+                label={`CH${i + 1} Peak`}
+                value={p == null ? "—（静音）" : `${p.toFixed(2)} dBFS`}
+              />
+            ))}
+          </div>
+        )}
+        {/* 数据质量：这些计数为 0 也要显示，否则「有没有检查过」无法区分 */}
+        <DataRow
+          label="超量程样本"
+          value={(display?.overFullScaleSamples ?? 0).toLocaleString("en-US")}
+        />
+        <DataRow
+          label="平顶片段"
+          value={(display?.clippingRegions ?? 0).toLocaleString("en-US")}
+          title="启发式计数，不是模拟削波的证据"
+        />
+        <DataRow
+          label="清理样本"
+          value={(display?.sanitizedSamples ?? 0).toLocaleString("en-US")}
+          title="NaN / Inf 被替换为 0 的数量"
         />
       </div>
 
@@ -733,7 +1182,41 @@ function InspectorPanel({
         )}
 
         <Collapsible title="显示" defaultOpen>
-          <DataRow label="dB 范围" value={`${MIN_DB} … ${MAX_DB}`} />
+          <FormField label="频谱形态">
+            <Select
+              value={spectrumMode}
+              onValueChange={(v) =>
+                onSpectrumModeChange(v === "line" ? "line" : "area")
+              }
+            >
+              <option value="area">填充（面积）</option>
+              <option value="line">曲线（声线）</option>
+            </Select>
+          </FormField>
+          <FormField label="dB 量程">
+            <Select
+              value={String(dbRangeIdx)}
+              onValueChange={(v) => onDbRangeChange(Number(v))}
+            >
+              {DB_RANGES.map((r, i) => (
+                <option key={r.label} value={i}>
+                  {r.label}
+                </option>
+              ))}
+            </Select>
+          </FormField>
+          <FormField label="声道显示">
+            <Select
+              value={channelLayout}
+              onValueChange={(v) =>
+                onChannelLayoutChange(v === "overlay" ? "overlay" : "lanes")
+              }
+            >
+              <option value="lanes">分道</option>
+              <option value="overlay">叠加（对比）</option>
+            </Select>
+          </FormField>
+          <DataRow label="当前量程" value={`${minDb} … ${maxDb} dBFS`} />
           <DataRow label="视口" value={fmtRange(viewRange)} />
           <DataRow label="频谱点数" value={String(req.targetBins)} />
           <div style={{ marginTop: 8 }}>
@@ -799,6 +1282,9 @@ function FftSizeField({
 
 /** 频率显示：12000 -> "12.0k" */
 function fmtHz(hz: number): string {
+  // 上游可能给出 NaN / Infinity（例如零点附近插值失败），
+  // 这类值直接交给 toFixed 会抛错并让整个渲染树崩掉。
+  if (!Number.isFinite(hz)) return "—";
   return hz >= 1000 ? `${(hz / 1000).toFixed(2)}k` : hz.toFixed(0);
 }
 

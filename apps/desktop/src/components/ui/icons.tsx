@@ -42,7 +42,8 @@ export function IconFilePlus({ size = 14, className }: IconProps) {
 export function IconWaveform({ size = 14, className }: IconProps) {
   return (
     <svg {...base(size)} className={className}>
-      <path d="M2 8h1.2l1-3.5L6 12l1.6-9 1.8 6.4L11 6h3" />
+      {/* 示波器式正弦：与频谱的柱状图标在轮廓上可区分 */}
+      <path d="M1.5 8c1.6 0 1.6-4 3.25-4S6.35 12 8 12s1.6-4 3.25-4S12.4 8 14.5 8" />
     </svg>
   );
 }

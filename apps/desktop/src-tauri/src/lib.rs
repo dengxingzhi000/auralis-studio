@@ -19,11 +19,13 @@ pub mod app_state;
 pub mod commands;
 pub mod file_commands;
 pub mod ipc_bench;
+pub mod realtime_commands;
 pub mod selftest;
 
 pub use selftest::{dump_reference, run_self_test};
 
 use app_state::AppState;
+use realtime_commands::RealtimeSession;
 
 /// 安装全局 `tracing` 订阅者（输出到 stderr）。
 ///
@@ -62,12 +64,19 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
+        .manage(RealtimeSession::new())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::analyze_synthetic_signal,
             file_commands::probe_file,
             file_commands::analyze_file,
             file_commands::cancel_task,
+            file_commands::export_analysis,
+            realtime_commands::input_devices,
+            realtime_commands::start_realtime,
+            realtime_commands::stop_realtime,
+            realtime_commands::capture_status_cmd,
+            realtime_commands::realtime_snapshot,
         ])
         .setup(|_app| {
             tracing::info!(

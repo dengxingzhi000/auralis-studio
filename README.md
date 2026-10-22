@@ -327,8 +327,8 @@ cd apps\desktop && npm run typecheck
 | **M1** | WAV import, metadata, chunked PCM, cancellation | ✅ done |
 | **M2** | FFT, amplitude correction, peak detection, waveform pyramid | ✅ done |
 | **M3** | Spectrum interaction: cursor, zoom/pan, parameter inspector, peak markers | ✅ done |
-| **M4** | Real-time capture (CPAL) + live spectrogram | 🚧 in progress — ring buffer, benchmarks, and the capture session are in; the live path is not wired to the UI yet |
-| M5 | Export, config persistence, crash recovery | ⬜ not started |
+| **M4** | Real-time capture (CPAL) + live spectrogram | 🚧 in progress — the CPAL stream, analyser thread, and live spectrum in the UI are in; the chunked (offset-aware) spectrogram and the high-refresh channel are not. **Not yet run against real audio hardware.** |
+| M5 | Export, config persistence, crash recovery | 🚧 in progress — CSV/JSON export and layout persistence are in; crash recovery is not |
 | M6 | Installer, user manual, license inventory | ⬜ not started |
 
 ## Project structure
@@ -341,6 +341,7 @@ auralis-studio/
 │   ├── auralis-codec/           # container and PCM decoding (symphonia)
 │   ├── auralis-audio/           # SPSC ring, device enumeration, CPAL capture
 │   ├── auralis-task/            # offline task scheduling, progress, cancellation
+│   ├── auralis-storage/         # export (CSV/JSON) + atomic writes
 │   └── auralis-visualization/   # waveform pyramid, spectrogram frames
 ├── apps/desktop/
 │   ├── src/                     # React 19 frontend — display only
@@ -348,7 +349,7 @@ auralis-studio/
 │   │   │   ├── audio-viz/       # WaveformView · SpectrumView · SpectrogramView
 │   │   │   └── ui/              # primitives.tsx · icons.tsx
 │   │   ├── layouts/             # Workspace
-│   │   ├── lib/                 # contracts.ts · ipc.ts
+│   │   ├── lib/                 # contracts.ts · ipc.ts · persist.ts
 │   │   └── styles/              # tokens.css · layout.css · globals.css
 │   └── src-tauri/               # Tauri shell: commands, capabilities, tracing
 ├── scripts/
@@ -393,9 +394,17 @@ Read this before trusting a number. It is short on purpose.
   of any kind.
 - **Only WAV is verified.** FLAC, MP3, and AIFF decode, but no real sample has
   been validated end to end. The UI marks them unverified.
-- **Real-time capture is not wired to the UI yet.** The CPAL session, the
-  bounded ring buffer, and the buffer recycling are implemented and tested;
-  the live spectrogram path lands in M4.
+- **Real-time capture has never run against a real sound card.** The CPAL
+  stream, the analyser thread, the drop/overwrite counters, and the live
+  spectrum in the UI are implemented and unit-tested, but the only executed
+  paths are the missing-device error and pure-logic tests. Every statement
+  about real capture behaviour (latency, drop rate, device hot-plug) is
+  unverified.
+- **Real-time analysis discards intermediate samples.** When the ring backs up,
+  the worker keeps only the most recent `fft_size` samples per refresh rather
+  than analysing every window. The display stays current at the cost of not
+  producing a spectrum for every hop; `snapshot_overwrites` counts the frames
+  the UI missed.
 - **FFT is 2.7× over its original design target.** 271 µs against < 100 µs.
   See [docs/BENCHMARKS.md](./docs/BENCHMARKS.md).
 - **Clipping detection returns 0 at the command layer.** A real

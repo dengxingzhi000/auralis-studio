@@ -14,6 +14,9 @@
 use std::path::{Path, PathBuf};
 
 use auralis_codec::{AudioFileInfo, BlockDecoder, probe};
+use auralis_storage::{
+    AnalysisExport, AnalysisParameters, ExportFormat, ExportMetadata, ExportMetrics, ExportPeak,
+};
 use auralis_task::CancelToken;
 use serde::Serialize;
 use tauri::State;
@@ -140,6 +143,12 @@ pub struct FileAnalysisDto {
     pub fft_size: usize,
     /// 窗函数标识。
     pub window: String,
+    /// 本次分析的任务 ID。
+    ///
+    /// 由调用方在发起分析时指定（见 `analyze_file` 的 `task_id` 参数），
+    /// 前端据此在运行期间调用 `cancel_task`。`run_analysis` 内部构造时填 0，
+    /// 命令层在返回前覆盖成真实值。
+    pub task_id: u64,
     /// 终态。取消时为 `cancelled`，失败时为 `failed`。
     pub outcome: String,
 }
@@ -168,6 +177,9 @@ pub struct PeakDto {
 ///
 /// 尊重取消令牌：每解码一块检查一次。
 ///
+/// `task_id` 由**调用方**指定（通常是前端生成的单调计数器），这样分析还没
+/// 返回时就能用同一个 ID 调 `cancel_task`。不传时退回服务端分配，行为与旧版一致。
+///
 /// # Errors
 /// 文件问题返回错误；用户取消返回 `Ok` 且 `outcome == "cancelled"`，
 /// **不当作错误**——用户主动取消不是失败。
@@ -176,31 +188,225 @@ pub async fn analyze_file(
     state: State<'_, AppState>,
     path: String,
     envelope_points: Option<usize>,
+    task_id: Option<u64>,
 ) -> Result<FileAnalysisDto, String> {
     let p = PathBuf::from(&path);
     let token = CancelToken::new();
     // 注册令牌，使 cancel_task 能找到它
-    let task_id = state.next_task_id();
-    state.register_token(task_id, token.clone());
+    let task_id = match task_id {
+        Some(id) => {
+            if !state.try_register_token(id, token.clone()) {
+                return Err(format!("task id {id} is already running"));
+            }
+            id
+        }
+        None => {
+            let id = state.next_task_id();
+            state.register_token(id, token.clone());
+            id
+        }
+    };
 
     let requested_points = envelope_points
         .unwrap_or(2048)
         .clamp(1, MAX_ENVELOPE_POINTS);
     let started = std::time::Instant::now();
 
-    let result = run_analysis(&p, &token, requested_points);
+    let result = analyse_isolated(&p, &token, requested_points);
     state.unregister_token(task_id);
 
     result.map(|mut d| {
         d.elapsed_ms = started.elapsed().as_millis() as u64;
+        d.task_id = task_id;
         d
     })
+}
+
+/// 在 panic 隔离下执行一次分析闭包。
+///
+/// 第三方解码器遇到畸形文件时是可能 panic 的（symphonia 的解析路径、
+/// 以及我们自己的切片索引）。ADR-009 要求「单个坏文件不能带崩整个应用」，
+/// 所以命令层用 `catch_unwind` 兜住：解析错误转成 `Err`，panic 也转成 `Err`，
+/// 界面显示错误条而不是整个进程消失。
+///
+/// 注意：`run_analysis` 内部已经把**可预期**的错误转成了 `Err`，
+/// 这里只兜住真正不该发生的 panic。参数化成闭包是为了能单独测这条路径。
+fn isolate_analysis<F>(label: &str, f: F) -> Result<FileAnalysisDto, String>
+where
+    F: FnOnce() -> Result<FileAnalysisDto, String>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            tracing::error!(label = %label, panic = %detail, "analysis panicked");
+            Err(format!("analysis panicked on {label}: {detail}"))
+        }
+    }
+}
+
+/// 分析一个路径，并把 panic 隔离成错误。
+fn analyse_isolated(
+    path: &Path,
+    token: &CancelToken,
+    envelope_points: usize,
+) -> Result<FileAnalysisDto, String> {
+    let label = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    isolate_analysis(&label, || run_analysis(path, token, envelope_points))
 }
 
 /// 取消指定任务。
 #[tauri::command]
 pub async fn cancel_task(state: State<'_, AppState>, task_id: u64) -> Result<bool, String> {
     Ok(state.cancel(task_id))
+}
+
+/// 导出结果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportOutcomeDto {
+    /// 实际写入的路径。
+    pub destination: String,
+    /// 规范化后的格式（`csv` / `json`）。
+    pub format: String,
+    /// 写入字节数。
+    pub bytes_written: u64,
+    /// 重新分析 + 渲染 + 写盘的总耗时，毫秒。
+    pub elapsed_ms: u64,
+}
+
+/// 把一个文件的分析结果导出为 CSV / JSON。
+///
+/// # 为什么重新分析而不是把前端的数据传回来
+///
+/// 前端手里只有降采样后的视图数据，且要跨越 IPC 传回几百 KB~几 MB。
+/// 导出必须与展示同源，也要能独立复现，所以这里重跑同一条 `run_analysis`
+/// 路径；代价是一次解码，收益是「导出内容 = 显示内容」，且格式化逻辑
+/// 留在 Rust（前端不碰数值，ADR-018 规则 1）。
+///
+/// # Errors
+/// 格式不认识、目标扩展名与格式不符、分析失败或写盘失败时返回错误。
+#[tauri::command]
+pub async fn export_analysis(
+    source: String,
+    destination: String,
+    format: String,
+    envelope_points: Option<usize>,
+) -> Result<ExportOutcomeDto, String> {
+    let format = ExportFormat::parse(&format).map_err(|e| e.to_string())?;
+    let dest = PathBuf::from(&destination);
+
+    // 扩展名与格式不一致时直接拒绝：写一个后缀是 .json 的 CSV 文件，
+    // 比报错糟糕得多——用户会以为那是 JSON。
+    if let Some(from_ext) = ExportFormat::from_path(&dest) {
+        if from_ext != format {
+            return Err(format!(
+                "destination extension .{} does not match requested format {}",
+                from_ext.as_str(),
+                format.as_str()
+            ));
+        }
+    } else {
+        return Err(format!(
+            "destination must end with .csv or .json: {}",
+            dest.display()
+        ));
+    }
+
+    let started = std::time::Instant::now();
+    let points = envelope_points
+        .unwrap_or(2048)
+        .clamp(1, MAX_ENVELOPE_POINTS);
+    let dto = analyse_isolated(&PathBuf::from(&source), &CancelToken::new(), points)?;
+
+    if dto.outcome != "succeeded" {
+        return Err(format!(
+            "analysis did not succeed (outcome={})",
+            dto.outcome
+        ));
+    }
+
+    let spectrum = f32s_from_le_bytes(&dto.spectrum_db);
+    let waveform = f32s_from_le_bytes(&dto.waveform_envelope);
+    let peaks: Vec<ExportPeak> = dto
+        .peaks
+        .iter()
+        .map(|p| ExportPeak {
+            frequency_hz: p.frequency_hz,
+            amplitude_dbfs: p.amplitude_dbfs,
+            interpolated_dbfs: p.interpolated_dbfs,
+            scalloping_db: p.scalloping_db,
+            estimated: p.estimated,
+        })
+        .collect();
+
+    let export = AnalysisExport {
+        metadata: ExportMetadata {
+            app_version: auralis_core::APP_VERSION.to_string(),
+            algorithm_version: auralis_core::ALGORITHM_VERSION.to_string(),
+            dsp_spec_revision: auralis_core::DSP_SPEC_REVISION.to_string(),
+            exported_unix_ms: exported_unix_ms(),
+            source_path: dto.info.path.clone(),
+            file_name: dto.info.file_name.clone(),
+            container: dto.info.container_name.clone(),
+            codec: dto.info.codec.clone(),
+            sample_rate_hz: dto.info.sample_rate,
+            channels: dto.info.channels,
+            duration_s: dto.info.duration_seconds,
+            frames_decoded: dto.frames_decoded,
+            analysis: AnalysisParameters {
+                fft_size: dto.fft_size,
+                window: dto.window.clone(),
+                spectrum_bins: dto.spectrum_bins,
+                spectrum_step_hz: dto.spectrum_step_hz,
+                spectrogram_frames: dto.spectrogram_frames,
+                spectrogram_bins: dto.spectrogram_bins,
+                spectrogram_hop_ms: dto.spectrogram_hop_ms,
+                waveform_points: waveform.len(),
+                waveform_source: "channel 0, per-bucket maximum",
+            },
+        },
+        metrics: ExportMetrics {
+            peak_dbfs: dto.peak_dbfs,
+            rms_dbfs: dto.rms_dbfs,
+            crest_db: dto.crest_db,
+            dc_offset: dto.dc,
+            peak_dbfs_per_channel: dto.peak_dbfs_per_channel.clone(),
+            over_full_scale_samples: dto.over_full_scale_samples,
+            clipping_regions: dto.clipping_regions,
+            sanitized_samples: dto.sanitized_samples,
+        },
+        spectrum_db: &spectrum,
+        waveform_envelope: &waveform,
+        peaks: &peaks,
+    };
+
+    let bytes_written = auralis_storage::write_export(&dest, format, &export)
+        .map_err(|e| format!("export failed: {e}"))?;
+
+    Ok(ExportOutcomeDto {
+        destination: dest.display().to_string(),
+        format: format.as_str().to_string(),
+        bytes_written,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/// 当前 Unix 毫秒时间戳。
+///
+/// 不做本地时区格式化：那需要完整的日期换算，出错时时间戳会静默错位。
+/// 导出的读者（人或脚本）自己决定怎么显示。
+fn exported_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// 真正的分析实现。不碰 Tauri 状态，便于单元测试。
@@ -355,10 +561,17 @@ fn run_analysis(
         let frames = stft
             .compute(&spectrum_capture, sample_rate)
             .map_err(|e| e.to_string())?;
+        // 目标网格取「实际可得」与「上限」的较小者。
+        //
+        // SPECTROGRAM_FRAMES/BINS 是**上限**，不是固定尺寸。早先直接把上限
+        // 传给 `to_matrix`，短文件会被上采样（4 秒音频铺满 1024 列 ≈ 10.9 秒），
+        // 时间轴因此与真实时长不符，且每列不再对应一个 hop。
+        let src_frames = frames.len();
+        let src_bins = frames.first().map_or(0, |f| f.db.len());
         let (m, step) = auralis_dsp::Stft::to_matrix(
             &frames,
-            SPECTROGRAM_FRAMES,
-            SPECTROGRAM_BINS,
+            src_frames.min(SPECTROGRAM_FRAMES),
+            src_bins.min(SPECTROGRAM_BINS),
             auralis_dsp::STFT_MIN_DB,
             0.0,
         );
@@ -408,6 +621,8 @@ fn run_analysis(
         spectrogram_hop_ms: hop_ms,
         fft_size: spectrum_cfg.fft_size,
         window: spectrum_cfg.window.id().to_string(),
+        // 命令层在返回前填真实任务号；直接调用 run_analysis 的测试看到 0
+        task_id: 0,
         outcome: "succeeded".to_string(),
     })
 }
@@ -485,6 +700,7 @@ fn finish_cancelled(
         spectrogram_hop_ms: 0.0,
         fft_size: 0,
         window: String::new(),
+        task_id: 0,
         outcome: "cancelled".to_string(),
     }
 }
@@ -598,6 +814,22 @@ fn f32s_to_le_bytes(v: &[f32]) -> Vec<u8> {
         out.extend_from_slice(&x.to_le_bytes());
     }
     out
+}
+
+/// 小端字节 -> `Vec<f32>`；长度不是 4 的倍数时返回空。
+///
+/// 只有导出需要把已经在 DTO 里的二进制载荷解码回来（展示时前端直接消费）。
+/// 长度非法时**返回空而不是猜**：宁可导出没有频谱，也不能导出一组错位的值。
+fn f32s_from_le_bytes(bytes: &[u8]) -> Vec<f32> {
+    if !bytes.len().is_multiple_of(4) {
+        return Vec::new();
+    }
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
+        .collect()
 }
 
 #[cfg(test)]
@@ -795,6 +1027,20 @@ mod tests {
         );
         assert!(d.spectrogram_hop_ms > 0.0);
 
+        // 时间轴必须对应**实际分析到的时长**。
+        //
+        // 回归：曾经把 SPECTROGRAM_FRAMES（上限）直接当目标网格，1 秒的文件
+        // 被上采样成 1024 列 ≈ 10.9 秒，横轴与音频完全对不上。
+        assert!(
+            d.spectrogram_frames < SPECTROGRAM_FRAMES,
+            "1 秒文件不应铺满 1024 列（那是上限，不是固定尺寸）"
+        );
+        let span_ms = d.spectrogram_frames as f64 * d.spectrogram_hop_ms;
+        assert!(
+            (span_ms - 1_000.0).abs() < 60.0,
+            "矩阵时间跨度应约等于 1 秒，实得 {span_ms} ms"
+        );
+
         // 尾部静音区域的 dB 应贴近下限
         let decoded = crate::commands::decode_test_f32s(&d.spectrogram_db);
         let last_row: Vec<f32> =
@@ -818,6 +1064,126 @@ mod tests {
         assert_eq!(d.outcome, "succeeded");
         assert_eq!(d.frames_decoded, 240_000);
 
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn export_writes_csv_and_json_with_provenance() {
+        let dir = scratch("export");
+        let path = dir.join("tone.wav");
+        write_wav_s16(&path, 48_000, 1, &sine_i16(1_000.0, 0.5, 48_000, 48_000));
+        let source = path.to_string_lossy().into_owned();
+
+        let csv_path = dir.join("out.csv");
+        let csv_out = tauri::async_runtime::block_on(export_analysis(
+            source.clone(),
+            csv_path.to_string_lossy().into_owned(),
+            "csv".to_string(),
+            Some(512),
+        ))
+        .expect("csv export");
+        assert!(csv_out.bytes_written > 0);
+        assert_eq!(csv_out.format, "csv");
+
+        let csv = std::fs::read_to_string(&csv_path).expect("read csv");
+        for required in [
+            "# app_version=",
+            "# algorithm_version=",
+            "# dsp_spec_revision=",
+            "# fft_size=",
+            "# window=",
+            "series,index,x_hz,x_s,value,unit,quantity",
+            ",dBFS,amplitude_dbfs",
+        ] {
+            assert!(csv.contains(required), "CSV 缺少 {required}");
+        }
+        assert!(
+            csv.contains(auralis_core::ALGORITHM_VERSION),
+            "算法版本必须写进导出，否则无法追溯"
+        );
+
+        let json_path = dir.join("out.json");
+        tauri::async_runtime::block_on(export_analysis(
+            source,
+            json_path.to_string_lossy().into_owned(),
+            "json".to_string(),
+            Some(512),
+        ))
+        .expect("json export");
+
+        let json_text = std::fs::read_to_string(&json_path).expect("read json");
+        let v: serde_json::Value = serde_json::from_str(&json_text).expect("valid json");
+        assert_eq!(v["schema"], "auralis.export.analysis/1");
+        assert_eq!(
+            v["metadata"]["algorithmVersion"],
+            auralis_core::ALGORITHM_VERSION
+        );
+        assert_eq!(v["metadata"]["analysis"]["window"], "hann");
+        let bins = v["metadata"]["analysis"]["spectrumBins"]
+            .as_u64()
+            .expect("spectrumBins") as usize;
+        assert_eq!(
+            v["spectrum"]["amplitudeDbfs"]
+                .as_array()
+                .expect("spectrum array")
+                .len(),
+            bins,
+            "频谱数组长度必须与元数据声明一致"
+        );
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&csv_path).ok();
+        std::fs::remove_file(&json_path).ok();
+    }
+
+    #[test]
+    fn export_rejects_extension_that_contradicts_format() {
+        let dir = scratch("export-mismatch");
+        let path = dir.join("tone.wav");
+        write_wav_s16(&path, 48_000, 1, &sine_i16(1_000.0, 0.5, 48_000, 4_800));
+
+        let err = tauri::async_runtime::block_on(export_analysis(
+            path.to_string_lossy().into_owned(),
+            dir.join("out.json").to_string_lossy().into_owned(),
+            "csv".to_string(),
+            Some(64),
+        ))
+        .expect_err("扩展名与格式不符必须报错");
+        assert!(err.contains("does not match"), "错误信息应说明原因：{err}");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn export_round_trips_float_bytes() {
+        let original = vec![0.0_f32, -6.5, f32::NEG_INFINITY, 1.25];
+        let bytes = f32s_to_le_bytes(&original);
+        assert_eq!(f32s_from_le_bytes(&bytes), original);
+        // 非法长度不能被当成数据
+        assert!(f32s_from_le_bytes(&bytes[..bytes.len() - 1]).is_empty());
+    }
+
+    #[test]
+    fn panicking_analysis_is_isolated_into_an_error() {
+        // 隔离器必须把 panic 变成 Err：这才是「一个坏文件不带崩应用」的落点。
+        let err = isolate_analysis("broken.wav", || panic!("simulated decoder panic"))
+            .expect_err("panic 必须被转换成错误");
+        assert!(err.contains("panicked"), "错误信息应说明发生了什么：{err}");
+        assert!(
+            err.contains("broken.wav"),
+            "错误信息应指明是哪个文件：{err}"
+        );
+        assert!(
+            err.contains("simulated decoder panic"),
+            "应保留 panic 文本：{err}"
+        );
+
+        // 正常路径不受影响
+        let dir = scratch("isolation");
+        let path = dir.join("ok.wav");
+        write_wav_s16(&path, 48_000, 1, &sine_i16(1_000.0, 0.5, 48_000, 4_800));
+        let d = analyse_isolated(&path, &CancelToken::new(), 64).expect("normal analysis");
+        assert_eq!(d.outcome, "succeeded");
         std::fs::remove_file(&path).ok();
     }
 }

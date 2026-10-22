@@ -240,21 +240,27 @@ export function EmptyState({
  * 只显示调用方给的**人类可读**文案；原始异常文本作为次级详情折叠展示，
  * 且允许选中复制。裸 `String(e)` 直接铺在界面上的做法在 M1 阶段造成了
  * 「状态栏一串 TypeError」这种既看不懂也定位不了的表现。
+ *
+ * `action` 放操作按钮（重试 / 关闭）。错误必须能就地处理，
+ * 否则用户只能靠「再点一次打开文件」来猜。
  */
 export function ErrorBar({
   title,
   detail,
+  action,
 }: {
   title: string;
   detail?: string | null;
+  action?: React.ReactNode;
 }) {
   return (
     <div className="error-bar" role="alert">
       <IconAlert size={14} />
-      <div>
+      <div className="error-bar-main">
         <div className="error-title">{title}</div>
         {detail && <div className="error-detail selectable">{detail}</div>}
       </div>
+      {action && <div className="error-bar-actions">{action}</div>}
     </div>
   );
 }

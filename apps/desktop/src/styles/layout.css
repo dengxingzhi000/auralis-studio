@@ -228,11 +228,7 @@
   margin-bottom: 14px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--bg-elevated) 92%, white 8%),
-    var(--bg-elevated)
-  );
+  background: linear-gradient(180deg, var(--btn-top-strong), var(--bg-elevated));
   box-shadow: var(--shadow-sm);
   color: var(--text-primary);
   font-family: var(--font-ui);
@@ -417,7 +413,7 @@
   gap: 8px;
   padding: 4px 10px;
   border-top: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--bg-elevated) 60%, var(--bg-panel));
+  background: var(--bg-note);
   font-size: var(--text-xs);
   color: var(--text-secondary);
 }
@@ -433,11 +429,7 @@
   padding: 0 10px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--bg-elevated) 94%, white 6%),
-    var(--bg-elevated)
-  );
+  background: linear-gradient(180deg, var(--btn-top), var(--bg-elevated));
   color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: var(--text-sm);
@@ -464,7 +456,7 @@
 /* 主操作：整屏只应出现一次（侧栏的打开文件 / 检查器的生成） */
 .btn.primary {
   background: var(--accent-primary);
-  border-color: color-mix(in srgb, var(--accent-primary) 70%, black);
+  border-color: var(--accent-border-strong);
   color: #0a0f16;
   font-weight: var(--weight-semibold);
 }
@@ -473,7 +465,7 @@
   border-color: var(--accent-hover);
 }
 .btn.primary:active:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-primary) 82%, black);
+  background: var(--accent-pressed);
 }
 .btn.primary:disabled {
   background: var(--bg-panel);
@@ -612,21 +604,31 @@
 
 /* ---- 检查器字段 ---- */
 
+/* 两列网格：标签列按内容定宽（不再截断成 "频—"），控件列吃掉剩余空间。
+   早先用 flex + space-between，标签一换行就和控件错位。 */
 .field {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   margin-top: 6px;
 }
 .field-label {
   color: var(--text-secondary);
   font-size: var(--text-sm);
+  white-space: nowrap;
 }
 .field-input {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
+  min-width: 0;
+}
+/* 「文件」折叠区里的长编码名允许换行，不要撑破窄检查器 */
+.disclosure-body .metric-row > .num {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* 输入框 / 下拉：内凹底色 + 细描边，聚焦时描边变强调色 */
@@ -645,7 +647,10 @@
   font-size: var(--text-sm);
 }
 .field-input input {
-  width: 84px;
+  flex: 1 1 auto;
+  width: 78px;
+  min-width: 52px;
+  max-width: 96px;
 }
 .field-input input:hover,
 .field-input select:hover {
@@ -670,8 +675,8 @@
   cursor: pointer;
 }
 .field-unit {
+  flex: 0 0 auto;
   font-size: var(--text-xs);
-  width: 24px;
   color: var(--text-secondary);
 }
 
@@ -692,6 +697,21 @@
 .metric-row:last-child {
   border-bottom: 0;
 }
+/* 标签不换行不截断（"编码" 曾被压成两行）；
+   读数一侧允许收缩并省略，长编码名不会把容器顶破。 */
+.metric-row > .muted,
+.kv > .muted {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.metric-row > .num,
+.kv > .num {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
 .kv {
   border-bottom: 1px solid var(--grid-minor);
 }
@@ -701,7 +721,91 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-panel);
-  padding: 4px 8px;
+  padding: 3px 8px;
+}
+
+/* ---- 电平表（LevelMeter）----
+   渐变铺满轨道、用遮罩截断：颜色位置始终代表绝对电平，
+   不会因为条子变短就整条变绿。 */
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.meter-label {
+  flex: 0 0 26px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.meter-track {
+  position: relative;
+  flex: 1;
+  height: 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.meter-grad {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    var(--signal-positive) 0%,
+    var(--signal-positive) 62%,
+    var(--signal-warning) 84%,
+    var(--signal-critical) 100%
+  );
+  opacity: 0.9;
+}
+.meter-mask {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  background: var(--bg-input);
+}
+.meter-rms {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text-primary);
+  opacity: 0.85;
+}
+.meter-value {
+  flex: 0 0 38px;
+  text-align: right;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+.meter-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+}
+.meter-clip {
+  padding: 0 4px;
+  border: 1px solid var(--signal-critical);
+  border-radius: var(--radius-sm);
+  color: var(--signal-critical);
+  font-size: var(--text-xs);
+}
+/* 读数行在窄检查器里必须能收住：数值等宽 + 右对齐，标签可截断 */
+.readout .metric-row > :last-child {
+  text-align: right;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .note {
@@ -766,22 +870,32 @@
   gap: 2px;
 }
 
+/* 文件条目现在是按钮（点击重新分析），因此要清掉原生按钮外观 */
 .file-item {
   position: relative;
+  width: 100%;
   padding: 6px 8px;
   border-radius: var(--radius-md);
   border: 1px solid transparent;
-  cursor: default;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.file-item:hover {
+.file-item:hover:not(:disabled) {
   background: var(--bg-hover);
 }
 .file-item.on {
   background: var(--accent-soft);
   border-color: var(--border-focus);
+}
+.file-item:disabled {
+  cursor: progress;
+  opacity: 0.65;
 }
 
 .file-name {
@@ -790,22 +904,33 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-right: 44px;
 }
 
 .file-meta {
   font-size: var(--text-xs);
   color: var(--text-secondary);
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+/* 元信息允许折行：文件名 + 容器 + 采样率 + 声道 + 「未验证」在 264px
+   宽的侧栏里放不下一行，早先截断成 "FLAC · 44,1…" 反而更难读。 */
+.file-meta .meta-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
 }
 
+/* 「未验证」标记跟随元信息行，不再绝对定位压在文件名上 */
 .file-warn {
-  position: absolute;
-  top: 6px;
-  right: 8px;
+  flex: 0 0 auto;
   padding: 0 4px;
   border: 1px solid var(--signal-warning);
   border-radius: var(--radius-sm);
   font-size: var(--text-xs);
+  line-height: 1.3;
   color: var(--signal-warning);
   font-family: var(--font-ui);
 }
@@ -819,12 +944,24 @@
   align-items: flex-start;
   gap: 8px;
   padding: 7px 9px;
-  border: 1px solid color-mix(in srgb, var(--signal-critical) 45%, transparent);
+  border: 1px solid var(--signal-critical-border);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--signal-critical) 12%, var(--bg-panel));
+  background: var(--signal-critical-surface);
   color: var(--text-primary);
   font-size: var(--text-sm);
   line-height: 1.5;
+}
+/* 文案占满剩余宽度，操作按钮靠右且不换行 */
+.error-bar-main {
+  flex: 1;
+  min-width: 0;
+}
+.error-bar-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 1px;
 }
 .error-bar .error-title {
   font-weight: var(--weight-semibold);
@@ -835,6 +972,17 @@
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   word-break: break-word;
+}
+
+/* 破坏性操作（取消正在进行的分析）：警示色，但不是主操作 */
+.btn.danger {
+  color: var(--signal-warning);
+  border-color: var(--signal-warning);
+}
+.btn.danger:hover:not(:disabled) {
+  background: var(--signal-warning);
+  border-color: var(--signal-warning);
+  color: #10100a;
 }
 
 /* 空状态：居中提示 + 次级说明，替代裸文字 */
@@ -857,5 +1005,96 @@
 .empty .empty-hint {
   color: var(--text-disabled);
   font-size: var(--text-xs);
-  max-width: 34ch;
+  max-width: 44ch;
+  line-height: 1.6;
+}
+
+/* ---- M4 实时采集面板 ------------------------------------------------ */
+
+.rt-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--panel-gap);
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-note);
+}
+
+.rt-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 采集中的指示点：除了颜色还有 title 文字，不只靠颜色传达状态 */
+.rt-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--signal-critical);
+  box-shadow: 0 0 0 2px var(--signal-critical-surface);
+}
+
+.rt-select {
+  width: 100%;
+  height: var(--control-height);
+  padding: 0 6px;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+}
+
+.rt-select:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.rt-select:disabled {
+  color: var(--text-disabled);
+}
+
+.rt-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.rt-note {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.rt-error {
+  color: var(--signal-critical);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* 标题旁的「实时」徽标：说明当前频谱不是文件数据 */
+.rt-badge {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--signal-critical-border);
+  border-radius: var(--radius-sm);
+  color: var(--signal-critical);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.04em;
+}
+
+/* 计数着色：丢帧 / 覆盖非零时必须一眼看到 */
+.num.bad {
+  color: var(--signal-critical);
+}
+
+.num.warn {
+  color: var(--signal-warning);
 }

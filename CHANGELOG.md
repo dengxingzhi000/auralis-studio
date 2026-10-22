@@ -9,7 +9,172 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Real-time input capture** (`crates/auralis-audio`): a CPAL input stream with a
+  bounded lock-free ring buffer, and an analyser thread that never runs in the
+  audio callback. The callback only takes a recycled buffer, copies, pushes, and
+  counts drops.
+  - `start_capture` negotiates the format against the device's advertised f32
+    ranges instead of failing when the request differs from the device default;
+    when nothing matches it falls back and **reports the format actually used**
+    (`CaptureSession::format`), so the frequency axis cannot silently shift.
+  - The analyser keeps a rolling `fft_size` window and downmixes interleaved
+    multi-channel data by averaging all channels. Fully anti-phase stereo
+    cancels to digital silence and is shown as `—`, not a plausible-looking number.
+  - Drops are counted in two places and both are displayed: `dropped_frames`
+    (the ring overflowed) and `snapshot_overwrites` (the UI missed a generation).
+    Neither counter is incremented per publish, so they stay meaningful.
+  - Realtime snapshots cross the IPC boundary as little-endian `f32` bytes
+    (`Float32Array` in the UI), per ADR-018 rule 2.
+  - **Not verified on real hardware.** Only the missing-device error path and
+    logic-level tests have been executed.
+- **Realtime panel** in the sidebar: device picker, start/stop, sample rate,
+  channel count, processed samples, and the two drop counters. While capturing,
+  the spectrum pane is fed by the live snapshot and marked with a "实时" badge.
+- **Level meter** (`LevelMeter`): per-channel peak bars with a shared RMS marker
+  and an over-full-scale warning. The colour gradient spans the whole track and
+  is masked from the right, so a colour position always means the same absolute
+  level — a shorter bar does not turn the whole meter green.
+- **Display options**, persisted in `localStorage` (`auralis.display.v1`) and
+  applied consistently to spectrum, spectrogram and meter:
+  - spectrum shape: filled area or line only ("声线"), because a filled trace
+    hides detail below roughly -100 dBFS;
+  - dB range presets (-140…0, -100…0, -80…-10, -140…-40);
+  - channel layout for stereo files: separate lanes or overlaid, for spotting
+    differences and phase problems.
+- **Data-quality readouts** in the inspector: over-full-scale samples, flat-top
+  regions (explicitly labelled heuristic) and sanitised non-finite samples.
+  They are shown even when zero, so "checked and clean" is distinguishable from
+  "not measured".
+- **CSV/JSON export** (`crates/auralis-storage`, 11 tests) with full provenance:
+  app version, algorithm version, DSP spec revision, units, analysis parameters
+  (FFT size, window, spectrum step, spectrogram grid, hop), source file, codec
+  and sample rate. CSV is a long-format table (`series,index,x_hz,x_s,value,unit,quantity`)
+  with a `#`-prefixed metadata block; JSON declares units once and carries the
+  spectrum/waveform arrays.
+  - Non-finite values (silence = `-inf`) become `null` (JSON) / empty fields
+    (CSV), never `0`, and their count is reported as `non_finite_values`.
+  - Writing is atomic (`.part` + rename); a failed write never leaves a
+    half-written file that a user might mistake for data.
+  - A destination whose extension contradicts the requested format is rejected
+    instead of producing a `.json` file containing CSV.
+  - Export re-runs the analysis rather than accepting decimated view data from
+    the UI, so the file is reproducible on its own and matches what is on screen.
+- **Layout persistence**: panel widths and panel visibility survive restarts
+  (`localStorage`, versioned keys, values validated and clamped on read).
+- **Cancellable file analysis.** The task id is now allocated by the caller and
+  passed into `analyze_file`, because a task id that only arrives on return can
+  never be used to cancel work that is still running. `AppState::try_register_token`
+  rejects duplicate ids. The UI exposes cancellation from the top bar and the
+  status bar, and `Esc` does the same; cancelling keeps the previous result and
+  reports "已取消" instead of an error.
+- **Drag & drop** of audio files onto the window (any supported extension), and
+  clicking an entry in the file list re-analyses that path without reopening the
+  native dialog.
+- **Retry** from the error banner (`Ctrl+R`), plus `Ctrl+O` for open. The banner
+  now carries action buttons instead of only printing a sentence.
+- **Per-channel peak readout** in the inspector for multi-channel files.
+- Regression test locking the spectrogram's time span to the analysed duration.
+
+### Changed
+
+- **Visual revision of the desktop UI**, modelled on two reference interfaces
+  (a dark developer-tool dashboard and a shadcn-style component sheet): new
+  neutral elevation ramp (`bg-app` → `bg-sidebar` → `bg-panel` → `bg-elevated`),
+  4/6/8 px radius scale, 22/26/30 px control heights, 44 px top bar, card
+  headers with title + metadata, sidebar navigation with milestone tags,
+  disclosure sections in the inspector, and segmented/icon/toggle controls.
+  Chart rendering was reworked to match: gradient fills under the spectrum and
+  waveform traces, a dB colour-scale bar on the spectrogram, magnitude-adaptive
+  time axes (µs/ms/s) instead of fixed `0:00.000`, and explicit empty states.
+- Added the L1 component layer ADR-017 called for, which did not exist:
+  `components/ui/{primitives,icons}.tsx` (Button, IconButton, Input, Select,
+  Checkbox, FormField, DataRow, Collapsible, NavItem, NavGroup, ErrorBar,
+  EmptyState, inline SVG icon set). No new runtime dependencies.
+- **Frontend toolchain upgraded**: Vite 6.4 → 8.3, `@vitejs/plugin-react`
+  4.7 → 6.1, TypeScript 5.9 → 7.0 (the Go-native compiler, reached via the
+  6.0 intermediate release Microsoft recommends). TypeScript went 5.9 → 6.0 →
+  7.0 rather than straight to 7.0 because 7.0 turns 6.0's deprecations into
+  hard errors.
+- `build.minify` moved from `"esbuild"` to `"oxc"`. Vite 8 no longer bundles
+  esbuild; Oxc is the new default minifier.
+- Added `esbuild` as a devDependency for one reason only: `build.target` is
+  still a real browser version, so Vite's `vite:esbuild-transpile` plugin does
+  not skip and needs esbuild present for downleveling. It does not minify.
+
+### Fixed
+
+- **A panic during analysis no longer takes the app with it.** `analyse_isolated`
+  wraps the analysis in `catch_unwind`; a panic becomes an `Err` naming the file
+  and the panic text, which surfaces in the error banner. This is the command-layer
+  half of ADR-009's "one bad file must not bring down the app" (the task queue
+  already had the other half).
+- **The spectrogram was unreadable: transposed data and a stretched time axis.**
+  Two independent bugs. (1) `SpectrogramView` indexed the matrix as
+  `[bin][frame]` with a stride of `frames`, while `Stft::to_matrix` documents
+  `[frame][bin]` with a stride of `bins`, so a 1 kHz tone rendered as vertical
+  stripes instead of a horizontal line. (2) `analyze_file` passed the *caps*
+  `SPECTROGRAM_FRAMES`/`SPECTROGRAM_BINS` as the exact target grid, so a 4 s
+  file was upsampled into 1024 columns (~10.9 s of axis) and every column no
+  longer corresponded to one hop. Both are fixed; the axis now spans the
+  analysed window (`frames × hop`), not the file duration.
+- **Every chart rendered empty.** `decodeF32` assumed `invoke` returned a
+  `Uint8Array`; under Tauri 2 + WebView2 it returns a plain number array, so
+  `bytes.buffer` was `undefined` and each analysis threw
+  `Cannot read properties of undefined`. The helper now normalises both shapes,
+  and `ipc.ts` types the payload as `number[] | Uint8Array` instead of asserting
+  `Uint8Array` over the runtime difference.
+- Raw `String(e)` no longer lands in the status bar. Failures are translated to
+  one readable sentence (`describeError`), with the original text kept in the
+  hover title.
+- `Workspace` no longer collapses the sidebars to their minimum on any resize.
+  The clamp is computed over the sum of both sidebars and only shrinks; before,
+  every resize rewrote each panel to `avail * 0.4`.
+- `SpectrogramView` no longer prints a time axis when it has no matrix, and
+  `WaveformView` picks column aggregation vs. polyline by samples-per-pixel
+  instead of always drawing a polyline.
+- Added the missing `src/vite-env.d.ts`. The project never had Vite's standard
+  client-types scaffold, which declares `*.css` modules. TypeScript 6 enables
+  side-effect import checking by default, so `import "./styles/tokens.css"`
+  started failing with TS2882.
+- Removed `baseUrl` from `tsconfig.json`. It is deprecated in TypeScript 6
+  (TS5101) and stops functioning in 7.0. `paths` has not needed it since
+  TypeScript 4.1.
+- Replaced `__dirname` with `import.meta.dirname` in `vite.config.ts`. The
+  package is `"type": "module"`; `__dirname` only ever existed because Vite's
+  bundled config loader injected it, and Vite 8 warns it goes away once
+  `configLoader: 'native'` becomes the default.
+- Removed all 7 `color-mix()` calls from `layout.css`. Their results are now
+  precomputed tokens (`--btn-top`, `--btn-top-strong`, `--bg-note`,
+  `--accent-border-strong`, `--accent-pressed`, `--signal-critical-border`,
+  `--signal-critical-surface`), so the CSS runtime floor is really Chrome 110
+  as `build.target` declares.
+
+### Known limitations
+
+These are real and are not going to be papered over:
+
+- **The upgrade is not runtime-verified.** Typecheck, production build, the
+  dev server, `cargo check`, and `cargo test` all pass, but the packaged Tauri
+  application was never launched and no MSI/NSIS bundle was produced. Audio
+  path and WebView2 rendering are unconfirmed end to end.
+  *Update:* the Tauri debug binary was subsequently launched against the Vite
+  dev server for the UI review, and the app rendered at devicePixelRatio 1.5
+  (see `docs/screenshots/ui-dark-2026-10.png`); the bundled MSI/NSIS path is
+  still unverified.
+- **Spectrogram rendering is not screenshot-verified.** Loading a real file
+  through the UI needs the native file dialog, which cannot be driven from the
+  automation used here; the spectrogram, peak markers and its colour-scale bar
+  are therefore code-reviewed but visually unconfirmed. The synthetic-signal
+  path (spectrum + waveform) is what the screenshot covers.
+- **The JS module count dropped from 42 to 29** under Rolldown. Bundle content
+  was probed for expected component strings and the output got *smaller*
+  (260.75 → 256.49 kB), but without running the app that is not proof of
+  equivalent behaviour.
+- **The CSS minifier silently changed** from esbuild to Lightning CSS
+  (16.47 → 16.29 kB). A different minifier can produce different output; no
+  visual comparison was done.
 
 ## [0.1.0] — 2026-10-19
 
