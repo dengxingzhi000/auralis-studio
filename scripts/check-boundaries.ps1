@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
     Enforce the architecture boundaries from AGENTS.md and docs/TAD.md §3.

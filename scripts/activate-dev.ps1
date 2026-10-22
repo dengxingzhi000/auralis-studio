@@ -1,4 +1,4 @@
-# Auralis Studio — 开发环境激活脚本
+﻿# Auralis Studio — 开发环境激活脚本
 #
 # 用法：在此 PowerShell 会话开始时执行
 #     . .\scripts\activate-dev.ps1

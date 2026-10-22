@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
     用独立实现（numpy/scipy）交叉验证 auralis-dsp 的数值结果。
