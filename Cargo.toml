@@ -16,6 +16,7 @@ members = [
     "crates/auralis-codec",
     "crates/auralis-core",
     "crates/auralis-dsp",
+    "crates/auralis-storage",
     "crates/auralis-task",
     "crates/auralis-visualization",
 ]
@@ -50,6 +51,7 @@ auralis-core = { path = "crates/auralis-core" }
 auralis-dsp = { path = "crates/auralis-dsp" }
 auralis-audio = { path = "crates/auralis-audio" }
 auralis-task = { path = "crates/auralis-task" }
+auralis-storage = { path = "crates/auralis-storage" }
 auralis-visualization = { path = "crates/auralis-visualization" }
 
 # --- 外部：DSP（只允许 auralis-dsp 使用）---

@@ -124,6 +124,7 @@ name = "auralis-audio"
 version = "0.1.0"
 dependencies = [
  "auralis-core",
+ "auralis-dsp",
  "cpal",
  "crossbeam-queue",
  "thiserror 2.0.21",
@@ -153,9 +154,11 @@ dependencies = [
 name = "auralis-desktop"
 version = "0.1.0"
 dependencies = [
+ "auralis-audio",
  "auralis-codec",
  "auralis-core",
  "auralis-dsp",
+ "auralis-storage",
  "auralis-task",
  "auralis-visualization",
  "rustfft",
@@ -175,6 +178,15 @@ dependencies = [
  "auralis-core",
  "criterion",
  "rustfft",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "auralis-storage"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
 ]
