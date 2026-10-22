@@ -15,6 +15,8 @@
 
 import { useEffect, useRef } from "react";
 
+import { fitCanvas } from "./canvas-fit";
+
 export interface WaveformViewProps {
   /** 包络值，值域 [-1, 1]；null = 尚无数据 */
   envelope: Float32Array | null;
@@ -65,10 +67,8 @@ export function WaveformView({
       const h = wrap.clientHeight;
       if (w === 0 || h === 0) return;
 
-      canvas.width = Math.floor(w * dpr);
-      canvas.height = Math.floor(h * dpr);
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
+      // 尺寸没变时不重建后备存储（见 canvas-fit.ts）。
+      fitCanvas(canvas, w, h, dpr);
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;

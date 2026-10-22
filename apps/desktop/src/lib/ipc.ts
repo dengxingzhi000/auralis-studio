@@ -1,17 +1,19 @@
 /**
- * Tauri IPC 封装。
+ * 引擎 IPC 封装。
  *
  * 薄薄一层，只负责：
  *   1. 用 camelCase 调 Rust 侧命令
  *   2. 把二进制字段还原成 Float32Array
+ *
+ * 容器由 `./bridge` 提供（当前是 Electron preload）：这里**不再**直接
+ * import 任何容器 SDK，命令名与参数与迁移前保持一致。
  *
  * 刻意不引入 TanStack Query 之类的数据层——本项目的"异步任务"是
  * 本地音频分析，不是 Web 请求。套一层 HTTP 语义的缓存层反而
  * 会误导状态管理（技术选型文档里也明确提到这一点）。
  */
 
-import { invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { bridge } from "./bridge";
 
 import {
   decodeF32,
@@ -21,6 +23,7 @@ import {
   type FileAnalysis,
   type FileInfo,
   type RealtimeSnapshot,
+  type SpectrogramViewData,
   type SyntheticAnalysis,
   type SyntheticRequest,
 } from "./contracts";
@@ -31,6 +34,16 @@ import {
  * （那个断言正是「图表全空」这个 bug 的成因）。
  */
 type RawBytes = number[] | Uint8Array;
+
+/**
+ * 调用 Rust 引擎命令。
+ *
+ * 桥接对象在模块加载时不取：浏览器（无 preload）里打开 dev server 时，
+ * `window.auralis` 不存在，只有在真正调用时才应该报错。
+ */
+function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  return bridge().invoke<T>(cmd, args);
+}
 
 /** 取应用与算法版本。 */
 export async function fetchAppInfo(): Promise<AppInfo> {
@@ -104,7 +117,7 @@ export function isAudioPath(path: string): boolean {
  * so callers must not surface it as one.
  */
 export async function pickAudioFile(): Promise<string | null> {
-  const picked = await open({
+  const picked = await bridge().openFile({
     multiple: false,
     directory: false,
     filters: [{ name: "Audio", extensions: AUDIO_EXTENSIONS }],
@@ -158,6 +171,29 @@ export async function analyzeFile(
     spectrogramDb: decodeF32(raw.spectrogramDb),
     __elapsedMeasuredMs: performance.now() - t0,
   };
+}
+
+/**
+ * 取一个时间窗口的声谱图（M4 视口分块）。
+ *
+ * Rust 侧只解码并计算请求的窗口，内存与窗口长度成正比，与文件长度无关。
+ * 返回的 `startSeconds` 可能因 hop 网格对齐而略早于请求值，时间轴应使用它。
+ */
+export async function fetchSpectrogramView(
+  path: string,
+  startSeconds: number,
+  windowSeconds: number,
+  taskId?: number,
+): Promise<SpectrogramViewData> {
+  const raw = await invoke<
+    Omit<SpectrogramViewData, "spectrogramDb"> & { spectrogramDb: RawBytes }
+  >("spectrogram_view", {
+    path,
+    startSeconds,
+    windowSeconds,
+    ...(taskId == null ? {} : { taskId }),
+  });
+  return { ...raw, spectrogramDb: decodeF32(raw.spectrogramDb) };
 }
 
 /** Cancel a running task. Returns false when the task id is unknown. */
@@ -229,7 +265,7 @@ export interface ExportOutcome {
 export async function pickExportDestination(
   defaultName: string,
 ): Promise<string | null> {
-  const picked = await save({
+  const picked = await bridge().saveFile({
     defaultPath: defaultName,
     filters: [
       { name: "CSV（长格式）", extensions: ["csv"] },

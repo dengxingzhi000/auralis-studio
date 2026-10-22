@@ -2,9 +2,12 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 
-// Tauri 通过固定端口的 dev server 连接，配置需与 tauri.conf.json 的
-// devUrl 保持一致。
+// 开发服务器固定端口：Electron 主进程（electron/main.ts）在 dev 模式下
+// 加载 127.0.0.1:5173；端口一变，窗口就会白屏。
 export default defineConfig({
+  // 相对 base：Electron 生产环境用 file:// 加载 dist/index.html，
+  // 绝对路径 /assets/... 在 file:// 下会解析到盘符根目录而 404。
+  base: "./",
   plugins: [react()],
   resolve: {
     // 用 import.meta.dirname 而非 __dirname：本项目是 "type": "module"，
@@ -18,13 +21,14 @@ export default defineConfig({
     strictPort: true,
     host: "127.0.0.1",
     watch: {
-      // Rust 侧由 cargo 自己监视，前端不需要 watch src-tauri
-      ignored: ["**/src-tauri/**"],
+      // Electron 主进程由 esbuild 单独打包，不需要 Vite watch
+      ignored: ["**/electron/**"],
     },
   },
-  envPrefix: ["VITE_", "TAURI_"],
+  envPrefix: ["VITE_"],
   build: {
-    // Tauri 使用系统 WebView2，产物应针对较新的 Chromium。
+    // Electron 45 自带 Chromium 156；这里仍保守地降到 chrome110，
+    // 让语法降级有余量，也便于在普通浏览器里打开 dev server 调试。
     //
     // 注意：这里的 target 只约束 JS 语法降级与 CSS 语法降级，
     // 不约束 CSS 函数。源码 layout.css 里的 color-mix() 属于

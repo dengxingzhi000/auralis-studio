@@ -6,12 +6,12 @@
 #   - 新增依赖用 `cargo add -p <crate>` 解析当前兼容版本，然后把手写结果挪到这里。
 #   - Cargo.lock 提交入库；CI 用 --locked 构建。
 #
-# 架构（ADR-016）：Rust 只做音频内核与 IPC 端点，
-# UI 由 Tauri 2 + React 承担，React 不参与音频计算。
+# 架构（ADR-016 / ADR-019）：Rust 只做音频内核与 IPC 端点，
+# UI 由 Electron + React 承担，React 不参与音频计算。
 [workspace]
 resolver = "3"
 members = [
-    "apps/desktop/src-tauri",
+    "crates/auralis-engine",
     "crates/auralis-audio",
     "crates/auralis-codec",
     "crates/auralis-core",
@@ -37,7 +37,7 @@ edition = "2024"
 # 依据 AGENTS.md「不宣称未经验证的东西」，不写没测过的数字。
 #
 # 实际下限参考（未验证，仅供将来降 MSRV 时参考）：
-#   tauri 2.11.6 = 1.77.2 / edition 2024 = 1.85 / is_multiple_of = 1.87
+#   edition 2024 = 1.85 / is_multiple_of = 1.87
 # 若将来要正式支持旧版工具链，需在 CI 增加一个 MSRV job 实测后再改这里。
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
@@ -58,6 +58,7 @@ auralis-visualization = { path = "crates/auralis-visualization" }
 rustfft = "6.4"
 
 # --- 外部：通用 ---
+base64 = "0.22"
 crossbeam-channel = "0.5"
 criterion = "0.8"
 serde = { version = "1.0", features = ["derive"] }

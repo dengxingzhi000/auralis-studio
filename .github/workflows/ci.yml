@@ -1,7 +1,7 @@
 name: CI
 
 # docs/TEST_PLAN.md §7 要求的标准检查集合。
-# ADR-016 之后项目是「Rust 内核 + Tauri/React 前端」双栈，
+# ADR-019 之后项目是「Rust 音频引擎 + Electron/React 容器」双栈，
 # 因此 CI 必须同时覆盖两侧。
 on:
   push:
@@ -26,22 +26,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Tauri 2 在 Linux 上需要 GTK/WebKit 开发头文件，GitHub 的
-      # ubuntu-latest 镜像不带。缺失时不会报「找不到 crate」，而是
-      # gobject-sys 的构建脚本找不到 glib-2.0，退出码 101（CI run
-      # 39219183724 实际失败原因）。
-      # libasound2-dev 是 cpal（auralis-audio）在 Linux 上编译需要的。
+      # Linux 上只需要 ALSA 开发头文件（cpal / auralis-audio）。
+      # 迁移到 Electron 后不再需要 GTK/WebKit —— 容器是 Node 进程，
+      # 窗口由 Chromium 自己画。
       - name: 安装 Linux 构建依赖
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libasound2-dev \
-            patchelf
+          sudo apt-get install -y --no-install-recommends libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -67,18 +59,18 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: IPC 载荷实测（ADR-018）
-        run: cargo test -p auralis-desktop ipc --locked -- --nocapture
+        run: cargo test -p auralis-engine ipc --locked -- --nocapture
 
       - name: Release 构建
         run: cargo build --workspace --release --locked
 
-      # Release 产物是 GUI 子系统程序，PowerShell 直接调用不会可靠等待。
-      # 必须用 Start-Process -Wait -PassThru 才能拿到退出码。
+      # 引擎是控制台子系统程序，但 PowerShell 直接调用仍不可靠地同步退出码，
+      # 统一用 Start-Process -Wait -PassThru。
       - name: Release 产物自检（无窗口）
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $exe = "target\release\auralis-studio.exe"
+          $exe = "target\release\auralis-engine.exe"
           if (-not (Test-Path $exe)) { Write-Error "missing $exe"; exit 1 }
           foreach ($flag in @('--version', '--self-test')) {
             $p = Start-Process -FilePath $exe -ArgumentList $flag -Wait -PassThru -NoNewWindow
@@ -92,10 +84,17 @@ jobs:
     defaults:
       run:
         working-directory: apps/desktop
+    env:
+      # CI only typechecks/bundles JS; it never launches Electron. Skipping the
+      # ~100 MB binary download also lets the Node 20 job (kept because branch
+      # protection requires that check name) install on a Node older than
+      # Electron 45's engines.node >= 22.12.0. The desktop runtime itself
+      # requires 22.12+; see README prerequisites.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        node: ['20', '22', '24']
 
     steps:
       - uses: actions/checkout@v4
@@ -105,8 +104,12 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
-      - name: TypeScript 类型检查
+      - name: TypeScript 类型检查（渲染进程）
         run: npm run typecheck
+      - name: TypeScript 类型检查（Electron 主进程）
+        run: npm run electron:typecheck
+      - name: 打包 Electron 主进程与 preload
+        run: npm run electron:build
       - name: 前端构建
         run: npx vite build
       - name: 产物中存在 index.html
@@ -136,7 +139,7 @@ jobs:
       - name: numpy 参考实现交叉验证
         shell: pwsh
         run: |
-          cargo build --release --locked -p auralis-desktop
+          cargo build --release --locked -p auralis-engine
           ./scripts/check-oracle.ps1
 
       - name: 必需 DSP 测试存在性核对
@@ -177,15 +180,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: 构建前端
+      - name: 构建前端与 Electron 主进程
         working-directory: apps/desktop
         run: |
           npm ci
           npx vite build
-      - name: 构建 Tauri 应用
+          npm run electron:build
+      - name: 构建 Rust 音频引擎
         run: cargo build --workspace --release --locked
       - uses: actions/upload-artifact@v4
         with:
-          name: auralis-studio-windows-x64
-          path: target/release/auralis-studio.exe
+          name: auralis-engine-windows-x64
+          path: target/release/auralis-engine.exe
           if-no-files-found: error

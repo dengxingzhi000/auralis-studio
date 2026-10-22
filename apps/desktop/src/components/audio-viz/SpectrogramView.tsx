@@ -31,6 +31,8 @@
 
 import { useEffect, useRef } from "react";
 
+import { fitCanvas } from "./canvas-fit";
+
 export interface SpectrogramViewProps {
   /** 行优先矩阵，`matrix[frame][bin]`，值域 dB */
   matrix: Float32Array | null;
@@ -49,6 +51,16 @@ export interface SpectrogramViewProps {
    * 由调用方按 Rust 给的 hop 与帧数换算，组件内不做 DSP 推算。
    */
   durationSeconds?: number;
+  /**
+   * 矩阵的绝对起点，秒。时间轴标的是 `startSeconds + 偏移`，
+   * 否则平移到 3 分钟后画面仍从 0 开始标，读数会错。
+   */
+  startSeconds?: number;
+  /**
+   * 平移视口（秒）。滚轮、拖动、双击都会调用它；
+   * 由调用方决定请求哪个窗口并对结果做防抖/取消。
+   */
+  onPan?: (deltaSeconds: number) => void;
 }
 
 const PAD = { left: 50, right: 34, top: 10, bottom: 24 };
@@ -64,6 +76,8 @@ export function SpectrogramView({
   cursorHz,
   nyquistHz,
   durationSeconds = 0,
+  startSeconds = 0,
+  onPan,
 }: SpectrogramViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -78,6 +92,7 @@ export function SpectrogramView({
     cursorHz,
     nyquistHz,
     durationSeconds,
+    startSeconds,
   });
   stateRef.current = {
     matrix,
@@ -88,6 +103,7 @@ export function SpectrogramView({
     cursorHz,
     nyquistHz,
     durationSeconds,
+    startSeconds,
   };
 
   useEffect(() => {
@@ -101,10 +117,8 @@ export function SpectrogramView({
       const ch = wrap.clientHeight;
       if (cw === 0 || ch === 0) return;
 
-      canvas.width = Math.floor(cw * dpr);
-      canvas.height = Math.floor(ch * dpr);
-      canvas.style.width = `${cw}px`;
-      canvas.style.height = `${ch}px`;
+      // 尺寸没变时不重建后备存储（见 canvas-fit.ts）。
+      fitCanvas(canvas, cw, ch, dpr);
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
@@ -233,7 +247,7 @@ export function SpectrogramView({
           const x = plotX + (plotW * i) / 4;
           const label =
             s.durationSeconds > 0
-              ? formatTime((s.durationSeconds * i) / 4)
+              ? formatTime(s.startSeconds + (s.durationSeconds * i) / 4)
               : `${((i * 25) / 4).toFixed(0)}%`;
           ctx.fillText(label, x, plotY + plotH + 6);
         }
@@ -280,7 +294,72 @@ export function SpectrogramView({
     cursorHz,
     nyquistHz,
     durationSeconds,
+    startSeconds,
   ]);
+
+  // ---- 视口交互：滚轮 / 拖动 / 双击 ----
+  // 用原生监听器而不是 React onWheel：只有原生监听器能以 passive:false
+  // 调用 preventDefault，否则滚轮会同时滚动页面。
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap || !onPan) return;
+
+    let dragX: number | null = null;
+
+    const span = () =>
+      stateRef.current.durationSeconds > 0
+        ? stateRef.current.durationSeconds
+        : 0;
+
+    const onWheel = (e: WheelEvent) => {
+      const seconds = span();
+      if (seconds <= 0) return;
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (delta === 0) return;
+      e.preventDefault();
+      // 一格滚轮 = 半屏；方向与内容移动方向一致（向下/向右 = 更晚）。
+      onPan(Math.sign(delta) * seconds * 0.5);
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      dragX = e.clientX;
+      wrap.setPointerCapture(e.pointerId);
+      wrap.style.cursor = "grabbing";
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      wrap.style.cursor = "grab";
+      if (dragX == null) return;
+      const dx = e.clientX - dragX;
+      dragX = null;
+      const seconds = span();
+      if (seconds <= 0 || Math.abs(dx) < 4) return;
+      // 只在绘图区宽度上映射；左侧 50px 是频率刻度。
+      const plotW = Math.max(1, wrap.clientWidth - 84);
+      onPan((-dx / plotW) * seconds);
+    };
+
+    const onDoubleClick = () => {
+      const start = stateRef.current.startSeconds;
+      if (start > 0) onPan(-start);
+    };
+
+    wrap.style.cursor = "grab";
+    wrap.addEventListener("wheel", onWheel, { passive: false });
+    wrap.addEventListener("pointerdown", onPointerDown);
+    wrap.addEventListener("pointerup", onPointerUp);
+    wrap.addEventListener("pointercancel", onPointerUp);
+    wrap.addEventListener("dblclick", onDoubleClick);
+    return () => {
+      wrap.removeEventListener("wheel", onWheel);
+      wrap.removeEventListener("pointerdown", onPointerDown);
+      wrap.removeEventListener("pointerup", onPointerUp);
+      wrap.removeEventListener("pointercancel", onPointerUp);
+      wrap.removeEventListener("dblclick", onDoubleClick);
+      wrap.style.cursor = "";
+    };
+  }, [onPan]);
 
   return (
     <div ref={wrapRef} className="viz-canvas">

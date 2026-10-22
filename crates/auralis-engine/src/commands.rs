@@ -24,7 +24,6 @@ pub struct AppInfo {
 ///
 /// 这是 ADR-018 表中的「元数据 / 配置 / 指标标量」，走 JSON Command 即可，
 /// 无需优化。
-#[tauri::command]
 pub fn app_info() -> AppInfo {
     AppInfo {
         version: auralis_core::APP_VERSION,
@@ -65,6 +64,7 @@ pub struct SyntheticAnalysis {
     pub metrics: SyntheticMetrics,
     /// 频谱快照，`Float32Array`，长度为 `spectrum_bins`。
     /// 内容是**已降采样到目标像素宽度**的 dB 值，不是原始 FFT bin。
+    #[serde(serialize_with = "crate::b64::encode")]
     pub spectrum_db: Vec<u8>,
     /// `spectrum_db` 对应的频率起点 Hz（等间隔频率轴）。
     pub spectrum_start_hz: f32,
@@ -73,6 +73,7 @@ pub struct SyntheticAnalysis {
     /// 频谱点数。
     pub spectrum_bins: usize,
     /// 波形包络，`Float32Array`，通道内交织，值域 [-1, 1]。
+    #[serde(serialize_with = "crate::b64::encode")]
     pub waveform_envelope: Vec<u8>,
     /// 包络点数（每声道）。
     pub waveform_points: usize,
@@ -96,7 +97,6 @@ pub struct SyntheticAnalysis {
 /// - `fft_size` — FFT 长度（必须是 2 的幂）
 /// - `target_bins` — 频谱要降采样到的点数，通常等于画布像素宽度
 /// - `envelope_points` — 波形包络的目标点数
-#[tauri::command]
 pub fn analyze_synthetic_signal(
     frequency_hz: f64,
     amplitude: f32,

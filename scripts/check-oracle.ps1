@@ -14,7 +14,7 @@
     两个独立实现得出同一个数，才是可信的证据（ADR-015）。
 
 .PARAMETER Exe
-    auralis-studio 可执行文件路径。默认取 target\release。
+    auralis-engine 可执行文件路径。默认取 target\release。
 
 .PARAMETER Python
     Python 解释器。默认按顺序探测 py / python3 / python。
@@ -38,13 +38,13 @@ function Fail($msg) { Write-Host "ORACLE FAILED: $msg" -ForegroundColor Red; exi
 # ---- 定位可执行文件 ----
 if (-not $Exe) {
     foreach ($cand in @(
-        "$WorkspaceRoot\target\release\auralis-studio.exe",
-        "$WorkspaceRoot\target\debug\auralis-studio.exe")) {
+        "$WorkspaceRoot\target\release\auralis-engine.exe",
+        "$WorkspaceRoot\target\debug\auralis-engine.exe")) {
         if (Test-Path $cand) { $Exe = $cand; break }
     }
 }
 if (-not $Exe -or -not (Test-Path $Exe)) {
-    Fail "找不到 auralis-studio 可执行文件（先跑 cargo build）"
+    Fail "找不到 auralis-engine 可执行文件（先跑 cargo build -p auralis-engine）"
 }
 
 # ---- 定位 Python ----

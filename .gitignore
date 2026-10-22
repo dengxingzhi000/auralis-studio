@@ -3,16 +3,12 @@
 **/*.rs.bk
 *.pdb
 
-# 前端 (ADR-016)
+# 前端 / Electron (ADR-019)
 # 注意：这些不能用前导 "/" 锚定到仓库根 —— 前端位于 apps/desktop/ 下，
-# 锚定后 node_modules 与 dist 会被误提交。
+# 锚定后 node_modules 与 dist 会被误提交。electron/dist 也命中 dist/。
 node_modules/
 dist/
 *.tsbuildinfo
-
-# Tauri 生成物（由 tauri_build 自动生成，随 tauri.conf.json 变化）
-# 用完整相对路径而非 /gen/...，否则因前导斜杠锚定到仓库根而失效。
-apps/desktop/src-tauri/gen/
 
 # 本地工具链与缓存（本项目全部落在 D 盘，不入库）
 .cargo/registry/

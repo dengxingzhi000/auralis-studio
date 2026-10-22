@@ -3,14 +3,21 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Auralis Studio 桌面应用前端（Tauri + React 19）",
+  "description": "Auralis Studio 桌面应用（Electron + React 19 + Rust 引擎）",
+  "main": "electron/dist/main.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "electron:build": "node scripts/build-electron.mjs",
+    "electron:typecheck": "tsc -p electron/tsconfig.json",
+    "electron:dev": "npm run electron:build && node scripts/dev-electron.mjs",
+    "electron:start": "npm run build && npm run electron:build && electron ."
   },
   "dependencies": {
     "@radix-ui/react-context-menu": "^2.2.0",
@@ -22,17 +29,15 @@
     "@radix-ui/react-slot": "^1.1.0",
     "@radix-ui/react-tabs": "^1.1.0",
     "@radix-ui/react-tooltip": "^1.1.0",
-    "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-dialog": "^2.8.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0",
     "@types/node": "^26.6.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.0",
+    "electron": "^45.0.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.0",
     "vite": "^8.0.0"

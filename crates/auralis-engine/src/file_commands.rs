@@ -19,7 +19,6 @@ use auralis_storage::{
 };
 use auralis_task::CancelToken;
 use serde::Serialize;
-use tauri::State;
 
 use crate::app_state::AppState;
 
@@ -62,8 +61,7 @@ pub struct FileInfoDto {
 ///
 /// # Errors
 /// 路径为空、文件不存在、容器无法识别、没有音轨。
-#[tauri::command]
-pub async fn probe_file(path: String) -> Result<FileInfoDto, String> {
+pub fn probe_file(path: String) -> Result<FileInfoDto, String> {
     let p = PathBuf::from(&path);
     if path.trim().is_empty() {
         return Err("path must not be empty".to_string());
@@ -120,10 +118,12 @@ pub struct FileAnalysisDto {
     /// 处理耗时，毫秒。
     pub elapsed_ms: u64,
     /// 波形包络，`Float32Array`，值域 [-1, 1]。
+    #[serde(serialize_with = "crate::b64::encode")]
     pub waveform_envelope: Vec<u8>,
     /// 包络点数。
     pub waveform_points: usize,
     /// 频谱 dB，`Float32Array`，已按画布宽度降采样（M2）。
+    #[serde(serialize_with = "crate::b64::encode")]
     pub spectrum_db: Vec<u8>,
     /// 频谱点数（降采样后）。
     pub spectrum_bins: usize,
@@ -132,13 +132,19 @@ pub struct FileAnalysisDto {
     /// 检出的峰值（M2）。
     pub peaks: Vec<PeakDto>,
     /// 声谱图矩阵，行优先 `[frame][bin]`，f32 dB（M3）。
+    #[serde(serialize_with = "crate::b64::encode")]
     pub spectrogram_db: Vec<u8>,
     /// 声谱图宽度（时间格数）。
     pub spectrogram_frames: usize,
     /// 声谱图高度（频率 bin 数）。
     pub spectrogram_bins: usize,
     /// 每帧代表的时间（毫秒），供时间轴标注。
+    ///
+    /// 矩阵被降采样时这里是**有效** hop（源 hop × 降采样倍数），
+    /// 因此 `spectrogram_frames × spectrogram_hop_ms` 等于矩阵覆盖的真实时长。
     pub spectrogram_hop_ms: f64,
+    /// 声谱图矩阵的绝对起点（秒，相对文件开头）。
+    pub spectrogram_start_seconds: f64,
     /// 分析所用 FFT 长度，保证结果可复现。
     pub fft_size: usize,
     /// 窗函数标识。
@@ -183,9 +189,8 @@ pub struct PeakDto {
 /// # Errors
 /// 文件问题返回错误；用户取消返回 `Ok` 且 `outcome == "cancelled"`，
 /// **不当作错误**——用户主动取消不是失败。
-#[tauri::command]
-pub async fn analyze_file(
-    state: State<'_, AppState>,
+pub fn analyze_file(
+    state: &AppState,
     path: String,
     envelope_points: Option<usize>,
     task_id: Option<u64>,
@@ -231,9 +236,9 @@ pub async fn analyze_file(
 ///
 /// 注意：`run_analysis` 内部已经把**可预期**的错误转成了 `Err`，
 /// 这里只兜住真正不该发生的 panic。参数化成闭包是为了能单独测这条路径。
-fn isolate_analysis<F>(label: &str, f: F) -> Result<FileAnalysisDto, String>
+fn isolate_task<T, F>(label: &str, f: F) -> Result<T, String>
 where
-    F: FnOnce() -> Result<FileAnalysisDto, String>,
+    F: FnOnce() -> Result<T, String>,
 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(result) => result,
@@ -259,12 +264,281 @@ fn analyse_isolated(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
-    isolate_analysis(&label, || run_analysis(path, token, envelope_points))
+    isolate_task(&label, || run_analysis(path, token, envelope_points))
+}
+
+/// 声谱图视口结果（M4 视口分块）。
+///
+/// 只包含一个时间窗口的 STFT 矩阵，与 `analyze_file` 的整文件指标无关。
+/// 前端平移视口时重复调用 `spectrogram_view`，不必重跑整文件分析。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpectrogramViewDto {
+    /// 行优先 `[frame][bin]`，f32 dB。
+    #[serde(serialize_with = "crate::b64::encode")]
+    pub spectrogram_db: Vec<u8>,
+    /// 矩阵宽度（时间格数）。
+    pub frames: usize,
+    /// 矩阵高度（频率 bin 数）。
+    pub bins: usize,
+    /// 有效 hop（毫秒）：`frames × hop_ms` = 矩阵覆盖的真实时长。
+    pub hop_ms: f64,
+    /// 矩阵起点（秒，相对文件开头，已对齐到 STFT hop 网格）。
+    pub start_seconds: f64,
+    /// 矩阵覆盖的时长（秒）。
+    pub duration_seconds: f64,
+    /// 源采样率，供频率轴使用。
+    pub sample_rate: u32,
+    /// STFT 帧长。
+    pub fft_size: usize,
+    /// 窗函数标识。
+    pub window: String,
+    /// `succeeded` 或 `cancelled`。
+    pub outcome: String,
+    /// 处理耗时，毫秒。
+    pub elapsed_ms: u64,
+    /// 任务 ID。
+    pub task_id: u64,
+}
+
+/// 声谱图视口的最小/最大时间窗（秒）。
+pub const MIN_SPECTROGRAM_WINDOW_SECONDS: f64 = 0.1;
+/// 上限与 `SPECTRUM_WINDOW_SECONDS` 一致：30 秒 @48k 的捕获缓冲约 5.8 MB。
+pub const MAX_SPECTROGRAM_WINDOW_SECONDS: f64 = SPECTRUM_WINDOW_SECONDS as f64;
+
+const STFT_FRAME_LEN: usize = 2048;
+const STFT_HOP_SIZE: usize = 512;
+
+/// 计算一个时间窗口的声谱图。
+///
+/// `start_seconds` 会被钳到 `[0, duration - window]`，并向下对齐到全局
+/// hop 网格：同一时间窗口无论从哪个视口请求，帧位置都一致。
+///
+/// # Errors
+/// 文件不可读、解码失败，或参数非法。
+pub fn spectrogram_view(
+    state: &AppState,
+    path: String,
+    start_seconds: f64,
+    window_seconds: Option<f64>,
+    task_id: Option<u64>,
+) -> Result<SpectrogramViewDto, String> {
+    if !start_seconds.is_finite() {
+        return Err("startSeconds must be finite".to_string());
+    }
+    if window_seconds.is_some_and(|w| !w.is_finite()) {
+        return Err("windowSeconds must be finite".to_string());
+    }
+    let token = CancelToken::new();
+    let task_id = match task_id {
+        Some(id) => {
+            if !state.try_register_token(id, token.clone()) {
+                return Err(format!("task id {id} is already running"));
+            }
+            id
+        }
+        None => {
+            let id = state.next_task_id();
+            state.register_token(id, token.clone());
+            id
+        }
+    };
+
+    let started = std::time::Instant::now();
+    let result = isolate_task(&path, || {
+        run_spectrogram_view(Path::new(&path), &token, start_seconds, window_seconds)
+    });
+    state.unregister_token(task_id);
+
+    result.map(|mut dto| {
+        dto.elapsed_ms = started.elapsed().as_millis() as u64;
+        dto.task_id = task_id;
+        dto
+    })
+}
+
+/// 真正的视口计算实现（便于单元测试与 panic 隔离）。
+fn run_spectrogram_view(
+    path: &Path,
+    token: &CancelToken,
+    start_seconds: f64,
+    window_seconds: Option<f64>,
+) -> Result<SpectrogramViewDto, String> {
+    let info = probe(path).map_err(|e| e.to_string())?;
+    let sample_rate = info.format.sample_rate.get();
+    let duration = info.duration_seconds;
+
+    let window = window_seconds
+        .unwrap_or(MAX_SPECTROGRAM_WINDOW_SECONDS)
+        .clamp(
+            MIN_SPECTROGRAM_WINDOW_SECONDS,
+            MAX_SPECTROGRAM_WINDOW_SECONDS,
+        );
+    // 不允许窗口起点落到文件末尾之后：钳到最后一个完整窗口。
+    let max_start = (duration - window).max(0.0);
+    let requested_start = start_seconds.clamp(0.0, max_start);
+
+    // 全局 hop 网格对齐：与 `Stft::compute_range` 的约定一致。
+    let target_frame = ((requested_start * f64::from(sample_rate)) as u64 / STFT_HOP_SIZE as u64)
+        * STFT_HOP_SIZE as u64;
+    let capture_frames = (window * f64::from(sample_rate)).ceil() as usize + STFT_FRAME_LEN;
+
+    let (samples, actual_start) = capture_mono_window(path, target_frame, capture_frames, token)?;
+
+    let stft_cfg = auralis_dsp::StftConfig {
+        frame_len: STFT_FRAME_LEN,
+        hop_size: STFT_HOP_SIZE,
+        window: auralis_dsp::WindowFunction::Hann,
+        remove_dc: false,
+    };
+    let stft = auralis_dsp::Stft::new(stft_cfg).map_err(|e| e.to_string())?;
+
+    if token.is_cancelled() {
+        return Ok(empty_view(sample_rate, actual_start, "cancelled"));
+    }
+
+    let frames = if samples.len() >= STFT_FRAME_LEN {
+        stft.compute(&samples, sample_rate)
+            .map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+
+    let src_frames = frames.len();
+    let src_bins = frames.first().map_or(0, |f| f.db.len());
+    let target_frames = src_frames.min(SPECTROGRAM_FRAMES);
+    let (matrix, _bin_step) = auralis_dsp::Stft::to_matrix(
+        &frames,
+        target_frames,
+        src_bins.min(SPECTROGRAM_BINS),
+        auralis_dsp::STFT_MIN_DB,
+        0.0,
+    );
+    let hop_ms = effective_hop_ms(src_frames, target_frames, stft.hop_seconds(sample_rate));
+    let flat: Vec<f32> = matrix.into_iter().flatten().collect();
+    let bins = if target_frames > 0 {
+        src_bins.min(SPECTROGRAM_BINS)
+    } else {
+        0
+    };
+
+    Ok(SpectrogramViewDto {
+        spectrogram_db: f32s_to_le_bytes(&flat),
+        frames: target_frames,
+        bins,
+        hop_ms,
+        start_seconds: actual_start as f64 / f64::from(sample_rate),
+        duration_seconds: target_frames as f64 * hop_ms / 1000.0,
+        sample_rate,
+        fft_size: STFT_FRAME_LEN,
+        window: stft_cfg.window.id().to_string(),
+        outcome: "succeeded".to_string(),
+        elapsed_ms: 0,
+        task_id: 0,
+    })
+}
+
+/// 空视口（取消或文件太短）。
+fn empty_view(sample_rate: u32, actual_start_frame: u64, outcome: &str) -> SpectrogramViewDto {
+    SpectrogramViewDto {
+        spectrogram_db: Vec::new(),
+        frames: 0,
+        bins: 0,
+        hop_ms: 0.0,
+        start_seconds: actual_start_frame as f64 / f64::from(sample_rate),
+        duration_seconds: 0.0,
+        sample_rate,
+        fft_size: STFT_FRAME_LEN,
+        window: auralis_dsp::WindowFunction::Hann.id().to_string(),
+        outcome: outcome.to_string(),
+        elapsed_ms: 0,
+        task_id: 0,
+    }
+}
+
+/// 从 `target_frame` 起捕获最多 `capture_frames` 个**单声道**（通道 0）样本。
+///
+/// 先 seek 再解码：`Accurate` seek 可能退到目标之前的包边界，
+/// 因此这里会丢弃 `[实际起点, target_frame)` 的样本，保证返回的
+/// `actual_start` 就是第一个返回样本的绝对帧号。
+/// 容器不支持 seek 时退回从头解码（正确但更慢），并记录一条警告。
+fn capture_mono_window(
+    path: &Path,
+    target_frame: u64,
+    capture_frames: usize,
+    token: &CancelToken,
+) -> Result<(Vec<f32>, u64), String> {
+    let mut decoder = BlockDecoder::open(path).map_err(|e| e.to_string())?;
+    let mut actual_start = match decoder.seek_to_frame(target_frame) {
+        Ok(frame) => frame,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                target_frame,
+                %error,
+                "seek failed, decoding from the start"
+            );
+            decoder = BlockDecoder::open(path).map_err(|e| e.to_string())?;
+            0
+        }
+    };
+
+    let channels = decoder.format().channels.get().max(1) as usize;
+    let mut out: Vec<f32> = Vec::with_capacity(capture_frames.min(1 << 22));
+    let mut first_captured: Option<u64> = None;
+
+    while out.len() < capture_frames {
+        if token.is_cancelled() {
+            break;
+        }
+
+        let Some(block) = decoder.next_block().map_err(|e| e.to_string())? else {
+            break;
+        };
+        let pcm = &block.pcm;
+        let block_start = pcm.first_frame;
+        let block_frames = pcm.frame_count() as u64;
+        if block_start + block_frames <= target_frame {
+            continue;
+        }
+
+        let skip_frames = target_frame.saturating_sub(block_start) as usize;
+        let begin = skip_frames.saturating_mul(channels);
+        if begin >= pcm.samples.len() {
+            continue;
+        }
+        if first_captured.is_none() {
+            first_captured = Some(block_start + skip_frames as u64);
+        }
+
+        for &sample in pcm.samples[begin..].iter().step_by(channels) {
+            out.push(if sample.is_finite() { sample } else { 0.0 });
+            if out.len() == capture_frames {
+                break;
+            }
+        }
+    }
+
+    if let Some(start) = first_captured {
+        actual_start = start;
+    }
+    Ok((out, actual_start))
+}
+
+/// 矩阵行的有效时间步长。
+///
+/// `to_matrix` 把 `src_frames` 行聚合成 `target_frames` 行；如果直接沿用
+/// 原始 hop，时间轴会把 30 秒的数据标成 10.9 秒（1024 × 10.67 ms）。
+fn effective_hop_ms(src_frames: usize, target_frames: usize, hop_seconds: f64) -> f64 {
+    if target_frames == 0 {
+        0.0
+    } else {
+        src_frames as f64 * hop_seconds * 1000.0 / target_frames as f64
+    }
 }
 
 /// 取消指定任务。
-#[tauri::command]
-pub async fn cancel_task(state: State<'_, AppState>, task_id: u64) -> Result<bool, String> {
+pub fn cancel_task(state: &AppState, task_id: u64) -> Result<bool, String> {
     Ok(state.cancel(task_id))
 }
 
@@ -293,8 +567,7 @@ pub struct ExportOutcomeDto {
 ///
 /// # Errors
 /// 格式不认识、目标扩展名与格式不符、分析失败或写盘失败时返回错误。
-#[tauri::command]
-pub async fn export_analysis(
+pub fn export_analysis(
     source: String,
     destination: String,
     format: String,
@@ -556,7 +829,7 @@ fn run_analysis(
     let (spectrum_db, spectrum_bins, spectrum_step_hz, peaks) =
         spectrum_result.unwrap_or_else(|| (Vec::new(), 0, 0.0, Vec::new()));
 
-    let (matrix, _step, hop_ms) = if spectrum_capture.len() >= stft_cfg.frame_len {
+    let (matrix, hop_ms) = if spectrum_capture.len() >= stft_cfg.frame_len {
         let stft = auralis_dsp::Stft::new(stft_cfg).map_err(|e| e.to_string())?;
         let frames = stft
             .compute(&spectrum_capture, sample_rate)
@@ -568,16 +841,20 @@ fn run_analysis(
         // 时间轴因此与真实时长不符，且每列不再对应一个 hop。
         let src_frames = frames.len();
         let src_bins = frames.first().map_or(0, |f| f.db.len());
-        let (m, step) = auralis_dsp::Stft::to_matrix(
+        let target_frames = src_frames.min(SPECTROGRAM_FRAMES);
+        let (m, _bin_step) = auralis_dsp::Stft::to_matrix(
             &frames,
-            src_frames.min(SPECTROGRAM_FRAMES),
+            target_frames,
             src_bins.min(SPECTROGRAM_BINS),
             auralis_dsp::STFT_MIN_DB,
             0.0,
         );
-        (m, step, stft.hop_seconds(sample_rate) * 1000.0)
+        (
+            m,
+            effective_hop_ms(src_frames, target_frames, stft.hop_seconds(sample_rate)),
+        )
     } else {
-        (Vec::new(), 1.0, 0.0)
+        (Vec::new(), 0.0)
     };
     let spectrogram_frames = matrix.len();
     let spectrogram_bins = matrix.first().map_or(0, Vec::len);
@@ -619,6 +896,7 @@ fn run_analysis(
         spectrogram_frames,
         spectrogram_bins,
         spectrogram_hop_ms: hop_ms,
+        spectrogram_start_seconds: 0.0,
         fft_size: spectrum_cfg.fft_size,
         window: spectrum_cfg.window.id().to_string(),
         // 命令层在返回前填真实任务号；直接调用 run_analysis 的测试看到 0
@@ -698,6 +976,7 @@ fn finish_cancelled(
         spectrogram_frames: 0,
         spectrogram_bins: 0,
         spectrogram_hop_ms: 0.0,
+        spectrogram_start_seconds: 0.0,
         fft_size: 0,
         window: String::new(),
         task_id: 0,
@@ -1055,6 +1334,95 @@ mod tests {
     }
 
     #[test]
+    fn spectrogram_time_axis_stays_correct_when_frames_are_downsampled() {
+        // 12 秒 > 1024 列 × 10.67 ms ≈ 10.9 秒，矩阵必然被降采样。
+        // 有效 hop 必须随降采样倍数放大，否则时间轴会短于真实窗口。
+        let dir = scratch("sg-downsample");
+        let path = dir.join("long.wav");
+        write_wav_s16(
+            &path,
+            48_000,
+            1,
+            &sine_i16(1_000.0, 0.5, 48_000, 12 * 48_000),
+        );
+
+        let d = run_analysis(&path, &CancelToken::new(), 512).expect("analysis");
+        assert_eq!(
+            d.spectrogram_frames, SPECTROGRAM_FRAMES,
+            "12 秒的矩阵应被降到列数上限"
+        );
+        let span_s = d.spectrogram_frames as f64 * d.spectrogram_hop_ms / 1000.0;
+        assert!(
+            (span_s - 12.0).abs() < 0.05,
+            "矩阵跨度应约等于 12 秒，实得 {span_s} s（hop={} ms）",
+            d.spectrogram_hop_ms
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn spectrogram_view_returns_the_requested_time_window() {
+        let dir = scratch("sg-view");
+        let path = dir.join("window.wav");
+        // 6 秒：0–3 静音，3–4 为 1 kHz，其余静音。
+        let n = 6 * 48_000_usize;
+        let mut samples = vec![0i16; n];
+        let tone = sine_i16(1_000.0, 0.5, 48_000, 48_000);
+        samples[3 * 48_000..4 * 48_000].copy_from_slice(&tone);
+        write_wav_s16(&path, 48_000, 1, &samples);
+
+        let token = CancelToken::new();
+        let quiet = run_spectrogram_view(&path, &token, 0.0, Some(1.0)).expect("quiet view");
+        let loud = run_spectrogram_view(&path, &token, 3.0, Some(1.0)).expect("loud view");
+
+        // 起点向下对齐到全局 hop 网格，误差不超过一个 hop。
+        assert!(
+            (loud.start_seconds - 3.0).abs() < 512.0 / 48_000.0 + 1e-9,
+            "起点应对齐到 3 秒附近，实得 {}",
+            loud.start_seconds
+        );
+        assert!(loud.frames > 0 && loud.bins > 0);
+        assert_eq!(
+            loud.spectrogram_db.len(),
+            loud.frames * loud.bins * 4,
+            "矩阵字节数必须与行列数对应"
+        );
+        assert!(loud.hop_ms > 0.0);
+        assert!(
+            (loud.duration_seconds - 0.98).abs() < 0.05,
+            "1 秒窗口的矩阵跨度应约 1 秒，实得 {}",
+            loud.duration_seconds
+        );
+
+        let peak_db = |view: &SpectrogramViewDto| {
+            crate::commands::decode_test_f32s(&view.spectrogram_db)
+                .into_iter()
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        assert!(
+            peak_db(&loud) > -20.0,
+            "3–4 秒应有 1 kHz 信号，实得峰值 {} dBFS",
+            peak_db(&loud)
+        );
+        assert!(
+            peak_db(&quiet) < -80.0,
+            "0–1 秒应接近静音，实得峰值 {} dBFS",
+            peak_db(&quiet)
+        );
+
+        // 起点超过文件末尾时钳到最后一个完整窗口，不 panic。
+        let clamped = run_spectrogram_view(&path, &token, 5.9, Some(1.0)).expect("clamped view");
+        assert!(
+            clamped.start_seconds <= 5.01,
+            "起点应被钳到最后一屏，实得 {}",
+            clamped.start_seconds
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn progress_is_reported_and_respects_cancel() {
         let dir = scratch("progress");
         let path = dir.join("p.wav");
@@ -1075,12 +1443,12 @@ mod tests {
         let source = path.to_string_lossy().into_owned();
 
         let csv_path = dir.join("out.csv");
-        let csv_out = tauri::async_runtime::block_on(export_analysis(
+        let csv_out = export_analysis(
             source.clone(),
             csv_path.to_string_lossy().into_owned(),
             "csv".to_string(),
             Some(512),
-        ))
+        )
         .expect("csv export");
         assert!(csv_out.bytes_written > 0);
         assert_eq!(csv_out.format, "csv");
@@ -1103,12 +1471,12 @@ mod tests {
         );
 
         let json_path = dir.join("out.json");
-        tauri::async_runtime::block_on(export_analysis(
+        export_analysis(
             source,
             json_path.to_string_lossy().into_owned(),
             "json".to_string(),
             Some(512),
-        ))
+        )
         .expect("json export");
 
         let json_text = std::fs::read_to_string(&json_path).expect("read json");
@@ -1142,12 +1510,12 @@ mod tests {
         let path = dir.join("tone.wav");
         write_wav_s16(&path, 48_000, 1, &sine_i16(1_000.0, 0.5, 48_000, 4_800));
 
-        let err = tauri::async_runtime::block_on(export_analysis(
+        let err = export_analysis(
             path.to_string_lossy().into_owned(),
             dir.join("out.json").to_string_lossy().into_owned(),
             "csv".to_string(),
             Some(64),
-        ))
+        )
         .expect_err("扩展名与格式不符必须报错");
         assert!(err.contains("does not match"), "错误信息应说明原因：{err}");
 
@@ -1166,8 +1534,9 @@ mod tests {
     #[test]
     fn panicking_analysis_is_isolated_into_an_error() {
         // 隔离器必须把 panic 变成 Err：这才是「一个坏文件不带崩应用」的落点。
-        let err = isolate_analysis("broken.wav", || panic!("simulated decoder panic"))
-            .expect_err("panic 必须被转换成错误");
+        let err =
+            isolate_task::<FileAnalysisDto, _>("broken.wav", || panic!("simulated decoder panic"))
+                .expect_err("panic 必须被转换成错误");
         assert!(err.contains("panicked"), "错误信息应说明发生了什么：{err}");
         assert!(
             err.contains("broken.wav"),

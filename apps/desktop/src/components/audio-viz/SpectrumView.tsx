@@ -24,6 +24,8 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
+import { fitCanvas } from "./canvas-fit";
+
 export interface PeakInfo {
   frequencyHz: number;
   amplitudeDbfs: number;
@@ -65,6 +67,15 @@ const PAD = { left: 46, right: 12, top: 10, bottom: 24 };
 const DB_STEPS = 8;
 const HZ_STEPS = 8;
 
+/**
+ * 稳定的空峰值数组。
+ *
+ * 默认参数写成 `peaks = []` 时，每次渲染都会产生新引用；而绘制 effect 的
+ * 依赖里含 `peaks`，于是父组件**任意**一次重渲染都会重绘整块画布并重建
+ * 后备存储。用模块级常量把引用固定住。
+ */
+const NO_PEAKS: PeakInfo[] = [];
+
 export function SpectrumView({
   db,
   stepHz,
@@ -72,7 +83,7 @@ export function SpectrumView({
   minDb,
   maxDb,
   cursorHz,
-  peaks = [],
+  peaks = NO_PEAKS,
   viewRange,
   onViewRangeChange,
   onHoverHz,
@@ -147,10 +158,9 @@ export function SpectrumView({
       const h = wrap.clientHeight;
       if (w === 0 || h === 0) return;
 
-      canvas.width = Math.floor(w * dpr);
-      canvas.height = Math.floor(h * dpr);
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
+      // 尺寸没变时不重建后备存储：resize 期间反复重建会把一次 resize
+      // 放大成一串合成表面替换（见 canvas-fit.ts 的说明）。
+      fitCanvas(canvas, w, h, dpr);
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;

@@ -18,7 +18,7 @@
 ----
     python scripts/oracle.py --rust-json <path/to/reference.json>
 
-`<path>` 由 `auralis-studio --dump-reference <path>` 生成。
+`<path>` 由 `auralis-engine --dump-reference <path>` 生成。
 不一致时以非零码退出，便于接入 CI。
 
 容差
@@ -251,7 +251,7 @@ def coherent_tone(bin_index: int, amp: float, n_size: int, fs: int = SAMPLE_RATE
 def canonical_spectra() -> list[tuple[str, np.ndarray, str, list[int]]]:
     """Rust 侧 --dump-reference 导出的 FFT 用例的等价重建。
 
-    必须与 src-tauri/src/selftest.rs 中的 spectra 完全一致。
+    必须与 crates/auralis-engine/src/selftest.rs 中的 spectra 完全一致。
     """
     n = 4096
     tone1000 = (
@@ -267,7 +267,7 @@ def canonical_spectra() -> list[tuple[str, np.ndarray, str, list[int]]]:
 
 
 def canonical_signals() -> list[tuple[str, np.ndarray]]:
-    """与 `auralis-desktop --dump-reference` 使用完全相同的一组信号。"""
+    """与 `auralis-engine --dump-reference` 使用完全相同的一组信号。"""
     out: list[tuple[str, np.ndarray]] = []
     out.append(("sine_1khz_amp0p5", sine(1_000.0, 0.5, 48_000)))
     out.append(("sine_1khz_amp1p0", sine(1_000.0, 1.0, 48_000)))
@@ -420,7 +420,7 @@ def main() -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
     ap = argparse.ArgumentParser(description="Auralis Studio DSP oracle")
-    ap.add_argument("--rust-json", required=True, help="auralis-studio --dump-reference 的输出")
+    ap.add_argument("--rust-json", required=True, help="auralis-engine --dump-reference 的输出")
     ap.add_argument(
         "--tol-db", type=float, default=TOL_DB, help="dB 类容差 (default 0.01)"
     )

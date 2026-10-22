@@ -1,0 +1,10 @@
+{
+  "//": "Electron 主进程/preload 的类型检查配置。esbuild 只转译不做类型检查，所以单独跑 tsc。",
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["./**/*.ts"]
+}

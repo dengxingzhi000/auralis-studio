@@ -14,7 +14,6 @@ use auralis_audio::{
     list_input_devices, start_capture,
 };
 use serde::Serialize;
-use tauri::State;
 
 /// 设备信息 DTO。
 #[derive(Debug, Clone, Serialize)]
@@ -56,6 +55,7 @@ pub struct RealtimeSnapshotDto {
     ///
     /// ADR-018 规则 2：二进制优先。1024 个点走 JSON 数组是每秒几十 KB 的
     /// 无谓开销，而且 JSON 数字还要在前端再解析一遍。
+    #[serde(serialize_with = "crate::b64::encode")]
     pub spectrum_db: Vec<u8>,
     /// 频率间隔 Hz。
     pub bin_hz: f64,
@@ -77,7 +77,6 @@ pub struct RealtimeSnapshotDto {
 ///
 /// # Errors
 /// 音频后端不可用。
-#[tauri::command]
 pub fn input_devices() -> Result<Vec<DeviceInfoDto>, String> {
     let devices = list_input_devices().map_err(|e| e.to_string())?;
     Ok(devices
@@ -131,9 +130,8 @@ impl Default for RealtimeSession {
 ///
 /// # Errors
 /// 设备不存在、格式不支持、流无法建立、工作线程无法启动。
-#[tauri::command]
 pub fn start_realtime(
-    realtime: State<'_, RealtimeSession>,
+    realtime: &RealtimeSession,
     device_id: String,
     sample_rate: Option<u32>,
     channels: Option<u16>,
@@ -211,8 +209,7 @@ pub fn start_realtime(
 ///
 /// # Errors
 /// 内部锁中毒。
-#[tauri::command]
-pub fn stop_realtime(realtime: State<'_, RealtimeSession>) -> Result<CaptureStatusDto, String> {
+pub fn stop_realtime(realtime: &RealtimeSession) -> Result<CaptureStatusDto, String> {
     let mut rt = realtime.inner.lock().map_err(|e| e.to_string())?;
     if let Some(w) = rt.worker.as_mut() {
         w.stop();
@@ -227,10 +224,7 @@ pub fn stop_realtime(realtime: State<'_, RealtimeSession>) -> Result<CaptureStat
 ///
 /// # Errors
 /// 内部锁中毒。
-#[tauri::command]
-pub fn capture_status_cmd(
-    realtime: State<'_, RealtimeSession>,
-) -> Result<CaptureStatusDto, String> {
+pub fn capture_status_cmd(realtime: &RealtimeSession) -> Result<CaptureStatusDto, String> {
     let rt = realtime.inner.lock().map_err(|e| e.to_string())?;
     Ok(capture_status(&rt))
 }
@@ -239,10 +233,7 @@ pub fn capture_status_cmd(
 ///
 /// # Errors
 /// 内部锁中毒。
-#[tauri::command]
-pub fn realtime_snapshot(
-    realtime: State<'_, RealtimeSession>,
-) -> Result<RealtimeSnapshotDto, String> {
+pub fn realtime_snapshot(realtime: &RealtimeSession) -> Result<RealtimeSnapshotDto, String> {
     let rt = realtime.inner.lock().map_err(|e| e.to_string())?;
     let Some(worker) = rt.worker.as_ref() else {
         return Ok(RealtimeSnapshotDto {

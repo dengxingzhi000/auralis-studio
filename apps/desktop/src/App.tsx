@@ -17,8 +17,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-
 import { Workspace } from "@/layouts/Workspace";
 import {
   analyzeFile,
@@ -26,6 +24,7 @@ import {
   cancelTask,
   exportAnalysis,
   fetchAppInfo,
+  fetchSpectrogramView,
   isAudioPath,
   pickAudioFile,
   pickExportDestination,
@@ -78,6 +77,16 @@ import {
 const MIN_DB = -140;
 const MAX_DB = 0;
 
+/**
+ * 稳定的空峰值数组。
+ *
+ * `liveDb ? [] : (display?.peaks ?? [])` 每次渲染都会产生新引用，而
+ * SpectrumView 的绘制 effect 依赖 `peaks` —— 任意一次重渲染都会重绘频谱
+ * 并重建后备存储。实时态下峰值本来就该留空（频率位置对不上），
+ * 用模块级常量固定引用。
+ */
+const NO_PEAKS: PeakInfo[] = [];
+
 /** 面板可见性的持久化键。 */
 const VISIBILITY_KEY = "auralis.workspace.visibility.v1";
 
@@ -98,6 +107,9 @@ const DEFAULTS: SyntheticRequest = {
   targetBins: 1200,
   envelopePoints: 2000,
 };
+
+/** 声谱图一屏的默认时长（秒），与 Rust 侧 `SPECTRUM_WINDOW_SECONDS` 一致。 */
+const SPECTROGRAM_WINDOW_SECONDS = 30;
 
 /** 真实文件分析结果的显示形状（供 Canvas 组件消费）。 */
 interface DisplayData {
@@ -120,6 +132,8 @@ interface DisplayData {
   spectrogramFrames: number;
   spectrogramBins: number;
   spectrogramHopMs: number;
+  /** 声谱图矩阵的绝对起点（秒） */
+  spectrogramStartSeconds: number;
   /** 每声道峰值 dBFS；空数组表示未提供（合成信号没有声道概念） */
   peakPerChannel: (number | null)[];
   /** 超过满刻度的样本数（|x| > 1）。> 0 时电平表显示削波警示 */
@@ -145,6 +159,8 @@ const DB_RANGES = [
 ] as const;
 
 const DISPLAY_KEY = "auralis.display.v1";
+/** 上次打开的文件；M5 会话恢复只存路径，不存分析结果。 */
+const SESSION_KEY = "auralis.session.v1";
 
 /** 显示偏好。字段缺一个就整条丢弃，回到默认值（不猜用户意图）。 */
 interface DisplayPrefs {
@@ -171,6 +187,19 @@ function readDisplayPrefs(v: unknown): DisplayPrefs | null {
 interface ActiveTask {
   id: number;
   label: string;
+}
+
+/** 会话恢复记录：上一次成功打开的文件路径。 */
+interface SessionRecord {
+  path: string;
+}
+
+function readSession(value: unknown): SessionRecord | null {
+  if (typeof value !== "object" || value === null) return null;
+  const rec = value as Record<string, unknown>;
+  return typeof rec.path === "string" && rec.path.length > 0
+    ? { path: rec.path }
+    : null;
 }
 
 export default function App() {
@@ -210,6 +239,11 @@ export default function App() {
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [selected, setSelected] = useState<FileInfo | null>(null);
   const [display, setDisplay] = useState<DisplayData | null>(null);
+  /** 声谱图视口当前起点（秒）；与 display 里的矩阵起点保持一致 */
+  const [spectroStart, setSpectroStart] = useState(0);
+  const [spectroLoading, setSpectroLoading] = useState(false);
+  /** 正在跑的视口请求任务号；用于丢弃过期响应并取消旧请求 */
+  const spectroTaskRef = useRef<number | null>(null);
 
   // ---- 实时采集（M4）----
   const [livePeak, setLivePeak] = useState<number | null>(null);
@@ -245,7 +279,7 @@ export default function App() {
   /**
    * 分析一个已知路径。文件选择器与拖放都走这里，保证两条入口行为一致。
    */
-  const analyzePath = useCallback(async (path: string) => {
+  const analyzePath = useCallback(async (path: string, restore?: "clean" | "crashed") => {
     setError(null);
     setNotice(null);
     setBusy(true);
@@ -253,6 +287,7 @@ export default function App() {
     try {
       const fi = await probeFile(path);
       lastPathRef.current = fi.path;
+      writeStoredJson(SESSION_KEY, { path: fi.path });
       setFiles((prev) => [fi, ...prev.filter((f) => f.path !== fi.path)]);
       setSelected(fi);
 
@@ -288,11 +323,25 @@ export default function App() {
         spectrogramFrames: a.spectrogramFrames,
         spectrogramBins: a.spectrogramBins,
         spectrogramHopMs: a.spectrogramHopMs,
+        spectrogramStartSeconds: a.spectrogramStartSeconds,
         peakPerChannel: a.peakDbfsPerChannel,
         overFullScaleSamples: a.overFullScaleSamples,
         clippingRegions: a.clippingRegions,
         sanitizedSamples: a.sanitizedSamples,
       });
+      setSpectroStart(a.spectrogramStartSeconds);
+      // 新文件的结果替换了旧矩阵；旧的视口请求已经无意义。
+      if (spectroTaskRef.current != null) {
+        void cancelTask(spectroTaskRef.current).catch(() => undefined);
+        spectroTaskRef.current = null;
+        setSpectroLoading(false);
+      }
+
+      if (restore === "crashed") {
+        setNotice(`上次会话未正常结束，已恢复：${fi.fileName}`);
+      } else if (restore === "clean") {
+        setNotice(`已恢复上次打开的文件：${fi.fileName}`);
+      }
     } catch (e) {
       setError(describeError(e, "打开文件失败"));
     } finally {
@@ -300,6 +349,34 @@ export default function App() {
       setBusy(false);
     }
   }, []);
+
+  /**
+   * 启动入口：
+   *
+   * - `?open=<绝对路径>`（开发/自动化）：直接分析指定文件；
+   * - 否则恢复上次成功打开的文件（M5 会话恢复）。
+   *
+   * Electron 主进程在上次异常退出时会给 URL 加 `recovered=1`，
+   * 界面据此区分「正常恢复」与「上次会话异常结束」。
+   */
+  const startupRestoreStarted = useRef(false);
+  useEffect(() => {
+    if (startupRestoreStarted.current) return;
+    startupRestoreStarted.current = true;
+
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("open");
+    if (requested && isAudioPath(requested)) {
+      void analyzePath(requested);
+      return;
+    }
+
+    const session = readStoredJson(SESSION_KEY, readSession);
+    if (!session || !isAudioPath(session.path)) return;
+
+    const recovered = params.get("recovered") === "1";
+    void analyzePath(session.path, recovered ? "crashed" : "clean");
+  }, [analyzePath]);
 
   const onOpenFile = useCallback(async () => {
     setError(null);
@@ -383,25 +460,37 @@ export default function App() {
   }, [activeTask, onCancelTask, onOpenFile, onRetry]);
 
   // ---- 拖放：桌面音频应用的基本预期 ----
+  //
+  // Electron 不再提供 `onDragDropEvent`，走标准 DOM 拖放。Chromium 不把
+  // 磁盘路径交给页面，路径由 preload 的 `getPathForFile` 解析。
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void getCurrentWebview()
-      .onDragDropEvent((event) => {
-        if (event.payload.type !== "drop") return;
-        const path = event.payload.paths.find(isAudioPath);
-        if (path) void analyzePath(path);
-        else setError({ title: "拖入的文件不是受支持的音频格式", detail: null });
-      })
-      .then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-      // 浏览器里预览时没有 Tauri 后端，忽略即可
-      .catch(() => undefined);
+    const onDragOver = (e: DragEvent) => {
+      // 不 preventDefault 的话浏览器会拒绝 drop 事件。
+      if (e.dataTransfer?.types.includes("Files")) e.preventDefault();
+    };
+
+    const onDrop = (e: DragEvent) => {
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length === 0) return;
+      e.preventDefault();
+
+      const api = window.auralis;
+      if (!api) {
+        setError({ title: "拖放仅在桌面容器中可用", detail: null });
+        return;
+      }
+
+      const paths = files.map((file) => api.getPathForFile(file));
+      const path = paths.find(isAudioPath);
+      if (path) void analyzePath(path);
+      else setError({ title: "拖入的文件不是受支持的音频格式", detail: null });
+    };
+
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("drop", onDrop);
     return () => {
-      disposed = true;
-      unlisten?.();
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("drop", onDrop);
     };
   }, [analyzePath]);
 
@@ -449,6 +538,7 @@ export default function App() {
         spectrogramFrames: 0,
         spectrogramBins: 0,
         spectrogramHopMs: 0,
+        spectrogramStartSeconds: 0,
         peakPerChannel: [],
         // 合成信号是纯正弦，超量程/削波/清理计数都为 0：
         // 写 0 而不是省略，界面才能一致性地区分「没有」与「未知」
@@ -456,6 +546,7 @@ export default function App() {
         clippingRegions: r.metrics.clippingRegions,
         sanitizedSamples: r.metrics.sanitizedSamples,
       });
+      setSpectroStart(0);
     } catch (e) {
       setError(describeError(e, "合成信号分析失败"));
     } finally {
@@ -501,6 +592,84 @@ export default function App() {
     if (!display || display.spectrogramFrames <= 0) return 0;
     return (display.spectrogramFrames * display.spectrogramHopMs) / 1000;
   }, [display]);
+
+  /** 一屏的请求时长：文件比 30 秒短时不请求不存在的部分。 */
+  const spectrogramWindow = useMemo(
+    () =>
+      durationSeconds > 0
+        ? Math.min(SPECTROGRAM_WINDOW_SECONDS, durationSeconds)
+        : SPECTROGRAM_WINDOW_SECONDS,
+    [durationSeconds],
+  );
+
+  /**
+   * 请求声谱图的一个时间窗口。
+   *
+   * 只重算窗口，不重跑整文件分析。滚动/拖动时旧请求会被取消，
+   * 过期响应按任务号丢弃——否则慢请求返回后会把视口拉回旧位置。
+   */
+  const loadSpectrogramWindow = useCallback(
+    async (targetStart: number) => {
+      // 文件分析进行中时拒绝新视口请求：此时 display 还是旧文件的矩阵，
+      // 结果会被随后的分析结果覆盖，徒增一次解码。
+      if (!selected || !display || durationSeconds <= 0 || busy) return;
+
+      const maxStart = Math.max(0, durationSeconds - spectrogramWindow);
+      const start = Math.min(Math.max(0, targetStart), maxStart);
+
+      const previous = spectroTaskRef.current;
+      if (previous != null) void cancelTask(previous).catch(() => undefined);
+
+      const id = nextTaskId();
+      spectroTaskRef.current = id;
+      setSpectroLoading(true);
+
+      try {
+        const view = await fetchSpectrogramView(
+          selected.path,
+          start,
+          spectrogramWindow,
+          id,
+        );
+        if (spectroTaskRef.current !== id) return; // 过期响应
+        if (view.outcome === "cancelled") return;
+
+        setDisplay((prev) =>
+          prev
+            ? {
+                ...prev,
+                spectrogram:
+                  view.frames > 0 && view.bins > 0
+                    ? view.spectrogramDb
+                    : null,
+                spectrogramFrames: view.frames,
+                spectrogramBins: view.bins,
+                spectrogramHopMs: view.hopMs,
+                spectrogramStartSeconds: view.startSeconds,
+              }
+            : prev,
+        );
+        setSpectroStart(view.startSeconds);
+      } catch (e) {
+        if (spectroTaskRef.current === id) {
+          setError(describeError(e, "声谱图视口加载失败"));
+        }
+      } finally {
+        if (spectroTaskRef.current === id) {
+          spectroTaskRef.current = null;
+          setSpectroLoading(false);
+        }
+      }
+    },
+    [selected, display, durationSeconds, spectrogramWindow, busy],
+  );
+
+  const panSpectrogram = useCallback(
+    (deltaSeconds: number) => {
+      void loadSpectrogramWindow(spectroStart + deltaSeconds);
+    },
+    [loadSpectrogramWindow, spectroStart],
+  );
 
   const version = useMemo(
     () => (info ? `v${info.version}` : "连接中…"),
@@ -660,7 +829,7 @@ export default function App() {
                   minDb={minDb}
                   maxDb={maxDb}
                   cursorHz={cursorHz}
-                  peaks={liveDb ? [] : (display?.peaks ?? [])}
+                  peaks={liveDb ? NO_PEAKS : display?.peaks}
                   viewRange={viewRange}
                   onViewRangeChange={setViewRange}
                   onHoverHz={setCursorHz}
@@ -693,7 +862,60 @@ export default function App() {
                       </span>
                     </>
                   )}
+                  {display && display.spectrogramFrames > 0 && (
+                    <>
+                      <span className="sep">·</span>
+                      <span className="num" title="矩阵覆盖的绝对时间范围">
+                        {fmtClock(spectroStart)}–
+                        {fmtClock(spectroStart + spectrogramSeconds)}
+                      </span>
+                    </>
+                  )}
                 </span>
+                <span className="spacer" />
+                {selected && durationSeconds > 0 && (
+                  <>
+                    <Button
+                      size="tiny"
+                      onClick={() =>
+                        void loadSpectrogramWindow(
+                          spectroStart - spectrogramSeconds * 0.8,
+                        )
+                      }
+                      disabled={busy || spectroLoading || spectroStart <= 0}
+                      title="向前一屏"
+                    >
+                      ◀
+                    </Button>
+                    <Button
+                      size="tiny"
+                      onClick={() => void loadSpectrogramWindow(0)}
+                      disabled={busy || spectroLoading || spectroStart <= 0}
+                      title="回到文件开头"
+                    >
+                      开头
+                    </Button>
+                    <Button
+                      size="tiny"
+                      onClick={() =>
+                        void loadSpectrogramWindow(
+                          spectroStart + spectrogramSeconds * 0.8,
+                        )
+                      }
+                      disabled={
+                        busy ||
+                        spectroLoading ||
+                        spectroStart >=
+                          Math.max(0, durationSeconds - spectrogramWindow) -
+                            1e-6
+                      }
+                      title="向后一屏"
+                    >
+                      ▶
+                    </Button>
+                  </>
+                )}
+                {spectroLoading && <span className="pane-meta">载入…</span>}
               </div>
               <div className="pane-body">
                 <SpectrogramView
@@ -705,6 +927,8 @@ export default function App() {
                   cursorHz={cursorHz}
                   nyquistHz={sampleRate / 2}
                   durationSeconds={spectrogramSeconds}
+                  startSeconds={spectroStart}
+                  onPan={panSpectrogram}
                 />
               </div>
             </section>
@@ -1300,6 +1524,14 @@ function fmtHzInt(hz: number): string {
 function fmtRange(r: [number, number] | null): string {
   if (!r) return "全带宽";
   return `${fmtHz(r[0])} – ${fmtHz(r[1])} Hz`;
+}
+
+/** 绝对时间：`m:ss.s`，用于声谱图视口范围。 */
+function fmtClock(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "—";
+  const m = Math.floor(sec / 60);
+  const s = sec - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
 }
 
 function MetricRow({

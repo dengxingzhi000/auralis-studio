@@ -5,8 +5,8 @@
  * 前端拿到的已经是 Rust 算好的视图数据，这里只描述它的形状，
  * 不提供任何做计算的函数。
  *
- * 修改本文件时注意：Rust 侧对应 `src-tauri/src/commands.rs` 的
- * `#[derive(Serialize)]` 结构，两边必须同步。
+ * 修改本文件时注意：Rust 侧对应 `crates/auralis-engine/src/commands.rs` 与
+ * `file_commands.rs` 的 `#[derive(Serialize)]` 结构，两边必须同步。
  */
 
 /** 应用元信息。 */
@@ -39,8 +39,9 @@ export interface SyntheticMetrics {
  * `spectrumDb` 与 `waveformEnvelope` 在 Rust 侧序列化为**小端 f32 字节流**，
  * 在 JS 侧还原为 Float32Array。
  *
- * 这是 ADR-018 规则 2「二进制优先」的落点：如果这里改成 number[]，
- * Tauri 会把它序列化成 JSON 数组，4096 个点就是几千个 JSON 数字，
+ * 这是 ADR-018 规则 2「二进制优先」的落点：线路上的 base64 字符串由
+ * Electron 主进程还原为 `Uint8Array`，渲染进程不接触 JSON 数字数组。
+ * 如果这里改成 number[]，4096 个点就是几千个 JSON 数字，
  * 这正是本架构明令禁止的。
  */
 export interface SyntheticAnalysis {
@@ -70,11 +71,11 @@ export interface SyntheticRequest {
 }
 
 /**
- * Rust 侧 `Vec<u8>` 到达 JS 后的两种可能形态。
+ * Rust 侧 `Vec<u8>` 到达 JS 后的形态。
  *
- * 实测（Tauri 2 + WebView2，2026-10-16）：`invoke` 返回的是**普通数字数组**，
- * 不是 `Uint8Array`。契约里写 `Uint8Array` 只是类型断言，运行时并不成立。
- * 因此这里必须显式归一化，否则 `bytes.buffer` 为 `undefined`。
+ * Electron 主进程把 base64 解码成 `Uint8Array` 后经结构化克隆传递，
+ * 正常路径总是 `Uint8Array`。保留 `ArrayLike<number>` 是为了兼容
+ * 手工构造的测试数据与旧容器；归一化逻辑不能假设 `.buffer` 一定存在。
  */
 type RawBytes = Uint8Array | ArrayLike<number>;
 
@@ -116,7 +117,7 @@ export function decodeF32(bytes: RawBytes): Float32Array {
 
 /* ============================================================
  * M1: real files
- * Mirrors src-tauri/src/file_commands.rs on the Rust side.
+ * Mirrors crates/auralis-engine/src/file_commands.rs on the Rust side.
  * ============================================================ */
 
 /** File metadata (probed from the header only). */
@@ -178,6 +179,8 @@ export interface FileAnalysis {
   spectrogramBins: number;
   /** milliseconds per spectrogram column, for the time axis */
   spectrogramHopMs: number;
+  /** absolute start of the spectrogram matrix, seconds from the file start */
+  spectrogramStartSeconds: number;
   /** FFT size used, so results are reproducible (DSP_SPEC 9) */
   fftSize: number;
   window: string;
@@ -208,6 +211,33 @@ export interface PeakInfo {
   scallopingDb: number;
   /** true when the reading should be shown as an estimate, not a precise number */
   estimated: boolean;
+}
+
+/* ============================================================
+ * M4: viewport-chunked spectrogram
+ * ============================================================ */
+
+/**
+ * 声谱图视口。只包含一个时间窗口的 STFT 矩阵；平移视口时重新请求即可，
+ * 不需要重跑整文件分析。
+ */
+export interface SpectrogramViewData {
+  /** Float32Array, row-major [frame][bin] */
+  spectrogramDb: Float32Array;
+  frames: number;
+  bins: number;
+  /** effective milliseconds per column (already includes downsampling) */
+  hopMs: number;
+  /** absolute start, seconds from the file start */
+  startSeconds: number;
+  /** matrix span, seconds */
+  durationSeconds: number;
+  sampleRate: number;
+  fftSize: number;
+  window: string;
+  outcome: string;
+  elapsedMs: number;
+  taskId: number;
 }
 
 /* ============================================================

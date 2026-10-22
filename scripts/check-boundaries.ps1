@@ -32,7 +32,8 @@ $forbiddenCrates = @(
     'eframe', 'egui', 'egui_plot', 'egui_extras', 'winit', 'wgpu',
     'cpal', 'symphonia', 'rtrb',
     'rusqlite', 'diesel', 'sqlx', 'tokio', 'async-std', 'rayon', 'rfd',
-    # ADR-016: Tauri/Rust IPC 端点也不得进入纯算法层
+    # ADR-019: 容器/IPC 端点也不得进入纯算法层。Tauri 已移除，
+    # 仍保留在名单里防止旧依赖被无意加回来。
     'tauri', 'tauri-plugin-log'
 )
 
