@@ -36,12 +36,35 @@ const container: ContainerInfo = {
   },
 };
 
+/**
+ * Electron 给 `ipcRenderer.invoke` 的拒绝消息自带包装前缀：
+ *
+ * ```text
+ * Error invoking remote method 'auralis:invoke': Error: <引擎的真实原因>
+ * ```
+ *
+ * 前半段对用户没有意义——UI 上应该直接显示引擎给的诊断。
+ */
+const INVOKE_PREFIX = /^Error invoking remote method '[^']*': (?:Error: )?/;
+
+/** 剥掉包装前缀，只留下引擎自己的错误文本。 */
+function unwrapInvokeError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  const stripped = message.replace(INVOKE_PREFIX, "");
+  return new Error(stripped || message);
+}
+
 contextBridge.exposeInMainWorld("auralis", {
   container,
 
   /** 调用 Rust 引擎命令。 */
-  invoke: (cmd: string, args?: Record<string, unknown>) =>
-    ipcRenderer.invoke("auralis:invoke", cmd, args ?? {}),
+  invoke: async (cmd: string, args?: Record<string, unknown>) => {
+    try {
+      return await ipcRenderer.invoke("auralis:invoke", cmd, args ?? {});
+    } catch (error) {
+      throw unwrapInvokeError(error);
+    }
+  },
 
   /** 打开文件选择器；取消返回 null。 */
   openFile: (options?: unknown) => ipcRenderer.invoke("auralis:open-file", options ?? {}),

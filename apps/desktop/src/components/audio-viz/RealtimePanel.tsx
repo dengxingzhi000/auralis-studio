@@ -154,7 +154,7 @@ export function RealtimePanel({ onSnapshot }: RealtimePanelProps) {
   }, []);
 
   return (
-    <div className="rt-panel">
+    <div className="rt-panel" id="realtime-panel">
       <div className="rt-head">
         <span className="label">实时输入</span>
         {running && <span className="rt-live-dot" title="采集中" />}

@@ -196,18 +196,19 @@ pub fn analyze_file(
     task_id: Option<u64>,
 ) -> Result<FileAnalysisDto, String> {
     let p = PathBuf::from(&path);
+    let label = file_label(&p);
     let token = CancelToken::new();
-    // 注册令牌，使 cancel_task 能找到它
+    // 注册令牌，使 cancel_task 与任务队列都能找到它
     let task_id = match task_id {
         Some(id) => {
-            if !state.try_register_token(id, token.clone()) {
+            if !state.try_register_task(id, token.clone(), "analyze", &label) {
                 return Err(format!("task id {id} is already running"));
             }
             id
         }
         None => {
             let id = state.next_task_id();
-            state.register_token(id, token.clone());
+            state.register_task(id, token.clone(), "analyze", &label);
             id
         }
     };
@@ -330,16 +331,28 @@ pub fn spectrogram_view(
         return Err("windowSeconds must be finite".to_string());
     }
     let token = CancelToken::new();
+    let window = window_seconds
+        .unwrap_or(MAX_SPECTROGRAM_WINDOW_SECONDS)
+        .clamp(
+            MIN_SPECTROGRAM_WINDOW_SECONDS,
+            MAX_SPECTROGRAM_WINDOW_SECONDS,
+        );
+    let label = format!(
+        "{} · {:.1}–{:.1} s",
+        file_label(Path::new(&path)),
+        start_seconds.max(0.0),
+        start_seconds.max(0.0) + window
+    );
     let task_id = match task_id {
         Some(id) => {
-            if !state.try_register_token(id, token.clone()) {
+            if !state.try_register_task(id, token.clone(), "spectrogram", &label) {
                 return Err(format!("task id {id} is already running"));
             }
             id
         }
         None => {
             let id = state.next_task_id();
-            state.register_token(id, token.clone());
+            state.register_task(id, token.clone(), "spectrogram", &label);
             id
         }
     };
@@ -670,6 +683,14 @@ pub fn export_analysis(
         bytes_written,
         elapsed_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+/// 任务队列里显示的文件名；路径没有文件名时退回完整路径。
+fn file_label(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 /// 当前 Unix 毫秒时间戳。

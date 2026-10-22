@@ -5,8 +5,8 @@
  * 文件分析是**可取消**的长任务：任务号由前端分配，运行中可用 Esc 或状态栏
  * 的「取消」按钮中止；取消不算失败，也不会清掉已有结果。
  *
- * 未实现的入口（实时采集、导出、其他分析视图）一律禁用并标注目标里程碑，
- * 避免做成「看起来能用但其实没功能」的样子。
+ * 未实现的分析视图一律禁用并标注，避免做成「看起来能用但其实没功能」
+ * 的样子。
  *
  * ## 布局（2026-10 样式修订）
  *
@@ -699,7 +699,17 @@ export default function App() {
             取消
           </Button>
         )}
-        <Button disabled title="M4 接入 CPAL 采集">
+        <Button
+          onClick={() => {
+            setShowLeft(true);
+            window.requestAnimationFrame(() => {
+              document
+                .getElementById("realtime-panel")
+                ?.scrollIntoView({ block: "center" });
+            });
+          }}
+          title="在左侧资源栏中启动实时输入"
+        >
           实时采集
         </Button>
         <Button
@@ -999,8 +1009,11 @@ export default function App() {
           </>
         ) : (
           <>
-            <span className="state" title="M4 接入 WASAPI 采集">
-              设备未连接
+            <span
+              className={liveDb ? "state ok" : "state"}
+              title="在左侧「实时输入」中启动采集"
+            >
+              {liveDb ? "实时采集中" : "实时输入未启动"}
             </span>
             <span className="dot">·</span>
             <span className="status-chip">
@@ -1082,8 +1095,8 @@ function ResourcePanel({
             <li>
               <div className="empty" style={{ padding: "10px 4px" }}>
                 <span className="empty-hint">
-                  还没有文件。M1 只接 WAV / FLAC / MP3 / AIFF / OGG，
-                  未经验证的容器会在名字旁标注。
+                  还没有文件。可打开 WAV / FLAC / MP3 / AIFF / OGG；
+                  仅 WAV 已用真实样本验证，其余容器会在名字旁标注。
                 </span>
               </div>
             </li>
@@ -1461,7 +1474,7 @@ function InspectorPanel({
           <DataRow label="DSP 规范" value={info?.dspSpecRevision ?? "—"} />
           <p className="note">
             dB 换算、FFT、降采样全部在 Rust 侧完成，前端只画结果（ADR-018）。
-            频谱来自合成信号；真实文件的频谱在 M2 接入。
+            真实文件与实时输入共用同一条计算链路。
           </p>
         </Collapsible>
       </div>
@@ -1581,6 +1594,14 @@ function describeError(e: unknown, action: string): UiError {
   }
   if (raw.includes("Unsupported") || raw.includes("unsupported")) {
     return { title: `${action}：该格式尚未验证支持`, detail: raw };
+  }
+  // 截断与损坏要分开说：截断通常意味着文件没下完/拷贝不完整，重新获取即可；
+  // 混在一句话里，用户会以为是格式不支持而白折腾。
+  if (raw.includes("truncated")) {
+    return { title: `${action}：文件不完整（已截断）`, detail: raw };
+  }
+  if (raw.includes("corrupt")) {
+    return { title: `${action}：文件已损坏`, detail: raw };
   }
   return { title: `${action}（详见悬停提示）`, detail: raw };
 }

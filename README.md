@@ -552,6 +552,7 @@ Start here for the reasoning behind the code:
 
 | Document | Contents |
 | -------- | -------- |
+| [User manual (Chinese)](./docs/USER_MANUAL.md) | Install, import, views, live input, metrics, export, shortcuts, troubleshooting |
 | [Product requirements (PRD)](./docs/PRD.md) | Users, scope, functional and non-functional requirements, product boundaries |
 | [Technical architecture (TAD)](./docs/TAD.md) | Layering, dependency direction, threading model, error taxonomy |
 | [DSP specification](./docs/DSP_SPEC.md) | Definitions and error targets for RMS / Peak / DC / FFT / STFT / clipping |
@@ -559,7 +560,8 @@ Start here for the reasoning behind the code:
 | [Test and acceptance plan](./docs/TEST_PLAN.md) | Test layering, synthetic signal set, acceptance targets, CI commands |
 | [Implementation plan](./docs/IMPLEMENTATION_PLAN.md) | M0–M6 milestones and vertical slices |
 | [Benchmarks](./docs/BENCHMARKS.md) | Criterion results, method, and what they imply about the architecture |
-| [Architecture decision records](./docs/ADR.md) | ADR-001 … ADR-019, including the ones that were reversed |
+| [Architecture decision records](./docs/ADR.md) | ADR-001 … ADR-020, including the ones that were reversed |
+| [Third-party licenses](./THIRD_PARTY_LICENSES.md) | Generated inventory with SPDX expressions and full license texts |
 | [Development environment](./docs/DEV_ENVIRONMENT.md) | Toolchain, mirrors, and path conventions |
 | [Engineering contract](././AGENTS.md) | The rules this project is held to |
 

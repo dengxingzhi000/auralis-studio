@@ -184,9 +184,16 @@ ADR-018 初稿建议声谱图用 WebGL。实现时改为 **Canvas 2D + ImageData
 - [x] 前端 `RealtimePanel`：设备选择、开始/停止、丢帧/覆盖计数、实时频谱
 - [x] 视口分块声谱图：`spectrogram_view(path, startSeconds, windowSeconds)`；
       解码器支持精确 seek，Rust 只算请求窗口；UI 支持按钮/滚轮/拖动平移
-- [ ] 实时高频通道决策（WebSocket / SAB+Worklet / 原生插件）
-- [ ] ASIO 评估
-- [ ] **真实声卡采集未验证**：仅在无设备环境下验证了错误路径与逻辑层测试
+- [x] 实时高频通道决策（WebSocket / SAB+Worklet / 原生插件）——
+      **决定不引入**，保留 30 Hz stdio 轮询；依据见
+      [ADR-020](ADR.md#adr-020实时高频通道与-asio-评估)（2026-10-22）
+- [x] ASIO 评估——**暂不启用**：`cpal/asio` 需要单独下载的 Steinberg SDK，
+      当前 WASAPI 实测丢帧为 0，详见 ADR-020
+- [x] **真实声卡采集已在一台机器上验证**（2026-10-22）：
+      Realtek WASAPI 默认输入 / 2ch / 48 kHz / 6.03 s，
+      处理 287,040 帧（0.991 × 实时）、丢帧 0、快照 RPC p95 3.10 ms；
+      可复现命令 `node scripts/check-capture.mjs --seconds 6`。
+      热插拔、设备切换与 8 小时连续运行仍未验证
 
 #### 实时链路的实测依据
 

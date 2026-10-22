@@ -10,6 +10,11 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# 打包产物：NSIS 安装包与 win-unpacked 目录（每个 >100 MiB），
+# 由 `npm run package:win` 随时重建，绝不能入库。
+/apps/desktop/release*/
+/apps/desktop/build/package-resources/
+
 # 本地工具链与缓存（本项目全部落在 D 盘，不入库）
 .cargo/registry/
 .cargo/git/

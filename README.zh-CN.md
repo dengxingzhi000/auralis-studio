@@ -500,6 +500,7 @@ Electron 并不是「到处都不花屏」的保证。它把机器相关的 WebV
 
 | 文档 | 内容 |
 |---|---|
+| [用户手册](./docs/USER_MANUAL.md) | 安装、导入、视图操作、实时输入、指标、导出、快捷键与故障排查 |
 | [产品需求文档 PRD](./docs/PRD.md) | 用户、版本范围、功能与非功能需求、产品边界 |
 | [技术架构设计 TAD](./docs/TAD.md) | 分层、依赖方向、线程模型、错误分类 |
 | [DSP 算法规范](./docs/DSP_SPEC.md) | RMS / Peak / DC Offset / FFT / STFT / 削波的定义与误差目标 |
@@ -507,7 +508,8 @@ Electron 并不是「到处都不花屏」的保证。它把机器相关的 WebV
 | [测试与验收计划](./docs/TEST_PLAN.md) | 测试分层、合成信号集、验收目标、CI 命令 |
 | [开发实施计划](./docs/IMPLEMENTATION_PLAN.md) | M0–M6 里程碑与垂直切片 |
 | [性能基准记录](./docs/BENCHMARKS.md) | Criterion 结果、方法，以及它们对架构意味着什么 |
-| [架构决策记录 ADR](./docs/ADR.md) | ADR-001 … ADR-019，包括被推翻的那几条 |
+| [架构决策记录 ADR](./docs/ADR.md) | ADR-001 … ADR-020，包括被推翻的那几条 |
+| [第三方许可证清单](./THIRD_PARTY_LICENSES.md) | 生成式清单，含 SPDX 表达式与许可证全文 |
 | [开发环境设置](./docs/DEV_ENVIRONMENT.md) | 本机工具链、镜像与路径约定 |
 | [工程契约](././AGENTS.md) | 约束本项目的那些规则 |
 

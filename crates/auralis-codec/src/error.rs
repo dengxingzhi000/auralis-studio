@@ -46,9 +46,12 @@ pub enum CodecError {
     #[error("corrupt or truncated file: {0}")]
     Corrupt(String),
 
-    /// 文件长度与元数据不符（时长声明 > 实际解码）。
-    #[error("stream ended earlier than the declared duration suggests")]
-    Truncated,
+    /// 文件被截断：容器头声明的时长/长度大于实际可解码的数据。
+    ///
+    /// 与 `Corrupt` 分开是因为**处置方式不同**：截断通常是文件没下完或
+    /// 拷贝不完整，重新获取即可；损坏才意味着要检查编码器/容器兼容性。
+    #[error("truncated file: {0}")]
+    Truncated(String),
 
     /// 采样率或声道数为 0，解码结果无意义。
     #[error("decoded audio has invalid parameters: {0}")]
@@ -71,10 +74,15 @@ impl CodecError {
     pub(crate) fn from_symphonia(err: &symphonia::core::errors::Error) -> Self {
         use symphonia::core::errors::Error as E;
         match err {
+            // 读到文件尾但数据还没够 —— 这是「文件被截断」的典型特征，
+            // 单独归类比笼统的「损坏」有用得多。
+            E::IoError(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                Self::Truncated(e.to_string())
+            }
             E::IoError(e) => Self::Corrupt(format!("I/O while decoding: {e}")),
             E::DecodeError(s) => Self::Corrupt(s.to_string()),
             E::SeekError(_) | E::ResetRequired => {
-                Self::Corrupt("stream position invalid or file truncated".to_string())
+                Self::Corrupt("stream position invalid (seek or reset required)".to_string())
             }
             E::Unsupported(codec) => {
                 Self::UnsupportedCodec(format!("{codec:?} (is its symphonia feature enabled?)"))
@@ -90,4 +98,42 @@ pub(crate) fn map_symphonia<T>(
     r: std::result::Result<T, symphonia::core::errors::Error>,
 ) -> Result<T> {
     r.map_err(|e| CodecError::from_symphonia(&e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CodecError;
+
+    /// 造一个 symphonia 的 I/O 错误。
+    fn io_error(kind: std::io::ErrorKind, message: &str) -> symphonia::core::errors::Error {
+        symphonia::core::errors::Error::IoError(std::io::Error::new(kind, message))
+    }
+
+    #[test]
+    fn unexpected_eof_is_classified_as_truncated_not_corrupt() {
+        let mapped = CodecError::from_symphonia(&io_error(
+            std::io::ErrorKind::UnexpectedEof,
+            "unexpected end of file",
+        ));
+
+        assert!(
+            matches!(mapped, CodecError::Truncated(_)),
+            "读到文件尾应归类为截断，实得: {mapped}"
+        );
+        assert!(
+            mapped.to_string().starts_with("truncated file"),
+            "消息应以「truncated file」开头，实得: {mapped}"
+        );
+    }
+
+    #[test]
+    fn other_io_errors_stay_corrupt() {
+        let mapped =
+            CodecError::from_symphonia(&io_error(std::io::ErrorKind::PermissionDenied, "denied"));
+
+        assert!(
+            matches!(mapped, CodecError::Corrupt(_)),
+            "非 EOF 的 I/O 错误仍属损坏，实得: {mapped}"
+        );
+    }
 }

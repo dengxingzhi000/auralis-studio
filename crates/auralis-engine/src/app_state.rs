@@ -9,14 +9,38 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use auralis_task::CancelToken;
+use serde::Serialize;
+
+/// 一条正在运行的任务（供任务队列视图）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskInfoDto {
+    /// 调用方分配的 task id。
+    pub task_id: u64,
+    /// 任务类型：`analyze` / `spectrogram` 等。
+    pub kind: String,
+    /// 人类可读的标签（文件名、视口范围）。
+    pub label: String,
+    /// 已运行时长，毫秒。
+    pub elapsed_ms: u64,
+}
+
+/// 注册表中的一条任务记录。
+struct TaskEntry {
+    token: CancelToken,
+    kind: String,
+    label: String,
+    started: Instant,
+}
 
 /// 桌面应用共享状态。
 #[derive(Default)]
 pub struct AppState {
     next_task: AtomicU64,
-    tokens: Mutex<HashMap<u64, CancelToken>>,
+    tokens: Mutex<HashMap<u64, TaskEntry>>,
 }
 
 impl AppState {
@@ -31,10 +55,29 @@ impl AppState {
         self.next_task.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// 注册取消令牌。
+    /// 注册取消令牌（无标签，兼容旧调用点与测试）。
     pub fn register_token(&self, id: u64, token: CancelToken) {
+        self.register_task(id, token, "task", "");
+    }
+
+    /// 注册带类型与标签的取消令牌。
+    pub fn register_task(
+        &self,
+        id: u64,
+        token: CancelToken,
+        kind: impl Into<String>,
+        label: impl Into<String>,
+    ) {
         if let Ok(mut m) = self.tokens.lock() {
-            m.insert(id, token);
+            m.insert(
+                id,
+                TaskEntry {
+                    token,
+                    kind: kind.into(),
+                    label: label.into(),
+                    started: Instant::now(),
+                },
+            );
         }
     }
 
@@ -45,16 +88,51 @@ impl AppState {
     /// 否则 `cancel_task` 永远只能取消一个已经结束的任务，等于没有取消能力。
     /// 重复 ID 会被拒绝，避免两个任务共用一个取消令牌。
     pub fn try_register_token(&self, id: u64, token: CancelToken) -> bool {
+        self.try_register_task(id, token, "task", "")
+    }
+
+    /// 用调用方提供的 ID 注册带标签的任务；ID 已被占用时返回 `false`。
+    pub fn try_register_task(
+        &self,
+        id: u64,
+        token: CancelToken,
+        kind: impl Into<String>,
+        label: impl Into<String>,
+    ) -> bool {
         match self.tokens.lock() {
             Ok(mut m) => match m.entry(id) {
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(token);
+                    e.insert(TaskEntry {
+                        token,
+                        kind: kind.into(),
+                        label: label.into(),
+                        started: Instant::now(),
+                    });
                     true
                 }
                 std::collections::hash_map::Entry::Occupied(_) => false,
             },
             Err(_) => false,
         }
+    }
+
+    /// 当前正在运行的任务快照，按开始顺序排列。
+    #[must_use]
+    pub fn tasks(&self) -> Vec<TaskInfoDto> {
+        let Ok(m) = self.tokens.lock() else {
+            return Vec::new();
+        };
+        let mut tasks: Vec<TaskInfoDto> = m
+            .iter()
+            .map(|(&task_id, entry)| TaskInfoDto {
+                task_id,
+                kind: entry.kind.clone(),
+                label: entry.label.clone(),
+                elapsed_ms: u64::try_from(entry.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            })
+            .collect();
+        tasks.sort_by_key(|t| t.task_id);
+        tasks
     }
 
     /// 注销令牌。任务结束时必须调用，否则注册表会无限增长。
@@ -69,7 +147,7 @@ impl AppState {
         match self.tokens.lock() {
             Ok(m) => match m.get(&id) {
                 Some(t) => {
-                    t.cancel();
+                    t.token.cancel();
                     true
                 }
                 None => false,
@@ -123,6 +201,24 @@ mod tests {
         assert_eq!(s.registered_count(), 0, "注销后注册表不应增长");
         assert!(!s.cancel(id));
         assert!(!t.is_cancelled());
+    }
+
+    #[test]
+    fn task_registry_exposes_kind_and_label() {
+        let s = AppState::new();
+        let token = CancelToken::new();
+        assert!(s.try_register_task(42, token.clone(), "analyze", "tone.wav"));
+
+        let tasks = s.tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_id, 42);
+        assert_eq!(tasks[0].kind, "analyze");
+        assert_eq!(tasks[0].label, "tone.wav");
+        assert!(s.cancel(42));
+        assert!(token.is_cancelled());
+
+        s.unregister_token(42);
+        assert!(s.tasks().is_empty(), "注销后任务不应留在队列快照里");
     }
 
     #[test]

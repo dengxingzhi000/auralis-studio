@@ -169,7 +169,7 @@ pub fn serve(engine: Engine) -> ! {
 fn is_fast(cmd: &str) -> bool {
     matches!(
         cmd,
-        "app_info" | "cancel_task" | "capture_status_cmd" | "realtime_snapshot"
+        "app_info" | "cancel_task" | "capture_status_cmd" | "realtime_snapshot" | "task_queue"
     )
 }
 
@@ -196,6 +196,8 @@ fn write_line(stdout: &Arc<Mutex<BufWriter<Stdout>>>, body: &Value) {
 fn dispatch(engine: &Engine, cmd: &str, args: &Value) -> Result<Value, String> {
     match cmd {
         "app_info" => encode(commands::app_info()),
+
+        "task_queue" => encode(engine.state.tasks()),
 
         "analyze_synthetic_signal" => encode(commands::analyze_synthetic_signal(
             arg(args, "frequencyHz")?,
