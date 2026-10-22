@@ -115,6 +115,16 @@ pub struct FileAnalysisDto {
     pub sanitized_samples: usize,
     /// 实际解码帧数。
     pub frames_decoded: u64,
+    /// 文件是否被截断：数据流在解完之前就结束了。
+    ///
+    /// 截断的文件**仍然给出完整结果**——只是结果只覆盖了文件里
+    /// 实际存在的那一部分。`declared_duration_seconds` 与
+    /// `decoded_duration_seconds` 的差就是缺了多少。
+    pub truncated: bool,
+    /// 文件头声明的时长（秒）。容器未声明时为 0。
+    pub declared_duration_seconds: f64,
+    /// 实际解码出的时长（秒）。
+    pub decoded_duration_seconds: f64,
     /// 处理耗时，毫秒。
     pub elapsed_ms: u64,
     /// 波形包络，`Float32Array`，值域 [-1, 1]。
@@ -646,6 +656,8 @@ pub fn export_analysis(
             sample_rate_hz: dto.info.sample_rate,
             channels: dto.info.channels,
             duration_s: dto.info.duration_seconds,
+            declared_duration_s: Some(dto.declared_duration_seconds),
+            truncated: dto.truncated,
             frames_decoded: dto.frames_decoded,
             analysis: AnalysisParameters {
                 fft_size: dto.fft_size,
@@ -735,6 +747,10 @@ fn run_analysis(
     let channels = info.format.channels.get();
     let sample_rate = info.format.sample_rate.get();
 
+    // 文件头声明的时长（探针读到的元数据）。截断文件里它大于实际解码时长，
+    // 两者之差就是「缺了多少」。
+    let declared_duration_seconds = info.duration_seconds;
+
     let mut decoder = BlockDecoder::open(path).map_err(|e| e.to_string())?;
 
     // 累加器：Welford 无法跨块合并，这里用「和 + 平方和 + 峰值」的常见做法，
@@ -810,8 +826,18 @@ fn run_analysis(
 
     // 汇总
     let total_frames = frames_seen;
+
+    // 数据流提前结束 = 文件被截断（没下完 / 拷贝不完整）。
+    // 已解出的部分完全有效，因此**不**当作失败：照常给出结果，
+    // 同时把「只分析了这么多」如实告诉调用方。
+    let truncated = decoder.is_truncated();
+
     if total_frames == 0 {
-        return Err("decoded zero frames".to_string());
+        return Err(if truncated {
+            "truncated file: no audio data could be decoded".to_string()
+        } else {
+            "decoded zero frames".to_string()
+        });
     }
 
     let peak_dbfs_per_channel: Vec<Option<f32>> = peak
@@ -906,6 +932,9 @@ fn run_analysis(
         clipping_regions,
         sanitized_samples: sanitized,
         frames_decoded: total_frames,
+        truncated,
+        declared_duration_seconds,
+        decoded_duration_seconds: total_frames as f64 / f64::from(sample_rate),
         elapsed_ms: 0,
         waveform_envelope: f32s_to_le_bytes(&resample_envelope(&envelope, envelope_points)),
         waveform_points: envelope_points,
@@ -962,7 +991,14 @@ fn dto_of(info: AudioFileInfo, sample_rate: u32, channels: u32, frames: u64) -> 
         codec: info.codec.clone(),
         sample_rate,
         channels,
-        duration_seconds: Some(frames as f64 / f64::from(sample_rate)),
+        // 时长用**文件头声明**的值（与 `probe_file` 一致）：截断文件若按
+        // 实际解码帧数算，界面会显示一个比文件真实长度短的时长，
+        // 掩盖了「文件不完整」这件事。容器不声明总帧数时才退回实测长度。
+        duration_seconds: Some(if info.total_frames.is_some() {
+            info.duration_seconds
+        } else {
+            frames as f64 / f64::from(sample_rate)
+        }),
         verified: info.is_verified(),
         verification_note: info.verification_note().to_string(),
     }
@@ -975,6 +1011,7 @@ fn finish_cancelled(
     channels: u32,
     points: usize,
 ) -> FileAnalysisDto {
+    let declared_duration_seconds = info.duration_seconds;
     FileAnalysisDto {
         info: dto_of(info, sample_rate, channels, 0),
         peak_dbfs: None,
@@ -986,6 +1023,9 @@ fn finish_cancelled(
         clipping_regions: 0,
         sanitized_samples: 0,
         frames_decoded: 0,
+        truncated: false,
+        declared_duration_seconds,
+        decoded_duration_seconds: 0.0,
         elapsed_ms: 0,
         waveform_envelope: Vec::new(),
         waveform_points: points,
@@ -1167,6 +1207,60 @@ mod tests {
         assert_eq!(d.waveform_points, 1024);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn truncated_file_is_analysed_and_flagged() {
+        let dir = scratch("truncated");
+        let path = dir.join("truncated.wav");
+        write_wav_s16(&path, 48_000, 1, &sine_i16(1_000.0, 0.5, 48_000, 48_000));
+
+        // 砍掉一半数据：文件头仍声明 1 秒，实际只剩约 0.5 秒
+        let full = std::fs::read(&path).expect("read");
+        std::fs::write(&path, &full[..full.len() / 2]).expect("truncate");
+
+        // 关键：截断的文件**仍然给出分析结果**，而不是整体失败。
+        let d = run_analysis(&path, &CancelToken::new(), 512).expect("truncated analysis");
+
+        assert_eq!(d.outcome, "succeeded");
+        assert!(d.truncated, "截断必须被标记");
+        assert!(
+            d.frames_decoded > 0,
+            "仍应解出可用音频，实得 {} 帧",
+            d.frames_decoded
+        );
+        assert!(
+            d.frames_decoded < 48_000,
+            "解出的帧数应短于声明的 48000，实得 {}",
+            d.frames_decoded
+        );
+
+        // 声明时长与实际时长都要如实给出，差值就是缺了多少
+        assert!(
+            (d.declared_duration_seconds - 1.0).abs() < 1e-6,
+            "声明时长应为 1.0s，实得 {}",
+            d.declared_duration_seconds
+        );
+        let decoded = d.decoded_duration_seconds;
+        assert!(
+            decoded > 0.0 && decoded < d.declared_duration_seconds,
+            "实际时长应介于 0 与声明时长之间，实得 {decoded}"
+        );
+
+        // 完整文件不得被误标
+        let full_path = dir.join("full.wav");
+        write_wav_s16(
+            &full_path,
+            48_000,
+            1,
+            &sine_i16(1_000.0, 0.5, 48_000, 48_000),
+        );
+        let ok = run_analysis(&full_path, &CancelToken::new(), 512).expect("full analysis");
+        assert!(!ok.truncated, "完整文件不得被标记为截断");
+        assert_eq!(ok.frames_decoded, 48_000);
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&full_path).ok();
     }
 
     #[test]
@@ -1502,11 +1596,13 @@ mod tests {
 
         let json_text = std::fs::read_to_string(&json_path).expect("read json");
         let v: serde_json::Value = serde_json::from_str(&json_text).expect("valid json");
-        assert_eq!(v["schema"], "auralis.export.analysis/1");
+        assert_eq!(v["schema"], "auralis.export.analysis/2");
         assert_eq!(
             v["metadata"]["algorithmVersion"],
             auralis_core::ALGORITHM_VERSION
         );
+        assert_eq!(v["metadata"]["truncated"], false);
+        assert!(v["metadata"]["declaredDurationS"].is_number());
         assert_eq!(v["metadata"]["analysis"]["window"], "hann");
         let bins = v["metadata"]["analysis"]["spectrumBins"]
             .as_u64()

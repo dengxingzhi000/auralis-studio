@@ -135,7 +135,17 @@ pub struct ExportMetadata {
     /// 声道数。
     pub channels: u32,
     /// 时长秒；未知时为 `None`（不编造 0）。
+    ///
+    /// 这是**实际参与分析**的时长。源文件被截断时它小于文件头声明的时长，
+    /// 差值见 `declared_duration_s`。
     pub duration_s: Option<f64>,
+    /// 文件头声明的时长秒；容器未声明时为 `None`。
+    pub declared_duration_s: Option<f64>,
+    /// 源文件是否被截断（数据流在解完之前结束）。
+    ///
+    /// 导出必须记下这一点：拿截断文件的结果去和完整文件比对时，
+    /// 差异的来源要能说清楚，否则溯源就断了。
+    pub truncated: bool,
     /// 解码帧数。
     pub frames_decoded: u64,
     /// 分析参数。
@@ -280,7 +290,7 @@ struct WaveformSeries<'a> {
 /// 只在序列化失败时返回错误（结构被改坏才会发生）。
 pub fn render_json(export: &AnalysisExport<'_>) -> Result<String, ExportError> {
     let doc = JsonDoc {
-        schema: "auralis.export.analysis/1",
+        schema: "auralis.export.analysis/2",
         metadata: &export.metadata,
         metrics: &export.metrics,
         units: &UNITS,
@@ -318,7 +328,7 @@ pub fn render_csv(export: &AnalysisExport<'_>) -> String {
 
     // 先算好全部元数据行，再一次性写入：closure 里同时借 out 会与下面的
     // writeln! 冲突（E0499），而数组字面量既清楚又没有借用问题。
-    let meta_rows: [(&str, String); 25] = [
+    let meta_rows: [(&str, String); 27] = [
         ("app_version", m.app_version.clone()),
         ("algorithm_version", m.algorithm_version.clone()),
         ("dsp_spec_revision", m.dsp_spec_revision.clone()),
@@ -333,6 +343,12 @@ pub fn render_csv(export: &AnalysisExport<'_>) -> String {
             "duration_s",
             m.duration_s.map_or_else(String::new, |d| format!("{d:.6}")),
         ),
+        (
+            "declared_duration_s",
+            m.declared_duration_s
+                .map_or_else(String::new, |d| format!("{d:.6}")),
+        ),
+        ("truncated", m.truncated.to_string()),
         ("frames_decoded", m.frames_decoded.to_string()),
         ("fft_size", a.fft_size.to_string()),
         ("window", a.window.clone()),
@@ -368,7 +384,7 @@ pub fn render_csv(export: &AnalysisExport<'_>) -> String {
         ("non_finite_values", export.non_finite_count().to_string()),
     ];
 
-    let _ = writeln!(out, "# schema=auralis.export.analysis/1");
+    let _ = writeln!(out, "# schema=auralis.export.analysis/2");
     for (key, value) in &meta_rows {
         let _ = writeln!(out, "# {key}={}", csv_escape(value));
     }
@@ -521,6 +537,8 @@ mod tests {
                 sample_rate_hz: 48_000,
                 channels: 2,
                 duration_s: Some(1.5),
+                declared_duration_s: Some(1.5),
+                truncated: false,
                 frames_decoded: 72_000,
                 analysis: AnalysisParameters {
                     fft_size: 8192,
@@ -655,7 +673,7 @@ mod tests {
         let json = render_json(&export).expect("json");
 
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
-        assert_eq!(v["schema"], "auralis.export.analysis/1");
+        assert_eq!(v["schema"], "auralis.export.analysis/2");
         assert_eq!(v["units"]["spectrumAmplitude"], "dBFS");
         assert_eq!(v["metadata"]["analysis"]["window"], "hann");
         assert_eq!(
@@ -665,6 +683,10 @@ mod tests {
         assert_eq!(v["spectrum"]["amplitudeDbfs"].as_array().unwrap().len(), 2);
         assert_eq!(v["waveform"]["envelope"].as_array().unwrap().len(), 2);
         assert_eq!(v["metadata"]["sampleRateHz"], 48_000);
+        // 截断标记必须进导出：否则拿截断文件的结果和完整文件比对时，
+        // 差异来源说不清楚。
+        assert_eq!(v["metadata"]["truncated"], false);
+        assert_eq!(v["metadata"]["declaredDurationS"], 1.5);
     }
 
     #[test]

@@ -164,6 +164,18 @@ export interface FileAnalysis {
   clippingRegions: number;
   sanitizedSamples: number;
   framesDecoded: number;
+  /**
+   * The data stream ended before the declared duration.
+   *
+   * The analysis still succeeded — it covers the part that is actually
+   * there. Compare `declaredDurationSeconds` with `decodedDurationSeconds`
+   * to see how much is missing.
+   */
+  truncated: boolean;
+  /** duration declared by the file header, seconds */
+  declaredDurationSeconds: number;
+  /** duration actually decoded, seconds */
+  decodedDurationSeconds: number;
   elapsedMs: number;
   /** Float32Array in [-1, 1] */
   waveformEnvelope: Float32Array;
@@ -238,6 +250,21 @@ export interface SpectrogramViewData {
   outcome: string;
   elapsedMs: number;
   taskId: number;
+}
+
+/* ============================================================
+ * Background tasks
+ * ============================================================ */
+
+/** 一条正在运行的后台任务。由 Rust 侧任务注册表给出。 */
+export interface TaskInfo {
+  taskId: number;
+  /** 任务类型：`analyze` / `spectrogram` / `task` */
+  kind: string;
+  /** 人类可读标签（文件名或视口范围） */
+  label: string;
+  /** 已运行时长，毫秒 */
+  elapsedMs: number;
 }
 
 /* ============================================================

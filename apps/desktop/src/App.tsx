@@ -341,6 +341,12 @@ export default function App() {
         setNotice(`上次会话未正常结束，已恢复：${fi.fileName}`);
       } else if (restore === "clean") {
         setNotice(`已恢复上次打开的文件：${fi.fileName}`);
+      } else if (a.truncated) {
+        // 截断不是失败：结果只覆盖了文件里实际存在的那部分，必须说清楚。
+        setNotice(
+          `文件不完整：只分析了前 ${a.decodedDurationSeconds.toFixed(2)} 秒` +
+            `（文件头声明 ${a.declaredDurationSeconds.toFixed(2)} 秒）`,
+        );
       }
     } catch (e) {
       setError(describeError(e, "打开文件失败"));

@@ -141,7 +141,7 @@ fn rejects_non_audio_file_without_panicking() {
 }
 
 #[test]
-fn rejects_truncated_wav_file() {
+fn truncated_wav_decodes_what_is_there_and_reports_the_truncation() {
     let dir = scratch("truncated");
     let path = dir.join("truncated.wav");
 
@@ -151,24 +151,42 @@ fn rejects_truncated_wav_file() {
     let full = std::fs::read(&path).expect("read");
     std::fs::write(&path, &full[..full.len() / 2]).expect("truncate");
 
-    let result = probe(&path);
-    // 允许两种结果：探测阶段就发现截断，或探测成功但解码时失败。
-    // 关键是**不能 panic**，且必须有明确错误。
-    match result {
-        Ok(_) => {
-            let mut d = BlockDecoder::open(&path).expect("open may still work");
-            // 解码到某处必然出错或结束，不得 panic
-            while d.next_block().is_ok_and(|b| b.is_some()) {}
-        }
-        Err(e) => {
-            assert!(
-                e.to_string().contains("corrupt")
-                    || e.to_string().contains("unrecognised")
-                    || e.to_string().contains("truncated"),
-                "截断文件的错误应可识别，实得: {e}"
-            );
-        }
+    // 探针读的是文件头，所以仍然能给出**声明的**时长。
+    let info = probe(&path).expect("probe reads the header");
+    assert_eq!(info.total_frames, Some(48_000));
+
+    let mut decoder = BlockDecoder::open(&path).expect("open should work");
+    assert!(!decoder.is_truncated(), "尚未解码时不能声称被截断");
+
+    let mut frames = 0u64;
+    while let Some(block) = decoder.next_block().expect("decode must not fail") {
+        frames += block.pcm.frame_count() as u64;
     }
+
+    // 关键行为：截断**不是**解码失败。已解出的部分照常给出，
+    // 同时把「文件不完整」这件事如实标记出来。
+    assert!(decoder.is_truncated(), "读到文件尾必须标记为截断");
+    assert!(frames > 0, "截断文件仍应解出可用的音频，实得 {frames} 帧");
+    assert!(
+        frames < 48_000,
+        "解出的帧数应短于声明的 48000，实得 {frames}"
+    );
+    assert!(decoder.truncation_note().is_some(), "截断必须带上底层原因");
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn complete_wav_is_not_reported_as_truncated() {
+    let dir = scratch("not-truncated");
+    let path = dir.join("tone.wav");
+    let samples = sine_i16(1_000.0, 0.5, 48_000, 48_000);
+    write_wav_s16(&path, 48_000, 1, &samples);
+
+    let mut decoder = BlockDecoder::open(&path).expect("open");
+    while decoder.next_block().expect("decode").is_some() {}
+
+    assert!(!decoder.is_truncated(), "完整文件不得被标记为截断");
 
     std::fs::remove_file(&path).ok();
 }

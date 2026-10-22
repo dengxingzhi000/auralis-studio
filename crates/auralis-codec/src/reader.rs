@@ -56,6 +56,10 @@ pub struct BlockDecoder {
     /// 已解码的总帧数。
     frames_decoded: u64,
     finished: bool,
+    /// 数据流是否提前结束（文件被截断）。
+    truncated: bool,
+    /// 截断的底层描述。
+    truncation_note: Option<String>,
 }
 
 impl BlockDecoder {
@@ -107,6 +111,8 @@ impl BlockDecoder {
             time_base,
             frames_decoded: 0,
             finished: false,
+            truncated: false,
+            truncation_note: None,
         })
     }
 
@@ -126,6 +132,47 @@ impl BlockDecoder {
     #[must_use]
     pub const fn is_finished(&self) -> bool {
         self.finished
+    }
+
+    /// 数据流是否**提前**结束——文件被截断（没下完、拷贝不完整等）。
+    ///
+    /// 截断不是解码失败：已解出的部分依然有效，调用方应当把它当作
+    /// 「分析只覆盖了文件的一部分」来处理，而不是丢弃整份结果。
+    #[must_use]
+    pub const fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// 截断的底层描述；未截断时为 `None`。
+    #[must_use]
+    pub fn truncation_note(&self) -> Option<&str> {
+        self.truncation_note.as_deref()
+    }
+
+    /// 把 symphonia 的结果分成「结束 / 数据 / 真错误」。
+    ///
+    /// `Truncated`（读到文件尾）**不是错误**，而是数据流的自然终点：
+    /// 文件可能没下完或拷贝不完整，但已经解出来的部分完全有效。
+    /// 把它当错误会让整个分析失败，用户拿不到任何结果——这正是
+    /// 「文件截断 = 一无所获」的旧行为。
+    ///
+    /// 状态字段按引用单独传入，而不是 `&mut self`：解码结果本身借用了
+    /// `self.decoder`，再要一个 `&mut self` 就会与那个借用冲突。
+    /// 传字段引用则两处借用互不相干。
+    fn classify_end<T>(
+        truncated: &mut bool,
+        truncation_note: &mut Option<String>,
+        result: std::result::Result<T, CodecError>,
+    ) -> std::result::Result<Option<T>, CodecError> {
+        match result {
+            Ok(value) => Ok(Some(value)),
+            Err(CodecError::Truncated(note)) => {
+                *truncated = true;
+                *truncation_note = Some(note);
+                Ok(None)
+            }
+            Err(other) => Err(other),
+        }
     }
 
     /// 定位到指定帧（样本精确，尽力而为）。
@@ -171,20 +218,34 @@ impl BlockDecoder {
 
     /// 解码下一块。返回 `Ok(None)` 表示已到末尾。
     ///
+    /// 文件被截断时**不**报错：读到文件尾即视为数据流结束，
+    /// 并通过 [`BlockDecoder::is_truncated`] 记录这一事实。
+    ///
     /// # Errors
-    /// 文件损坏、截断，或解码器内部失败。
+    /// 文件损坏（非截断）、或解码器内部失败。
     pub fn next_block(&mut self) -> Result<Option<DecodedBlock>> {
         if self.finished {
             return Ok(None);
         }
 
         loop {
-            let packet = match map_symphonia(self.format.next_packet())? {
-                Some(p) => p,
+            let packet_result = map_symphonia(self.format.next_packet());
+            let packet = match Self::classify_end(
+                &mut self.truncated,
+                &mut self.truncation_note,
+                packet_result,
+            )? {
+                // 截断：数据流结束。
                 None => {
                     self.finished = true;
                     return Ok(None);
                 }
+                // 正常结束：容器报告没有更多包了。
+                Some(None) => {
+                    self.finished = true;
+                    return Ok(None);
+                }
+                Some(Some(packet)) => packet,
             };
 
             // 只解音轨的包；跳过封面、字幕等其它轨
@@ -192,7 +253,19 @@ impl BlockDecoder {
                 continue;
             }
 
-            let decoded = map_symphonia(self.decoder.decode(&packet))?;
+            let decoded_result = map_symphonia(self.decoder.decode(&packet));
+            let decoded = match Self::classify_end(
+                &mut self.truncated,
+                &mut self.truncation_note,
+                decoded_result,
+            )? {
+                // 截断：包解码到一半没了，剩下的部分作废，但此前的块仍然有效。
+                None => {
+                    self.finished = true;
+                    return Ok(None);
+                }
+                Some(decoded) => decoded,
+            };
 
             if decoded.is_empty() || decoded.frames() == 0 {
                 continue;
