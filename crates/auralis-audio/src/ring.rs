@@ -338,9 +338,24 @@ mod tests {
 
     #[test]
     fn concurrent_producer_consumer_never_blocks() {
-        // 模拟真实场景：生产者快于消费者，必须靠丢弃保持实时性
+        // 第一阶段在**没有消费者**时灌满并溢出环形缓冲：丢弃是确定性的，
+        // 不依赖调度器谁先跑。第二轮再并发生产/消费，验证不阻塞且计数一致。
+        //
+        // 早期版本只靠「生产者应该比消费者快」来断言 dropped > 0，
+        // 在快的 CI runner（ubuntu-latest）上消费者可能完全跟上，
+        // 断言偶发失败（run 39752201678）。测试不能依赖线程调度的假设。
         const N: u32 = 20_000;
         let r: Arc<SampleRing<u32>> = Arc::new(SampleRing::new(256, 1, DropPolicy::DropNewest));
+
+        // 第一阶段：无消费者，容量 256，必然丢弃 N - 256 个。
+        for i in 0..N {
+            let _ = r.push(i);
+        }
+        assert!(
+            r.stats().dropped_frames > 0,
+            "无消费者时灌入超过容量的样本，必然发生丢弃"
+        );
+
         let stop = Arc::new(AtomicBool::new(false));
         let consumed = Arc::new(AtomicUsize::new(0));
 
@@ -368,7 +383,7 @@ mod tests {
         let total = s.pushed_frames + s.dropped_frames;
         assert_eq!(
             total,
-            u64::from(N),
+            u64::from(N) * 2,
             "每个样本要么成功要么被计数，不得凭空消失"
         );
         assert_eq!(
@@ -376,7 +391,6 @@ mod tests {
             consumed.load(Ordering::Relaxed) as u64,
             "消费计数应与实际取出一致"
         );
-        assert!(s.dropped_frames > 0, "本测试中消费者故意较慢，应当发生丢弃");
     }
 
     #[test]
