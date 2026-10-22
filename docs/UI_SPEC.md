@@ -73,7 +73,7 @@ Checkbox / FormField / DataRow / Collapsible / NavItem / NavGroup / ErrorBar / E
 |---|---|---|
 | `WaveformView` | 包络、分道/叠加、量级自适应时间轴 | ✅ 已实现（时间缩放与选区待补） |
 | `SpectrumView` | 频率/幅值轴、填充/曲线两种形态、峰值标记、游标、缩放 | ✅ 已实现 |
-| `SpectrogramView` | ImageData 纹理、inferno 色阶、dB 色阶条、时间与频率轴 | ✅ 已实现（视口分块待补） |
+| `SpectrogramView` | ImageData 纹理、inferno 色阶、dB 色阶条、时间与频率轴 | ✅ 已实现（支持 30 秒视口分块与平移） |
 | `LevelMeter` | 逐声道 Peak 条 + 整体 RMS 标记 + 超量程警示 | ✅ 已实现 |
 | `ChannelCompareView` | 通道叠加与差异 | ◐ 叠加已并入 `WaveformView`；差异视图待补 |
 | `AnalysisSummaryView` | 指标、单位、参数、数据质量诊断 | ◐ 已并入检查器（信号指标 / 参数 / 文件 / 关于） |
@@ -128,6 +128,13 @@ Checkbox / FormField / DataRow / Collapsible / NavItem / NavGroup / ErrorBar / E
 | `Ctrl+R` | 重试上一次文件 |
 | 拖拽框选 / 滚轮 / 双击 | 频谱缩放、以光标为中心缩放、复位 |
 | `Shift` + 拖拽 | 平移频谱视口 |
+| 声谱图上滚轮 / 拖动 / 双击 | 前后平移一屏 / 拖动平移 / 回到文件开头 |
+| 声谱图标题栏 ◀ / 开头 / ▶ | 按 80% 屏宽前后翻页、回到开头 |
+
+声谱图默认只显示 30 秒窗口（`SPECTRUM_WINDOW_SECONDS`）。平移时 Rust 侧
+只解码并计算请求的窗口（`spectrogram_view`），不重跑整文件分析；
+矩阵被降采样到 1024 列时，有效 hop 会同步放大，时间轴标注的是
+`起点 + 偏移`，不是「相对 0 秒」。
 
 ## 7. 视觉验收
 

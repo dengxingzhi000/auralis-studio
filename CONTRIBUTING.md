@@ -26,7 +26,7 @@ reports honest limitations is more useful than one that quietly overstates.
 |---|---|---|
 | Rust | 1.99.0 | Pinned by `rust-toolchain.toml`; do not bump it in a PR |
 | MSVC build tools | — | `+crt-static` is enabled, see ADR-013 |
-| Node.js | 20 or 22 | CI tests both |
+| Node.js | 22.12+ or 24 | Required by Electron 45. CI also builds the renderer on Node 20 (build-only) |
 | Python | 3.12 | Only for the numpy oracle cross-check |
 
 Full local setup, including mirror configuration and the on-disk paths this
@@ -40,11 +40,12 @@ cd apps/desktop
 npm install
 npm run dev
 
-# Full app (Tauri dev, opens the WebView)
-npm run tauri dev
+# Full app (starts Vite + Electron; build the engine first)
+cargo build -p auralis-engine
+npm run electron:dev
 
 # Production build
-npm run tauri build
+npm run electron:start
 ```
 
 ## The checks CI runs

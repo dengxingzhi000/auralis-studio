@@ -64,7 +64,7 @@
 
 - name: area:ui
   color: 1d76db
-  description: Tauri / React frontend, rendering, interaction
+  description: Electron / React frontend, rendering, interaction
 
 - name: area:build
   color: 1d76db

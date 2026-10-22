@@ -419,7 +419,8 @@ Python 不进入 exe、不参与运行时、不影响发布体积。
 
 ## ADR-016：UI 技术栈从 egui/eframe 切换为 Tauri 2 + React
 
-状态：Accepted（2026-10-15，M0 收尾后、M1 开始前）
+状态：Accepted（2026-10-15，M0 收尾后、M1 开始前）。
+**容器部分已被 ADR-019 取代**：桌面外壳改为 Electron，React UI 决策不变。
 
 ### 背景
 
@@ -532,9 +533,19 @@ Radix 两者都不是——它是 headless 的，只管行为不管视觉。
 - 视觉完全可控，无第三方主题冲突。
 - 需要自己维护组件源码，升级需手工合并。
 - 前端无障碍质量取决于 Radix 使用是否正确，需在 review 中关注。
-## ADR-018：Rust ↔ WebView 的 IPC 设计约束
+## ADR-018：Rust ↔ UI 的 IPC 设计约束
 
-状态：Accepted（2026-10-15，M1 开始前必须遵守）
+状态：Accepted（2026-10-15，M1 开始前必须遵守）。
+传输层已由 ADR-019 改为 stdio JSON-Lines，**三条硬规则不变**。
+
+### 容器迁移后的落地（2026-10-22）
+
+Tauri Command/Channel 换成独立引擎进程的 stdio RPC 后，规则含义保持不变：
+
+- 标量仍走 JSON；
+- 视图数据仍是**预降采样**后的二进制，只是在线路上表示成 base64
+  （`src/b64.rs`），进入渲染进程前还原为 `Uint8Array`；
+- 频率与数据量仍然反比，实时快照仍按画布宽度降采样。
 
 ### 背景
 
@@ -551,13 +562,13 @@ Tauri 的 `Command` 走 **JSON 序列化**。`Channel` 虽然用于流式，
 
 | 数据类型 | 方式 | 频率 | 理由 |
 |---|---|---|---|
-| 元数据、配置、指标标量 | Command (JSON) | 按需 | 体积小，无需优化 |
-| 任务开始 / 结束 / 异常 | Event | 按需 | 天然的事件语义 |
-| 离线分析进度 | Event（节流 10 Hz） | 低 | 进度是标量 |
-| 波形包络（多级） | Command 返回 `Uint8Array` | 每次分析一次 | **二进制，不走 JSON** |
-| 频谱快照（离线） | Channel + 二进制，节流 20–30 Hz | 中 | 降采样到像素宽度后再传 |
-| **声谱图整块矩阵** | 一次传输整块 + 前端 WebGL | 每次分析一次 | **逐帧传必然重写** |
-| 实时电平 / 频谱 | M4 决策，本 ADR 不预设 | — | 见下 |
+| 元数据、配置、指标标量 | RPC 结果 (JSON) | 按需 | 体积小，无需优化 |
+| 任务开始 / 结束 / 异常 | 返回结果或错误 | 按需 | 天然的结果语义 |
+| 离线分析进度 | 轮询 `capture_status_cmd` | 低 | 进度是标量 |
+| 波形包络（多级） | RPC 返回 base64 → `Uint8Array` | 每次分析一次 | **二进制，不走 JSON 数组** |
+| 频谱快照（离线） | 随分析结果返回，降采样 | 中 | 降采样到像素宽度后再传 |
+| **声谱图整块矩阵** | 一次传输整块 + Canvas 2D | 每次分析一次 | **逐帧传必然重写** |
+| 实时电平 / 频谱 | 前端按 20–30 Hz 轮询快照 | 低 | 见下 |
 
 ### 三条硬规则
 
@@ -620,3 +631,108 @@ JSON 数组: 34.8 KB/帧
 - 需要一个 IPC 压测工具，在真实数据量下验证吞吐（见实施步骤）。
 - 若日后实测证明 Tauri IPC 成为瓶颈，迁移到 WebSocket / SAB 时
   只影响传输层，渲染层与 DSP 层不变。
+## ADR-019：桌面容器从 Tauri 2 迁移到 Electron
+
+状态：Accepted（2026-10-22）。取代 ADR-016 的**容器选择**；
+ADR-016 关于「React + TypeScript 承担 UI、Rust 承担音频计算」的决定继续有效。
+
+### 背景
+
+在目标机器（Windows 11，Intel UHD 核显，2560×1600 @ 240 Hz，PSR2 开启）
+上，Auralis Studio 在窗口**最大化/全屏时必定触发**屏幕级花屏与任务栏抖动。
+「必定触发」把问题从随机驱动不稳定缩小到了确定性的 resize / 合成路径。
+
+排查按证据推进，先排除了不属于应用层的假设：
+
+| 观测项 | 实测结果 | 结论 |
+|---|---|---|
+| 窗口矩形（最大化/还原） | 90 次采样只有 2 种矩形，无来回振荡 | 不是窗口尺寸抖动 |
+| 刷新率 | 200 次采样恒定 2560×1600@240，含窗口过渡 | 不是 DRR/VRR 切换 |
+| 帧节奏 | 平时中位 4.20 ms（240 fps）；最大化收尾掉 3 帧，最大 39 ms | 合成器确有瞬时卡顿 |
+| 画布后备存储 | 一次最大化期间重建 **16 次**，集中在 +1000…+1100 ms | 应用侧唯一与卡顿同刻的事件 |
+| 系统事件 | 无 TDR 4101，无 Display/Dxgkrnl/dwm 错误，无崩溃转储 | 不是 GPU 崩溃或驱动报错 |
+| CDP 截图 | 三块画布内容均正确 | 不是应用画错了像素 |
+
+先修复了画布重建风暴（只在尺寸真正变化时设置 `canvas.width/height`，
+并把 resize 合并到一帧，见 `apps/desktop/src/components/audio-viz/canvas-fit.ts`）。
+重建次数从每次最大化十余次降到 3 次（=真实尺寸变化次数），
+但最大化时整页仍会重渲染约 40 次，屏幕症状仍在。
+
+关键证据来自一个**最小证伪实验**：用最小 Electron 壳加载同一个 Vite 页面、
+同样的三块画布、同样的确定性数据。最大化时花屏消失。
+这把差异锁定在「谁提供 Chromium 渲染运行时」这一层，而不是 React 代码或 DSP。
+
+### 决策
+
+1. **桌面容器改为 Electron 45**，使用随包分发的 Chromium，
+   不再依赖机器上安装的 WebView2 Runtime。
+2. **Rust 音频内核移出容器**：原 `apps/desktop/src-tauri` 的命令层
+   迁移到独立 crate `crates/auralis-engine`，编译为独立进程。
+   它不依赖 Tauri、不创建窗口，只保留命令与 stdio 端点。
+3. **宿主与引擎用 stdio JSON-Lines RPC 通信**（`crates/auralis-engine/src/rpc.rs`）：
+   一行一条 JSON，`id` 配对请求与响应。没有端口、没有鉴权、不会留孤儿进程
+   （stdin EOF 即退出）。慢命令（分析/导出/探测/设备枚举）交给
+   2 个固定工作线程 + 有界队列（8），队列满立即回 `engine busy`；
+   高频轻命令（`app_info`、`cancel_task`、`capture_status_cmd`、
+   `realtime_snapshot`）在读取线程内联执行，不排在长分析后面。
+4. **渲染进程保持最小权限**：`sandbox: true`、`contextIsolation: true`、
+   `nodeIntegration: false`。能力只经 preload 的窄接口
+   `window.auralis`（`invoke` / `openFile` / `saveFile` / `getPathForFile`）暴露。
+5. **二进制继续优先**（ADR-018 规则 2 不变）：频谱、包络、声谱图在 JSON 里
+   是 base64 字符串，主进程解码成 `Uint8Array` 后经结构化克隆交给渲染进程；
+   渲染层不接触 JSON 数字数组，也不做音频数学。
+6. **文件对话框与拖放走 Electron 能力**：对话框用 `dialog`；
+   Chromium 不再向页面暴露路径，拖放路径由 preload 的
+   `webUtils.getPathForFile` 解析（Electron 32+ 移除了 `File.path`）。
+7. 引擎退出策略：关闭 stdin 后先排空**已接受**的慢命令并写回响应，再退出；
+   宿主侧等待 2 秒后仍未退出才强杀。
+
+### 与 Tauri 方案的对比
+
+| 维度 | Tauri 2（迁移前） | Electron 45（现在） |
+|---|---|---|
+| 渲染运行时 | 系统 WebView2，版本随机器变化 | 随包固定 Chromium 156 |
+| 本机最大化花屏 | **必现** | 未复现（同一页面、同一数据） |
+| Rust 集成 | 同进程，Tauri Command | 独立进程，stdio RPC |
+| 权限面 | capability 配置 | preload 窄接口 + 渲染进程沙箱 |
+| 安装包 | 较小（不含 Chromium） | 较大（含 Chromium） |
+| 内存 | 较低 | 较高 |
+| 生命周期 | 同一进程 | 子进程；stdin 断开即退出 |
+
+### 后果
+
+- **收益**：移除了 WebView2 版本这一变量；本机症状消失；
+  Rust 命令层不再绑定任何容器，换成别的 shell 也不需要重写命令。
+- **代价**：安装包与内存开销上升；多一层进程边界与 RPC 编解码
+  （base64 增加约 33% 体积，当前快照尺寸下可接受）；
+  Electron 主进程需要自己管理子进程生命周期与队列背压。
+- **未证明的部分**：Electron 不保证在所有 GPU/驱动组合上都不花屏。
+  本次只证明了**这台机器、这个版本、这个页面**下症状消失。
+  若换机复现，仍应按「容器 → Chromium 图形开关 → 驱动/合成」的顺序定位。
+- **打包要求**：M6 的安装包必须同时携带 `auralis-engine.exe` 与 Electron 运行时；
+  引擎路径为 `<resources>/engine/auralis-engine.exe`（见 `electron/engine.ts`）。
+  当前尚未生成安装包，也未签名。
+- **保留的独立修复**：画布重建风暴的修复与容器无关，保留在
+  `canvas-fit.ts` 中；即使将来换回其他容器也应保留。
+
+### 备选方案
+
+- **继续 Tauri，只升级/降级 WebView2 或回滚显卡驱动**：可能有效，但把
+  可复现性交给了用户机器；且本机单一 WebView2 版本下就必现，
+  版本差异解释不了症状。
+- **Tauri + 关闭 GPU 合成**：能作为对照实验，但作为长期方案会牺牲
+  高 DPI 滚动与绘制性能，也不解决「运行时版本随机器变化」。
+- **只修复画布重建，不换容器**：重建次数已降到理论下限，症状仍在，
+  说明它不是唯一触发因素。
+
+### 实施验证（2026-10-22）
+
+| 项 | 结果 |
+|---|---|
+| `cargo check --workspace --all-targets` | 通过 |
+| `cargo test --workspace` | 通过（DSP 199 项 + 各 crate，见 CI 输出） |
+| 引擎 stdio RPC：`app_info` / `probe_file` / `analyze_file` / 导出 CSV+JSON | 通过（真实 2 s 立体声 WAV） |
+| Electron 渲染进程 → preload → 引擎：`probe_file` / `analyze_file` | 通过；二进制字段到达渲染层为 `Uint8Array` |
+| Electron 真窗口渲染（合成信号） | 三块画布均有内容（截图见 `.devrun/electron-main.png`） |
+| 渲染进程/主进程 typecheck + Vite build | 通过 |
+| 真实声卡采集 | **仍未验证**（与容器迁移无关的既有欠项） |

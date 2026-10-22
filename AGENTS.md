@@ -15,8 +15,12 @@ Build Auralis Studio, a professional Windows-first desktop audio analysis applic
 
 ## Architecture rules
 
-- Use a Rust workspace with multiple crates and a desktop application under `apps/auralis-desktop`.
+- Use a Rust workspace with multiple crates. The desktop shell lives in `apps/desktop`
+  (Electron + React); the Rust command layer and stdio RPC endpoint live in
+  `crates/auralis-engine`.
 - Keep `auralis-core` and `auralis-dsp` free of UI, device APIs, filesystem access, and database dependencies.
+- The renderer (React) must not perform audio computation. All DSP and view decimation
+  happen in Rust before data crosses the IPC boundary.
 - Keep UI code out of the real-time audio callback.
 - Separate offline analysis scheduling from real-time streaming.
 - Use bounded queues/buffers for real-time data flow.

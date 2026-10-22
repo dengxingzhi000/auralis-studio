@@ -11,6 +11,19 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Added
 
+- **Viewport-chunked spectrogram.** The spectrogram no longer stops at the first
+  30 seconds with no way to see the rest. A new `spectrogram_view` command takes
+  `startSeconds` and `windowSeconds`, seeks in the container (sample-accurate
+  `Accurate` seek, then skips the remainder of the packet), decodes only that
+  window, and runs STFT on it. Memory and CPU stay proportional to the window,
+  not to the file length. The UI exposes ◀ / 开头 / ▶ buttons plus wheel, drag
+  and double-click, shows the absolute time range, and cancels superseded
+  requests by task id.
+  - `BlockDecoder::seek_to_frame` was added to `auralis-codec` and covered by a
+    real-WAV integration test. Containers that cannot seek fall back to decoding
+    from the start (correct, slower, with a warning).
+  - The first 30 seconds are still embedded in `analyze_file`, so the initial
+    view needs no extra round trip.
 - **Real-time input capture** (`crates/auralis-audio`): a CPAL input stream with a
   bounded lock-free ring buffer, and an analyser thread that never runs in the
   audio callback. The callback only takes a recycled buffer, copies, pushes, and
@@ -29,6 +42,19 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
     (`Float32Array` in the UI), per ADR-018 rule 2.
   - **Not verified on real hardware.** Only the missing-device error path and
     logic-level tests have been executed.
+- **Session and crash recovery.** The last successfully opened file is persisted
+  (`auralis.session.v1`) and re-analysed on the next launch, so a restart does
+  not lose the file or its analysis. Electron's main process keeps a
+  `auralis-running.lock` marker in `userData`: it is written at startup and
+  removed in `will-quit`, so its presence on the next launch means the previous
+  run did not exit cleanly. The status bar distinguishes
+  “上次会话未正常结束，已恢复：…” from a normal “已恢复上次打开的文件：…”.
+  - Verified by three real restarts: forced kill → recovered with the crash
+    notice; graceful window close → recovered with the normal notice; both
+    re-analysed the 40 s WAV and rebuilt the spectrogram.
+  - The restored unit is the file, not an in-flight result. A crash during
+    analysis means that analysis runs again on startup (deterministic, at the
+    cost of one decode).
 - **Realtime panel** in the sidebar: device picker, start/stop, sample rate,
   channel count, processed samples, and the two drop counters. While capturing,
   the spectrum pane is fed by the live snapshot and marked with a "实时" badge.
@@ -79,6 +105,34 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Changed
 
+- **Desktop container replaced: Tauri 2 → Electron 45** (ADR-019). On the
+  reference machine, maximizing the Tauri window deterministically produced
+  screen-wide artifacts and taskbar jitter. A minimal Electron shell loading
+  the same Vite page did not reproduce them, so the container was replaced
+  rather than gambling on a WebView2/driver combination. Electron bundles its
+  own Chromium, which removes the machine-dependent runtime version from the
+  equation; the cost is a larger installer and higher memory use.
+- **The Rust command layer is now a separate process** (`crates/auralis-engine`,
+  previously `apps/desktop/src-tauri`). Electron's main process spawns it and
+  communicates over a stdio JSON-Lines RPC protocol: no TCP port, no auth, and
+  lifetime tied to stdin. Slow commands run on two bounded workers; the
+  high-frequency polling commands stay inline so realtime snapshots never queue
+  behind a multi-second file analysis. Binary view data still crosses the
+  boundary as bytes (base64 on the wire, `Uint8Array` in the renderer), never
+  as JSON number arrays.
+- **Renderer capabilities narrowed to a preload bridge.** `sandbox: true`,
+  `contextIsolation: true`, `nodeIntegration: false`; `window.auralis` exposes
+  only `invoke`, file dialogs, and `getPathForFile`.
+- **Drag-and-drop now uses the DOM drop path** and resolves the file path in
+  preload via `webUtils.getPathForFile` (Chromium no longer exposes `File.path`).
+  The previous Tauri `onDragDropEvent` listener is gone.
+- **Development is one command again**: `npm run electron:dev` starts Vite,
+  waits for the port, then launches Electron; `npm run electron:start` runs the
+  production flow. The render self-check moved from `src/dev/` to `dev/` so the
+  production audio-math boundary scan does not treat synthetic fixtures as UI
+  code. `?open=<absolute path>` on the dev URL auto-analyses a file, which is
+  what made the real-file UI checks scriptable without driving the native
+  dialog.
 - **Visual revision of the desktop UI**, modelled on two reference interfaces
   (a dark developer-tool dashboard and a shadcn-style component sheet): new
   neutral elevation ramp (`bg-app` → `bg-sidebar` → `bg-panel` → `bg-elevated`),
@@ -105,6 +159,20 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Fixed
 
+- **The spectrogram time axis was short by the downsampling factor.** When the
+  STFT produced more than 1024 frames, `to_matrix` reduced them to 1024 columns,
+  but `spectrogram_hop_ms` still reported the source hop. A 30-second window was
+  therefore labelled as ~10.9 seconds. The reported hop is now the *effective*
+  hop (`source frames × hop ÷ output frames`), so `frames × hop` always equals
+  the real span. This is locked by a 12-second regression test.
+- **The canvas backing-store reallocation storm during window resize.** Every
+  chart used to assign `canvas.width/height` on every draw, which destroys and
+  recreates the GPU texture each time; one maximize triggered 16 reallocations
+  in the same ~100 ms window as the dropped frames. The new `canvas-fit.ts`
+  helper writes the backing store only when the device-pixel size actually
+  changes and snaps CSS size to whole device pixels. Measured after the fix:
+  42 draws produce 12 writes (the two real size changes). This fix is
+  independent of the container migration.
 - **A panic during analysis no longer takes the app with it.** `analyse_isolated`
   wraps the analysis in `catch_unwind`; a panic becomes an `Err` naming the file
   and the panic text, which surfaces in the error banner. This is the command-layer

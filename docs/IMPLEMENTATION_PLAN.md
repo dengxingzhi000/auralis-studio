@@ -36,9 +36,9 @@
 | `--self-test` 无窗口 DSP 自检 | 通过 |
 | 架构边界检查 | 通过（正反用例均已验证） |
 
-### M0.5：UI 技术栈切换至 Tauri（已完成 2026-10-15）
+### M0.5：UI 技术栈切换至 Tauri（已完成 2026-10-15，容器部分已被 M4.5 取代）
 
-状态：**已完成**
+状态：**已完成**（Tauri 容器已由 M4.5 的 Electron 取代，React UI 决策不变）
 
 - [x] `auralis-ui`（egui，1716 行）废弃，保留 git tag `m0-egui-baseline`
 - [x] `apps/desktop` Tauri 2 + React 19 + TS + Vite 骨架
@@ -61,7 +61,7 @@
 
 - [x] 创建 `auralis-codec`（symphonia，显式开启 mp3/aiff feature）
 - [x] 创建 `auralis-task`（取消令牌、任务事件、panic 隔离）
-- [x] 文件选择器（`tauri-plugin-dialog`）
+- [x] 文件选择器（迁移前为 `tauri-plugin-dialog`，现为 Electron `dialog`）
 - [x] 拖放导入（`onDragDropEvent`，与应用内三条入口同一路径）
 - [x] 元数据探测（只读文件头，O(1)）
 - [x] 分块 PCM 解码（内存与文件长度解耦）
@@ -152,8 +152,10 @@ ADR-018 初稿建议声谱图用 WebGL。实现时改为 **Canvas 2D + ImageData
 
 #### 频谱/声谱图的时间窗
 
-当前只分析文件**开头 30 秒**（`SPECTRUM_WINDOW_SECONDS`），因为 3 小时文件
-全量 STFT 是数 GB。看文件其它位置需要带偏移再调用一次 —— 属 **M4 视口分块**。
+`analyze_file` 的返回值只附带**开头 30 秒**（`SPECTRUM_WINDOW_SECONDS`），
+因为 3 小时文件全量 STFT 是数 GB。文件其它位置由 **M4 视口分块**的
+`spectrogram_view` 带偏移请求，只解码并计算目标窗口；UI 的按钮/滚轮/拖动
+都在调用它，初始视口不需要额外往返。
 
 #### 遗留
 
@@ -163,8 +165,8 @@ ADR-018 初稿建议声谱图用 WebGL。实现时改为 **Canvas 2D + ImageData
 
 ### M4：实时采集骨架 + 性能基准
 
-状态：**部分完成（2026-10-22）** —— 实时内核、CPAL 输入流、实时频谱链路已接通；
-视口分块声谱图与高频通道仍未做
+状态：**部分完成（2026-10-22）** —— 实时内核、CPAL 输入流、实时频谱链路、
+视口分块声谱图已接通；高频通道仍未做
 
 - [x] **建立 criterion 基准**（清偿 M2/M3 欠项）：`crates/auralis-dsp/benches/dsp_bench.rs`
 - [x] 实测数据写入 [docs/BENCHMARKS.md](BENCHMARKS.md)
@@ -180,7 +182,8 @@ ADR-018 初稿建议声谱图用 WebGL。实现时改为 **Canvas 2D + ImageData
       （`snapshot_overwrites`）分别计数，前端两者都显示
 - [x] 实时快照走**二进制**（小端 f32 字节流），符合 ADR-018 规则 2
 - [x] 前端 `RealtimePanel`：设备选择、开始/停止、丢帧/覆盖计数、实时频谱
-- [ ] 视口分块声谱图（带 offset 参数）
+- [x] 视口分块声谱图：`spectrogram_view(path, startSeconds, windowSeconds)`；
+      解码器支持精确 seek，Rust 只算请求窗口；UI 支持按钮/滚轮/拖动平移
 - [ ] 实时高频通道决策（WebSocket / SAB+Worklet / 原生插件）
 - [ ] ASIO 评估
 - [ ] **真实声卡采集未验证**：仅在无设备环境下验证了错误路径与逻辑层测试
@@ -222,9 +225,42 @@ ADR-018「回调只做拷贝、全部 DSP 在工作线程」的架构由实测�
 - 本项目 `#![forbid(unsafe_code)]`，自己写环形缓冲必须引入 `unsafe`
 - `rtrb` 会多一个依赖，而 `ArrayQueue` 无锁、定长、SPSC，且已在依赖树里
 
+### M4.5：桌面容器迁移至 Electron（已完成 2026-10-22）
+
+状态：**已完成**（代码、构建与端到端验证；安装包属 M6）
+
+迁移的触发因素不是「想换技术栈」，而是一个可复现的显示故障：Tauri/WebView2
+下窗口最大化**必定**触发屏幕级花屏与任务栏抖动。排查数据（窗口矩形稳定、
+刷新率恒定 240 Hz、无 TDR、CDP 截图内容正确、唯一同刻事件是画布后备存储
+重建风暴）与最小 Electron 壳的对照实验，完整记录在
+[ADR-019](ADR.md#adr-019桌面容器从-tauri-2-迁移到-electron)。
+
+- [x] 画布重建修复（`canvas-fit.ts`）：只在设备像素尺寸真变化时写
+      `canvas.width/height`；42 次 draw 只有 12 次写入
+- [x] Electron 45 主进程 + preload 窄接口（sandbox / contextIsolation /
+      无 Node 集成）
+- [x] Rust 命令层从 `src-tauri` 迁到 `crates/auralis-engine`，不再依赖 Tauri
+- [x] stdio JSON-Lines RPC：快命令内联、慢命令 2 worker + 有界队列 8、
+      stdin EOF 先排空已接受任务再退出
+- [x] 二进制字段 base64 过线，主进程还原为 `Uint8Array`
+- [x] 对话框走 Electron `dialog`；拖放走 DOM + `webUtils.getPathForFile`
+- [x] 一条命令启动开发：`npm run electron:dev`
+- [x] 真实 WAV 走通引擎 RPC 的 probe / analyze / CSV+JSON 导出
+- [x] Electron 渲染进程 → preload → 引擎的 `probe_file` / `analyze_file`
+      验证；二进制字段到达渲染层为 `Uint8Array`
+- [x] 真窗口渲染验证（三块画布均有内容）
+
+#### 迁移**没有**解决/验证的事
+
+- 真实声卡采集仍未验证（M4 既有欠项，与容器无关）。
+- Electron 只在这台机器、这个 GPU/驱动组合上验证过，不构成通用保证。
+- 安装包、签名、自动更新尚未开始（M6）。
+- 拖放路径只做了类型检查，尚未用真实文件拖放验证。
+
 ### M5：导出与可靠性（约 1 周）
 
-状态：**部分完成（2026-10-21）** —— 导出与布局持久化已落地，崩溃恢复未做
+状态：**已完成（2026-10-22）** —— 导出、布局持久化与进程级会话恢复已落地；
+`auralis-app` 用例层仍刻意推迟
 
 - [x] 创建 `auralis-storage`（导出渲染 + 原子写盘；11 项测试）
 - [x] CSV/JSON（含算法版本、单位、参数；`#` 元数据行 / JSON `units` 块）
@@ -236,8 +272,17 @@ ADR-018「回调只做拷贝、全部 DSP 在工作线程」的架构由实测�
 - [ ] `auralis-app`（用例层）—— **刻意推迟**：目前命令层本身就是用例，
       提前抽一层只会多一层转发，等出现「批量分析 / 会话恢复」这类真实
       编排需求再建，符合 AGENTS「不预建空 crate」
-- [ ] 崩溃恢复（进程级：重新打开时恢复上次的工作区与未完成任务）
+- [x] **会话/崩溃恢复（进程级）**：
+  - Electron 主进程维护 `auralis-running.lock`：启动写入、`will-quit` 删除；
+    文件仍在 = 上次未正常退出
+  - 渲染层把上次成功打开的文件路径写入 `auralis.session.v1`
+  - 启动时自动重新分析上次文件；异常退出时状态栏提示「上次会话未正常结束」
+  - 实测：强杀 → 重启恢复 + 异常提示；正常关闭 → 重启恢复 + 普通提示
+  - 恢复的是「文件 + 分析」，不是崩溃瞬间的未返回值；分析中被强杀时，
+    重启会重新跑一遍（结果可复现，代价是一次解码）
 - 验收：结果可追溯 —— CSV/JSON 均已覆盖（算法版本 / 规格修订 / 参数 / 单位）
+- 已知限制：运行标记写入失败时只失去崩溃检测，不影响启动；恢复路径若
+  文件已不存在，会按普通打开错误呈现
 
 #### 为什么导出要重新分析一次
 
@@ -256,10 +301,11 @@ ADR-018「回调只做拷贝、全部 DSP 在工作线程」的架构由实测�
 
 状态：未开始
 
-- [ ] NSIS/MSI 安装包（`tauri build` 已配置）
+- [ ] 安装包（Electron 打包方案待定；必须同时携带 Chromium、
+      `auralis-engine.exe` 与许可证清单）
 - [ ] 用户手册
 - [ ] 依赖许可证清单（含 npm 侧）
-- [ ] 长时间运行与崩溃恢复
+- [ ] 长时间运行稳定性（崩溃恢复已在 M5 完成）
 - 验收：发布检查表通过
 
 上述周期是有经验开发者的初始规划，不构成承诺。首次使用 Rust、桌面 GUI 或 DSP 时应增加学习缓冲。
@@ -267,7 +313,7 @@ ADR-018「回调只做拷贝、全部 DSP 在工作线程」的架构由实测�
 ## 3. 第一条垂直切片
 
 1. 创建 workspace 和 desktop app。
-2. 显示主窗口（M0 用 egui，M0.5 起为 Tauri）。
+2. 显示主窗口（M0 用 egui，M0.5 起为 Web UI；M4.5 起容器为 Electron）。
 3. 实现统一深色主题与五区域布局。
 4. 导入一个受支持 WAV 文件并读取元数据。
 5. 解码为 PCM block。

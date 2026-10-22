@@ -13,7 +13,7 @@
 [![Forks](https://img.shields.io/github/forks/dengxingzhi000/auralis-studio?color=8ae8ff&labelColor=black&style=flat-square&logo=github)](https://github.com/dengxingzhi000/auralis-studio/network/members)
 [![Issues](https://img.shields.io/github/issues/dengxingzhi000/auralis-studio?color=ff80eb&labelColor=black&style=flat-square&logo=github)](https://github.com/dengxingzhi000/auralis-studio/issues)
 [![Rust](https://img.shields.io/badge/Rust-1.99-007396?logo=rust&logoColor=white&style=flat-square)](https://www.rust-lang.org/)
-[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white&style=flat-square)](https://tauri.app/)
+[![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white&style=flat-square)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black&style=flat-square)](https://react.dev/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square)](#许可证)
 
@@ -21,7 +21,8 @@
 
 ```powershell
 git clone https://github.com/dengxingzhi000/auralis-studio
-cd auralis-studio\apps\desktop && npm install && npm run tauri dev
+cargo build -p auralis-engine
+cd auralis-studio\apps\desktop && npm install && npm run electron:dev
 ```
 
 </div>
@@ -63,7 +64,7 @@ Auralis Studio 反过来做。界面上每一个数字都来自一个有确定�
 |---|---|---|
 | **Rust** | 1.99.0 | 由 `rust-toolchain.toml` 固定 |
 | **MSVC 生成工具** | — | 启用 `+crt-static`，产物是真正独立的单文件 exe（ADR-013） |
-| **Node.js** | 20 或 22 | CI 两个版本都测 |
+| **Node.js** | 22.12+ 或 24 | Electron 45 要求。CI 还会用 Node 20 做渲染层构建（仅构建；分支保护保留了这个检查名） |
 | **Python** | 3.12 | 仅用于 numpy oracle 交叉验证 |
 
 本机安装方式、镜像配置与路径约定见
@@ -80,16 +81,26 @@ npm run dev          # Vite dev server
 ### 2. 完整应用
 
 ```powershell
+cargo build -p auralis-engine          # Rust 引擎是独立进程
 cd apps\desktop
-npm run tauri dev    # Tauri dev —— 自动拉起 WebView
+npm run electron:dev                  # 同时拉起 Vite 与 Electron
 ```
+
+`electron:dev` 会等 Vite 就绪后再启动 Electron。窗口加载
+`http://127.0.0.1:5173`，通过 stdio 与引擎通信，详见
+[ADR-019](./docs/ADR.md#adr-019桌面容器从-tauri-2-迁移到-electron)。
 
 ### 3. 生产构建
 
 ```powershell
+cargo build -p auralis-engine --release
 cd apps\desktop
-npm run tauri build
+npm run electron:start                # vite build + esbuild 主进程/preload + electron .
 ```
+
+**还没有安装包**（M6）。引擎必须存在于
+`target\debug\auralis-engine.exe`（或由 `AURALIS_ENGINE` 指定）；
+打包后预期读取 `<resources>\engine\auralis-engine.exe`。
 
 > [!WARNING]
 > **Release 产物是 GUI 子系统程序。** PowerShell 直接调用不会可靠等待，
@@ -99,9 +110,9 @@ npm run tauri build
 ### CLI（无需窗口，CI 跑的就是它）
 
 ```powershell
-.\target\release\auralis-studio.exe --version
-.\target\release\auralis-studio.exe --self-test
-.\target\release\auralis-studio.exe --dump-reference out.json
+.\target\release\auralis-engine.exe --version
+.\target\release\auralis-engine.exe --self-test
+.\target\release\auralis-engine.exe --dump-reference out.json
 ```
 
 `--dump-reference` 导出参考向量，numpy oracle 就是拿它来比对的。
@@ -123,14 +134,14 @@ npm run tauri build
 
 | 层 | 选择 |
 |---|---|
-| **桌面外壳** | Tauri 2（系统 WebView2，不捆绑 Chromium） |
-| **UI** | React 19 + TypeScript 7 + Vite 8 |
+| **桌面外壳** | Electron 45（自带 Chromium，运行时版本随发行固定） |
+| **UI** | React 19 + TypeScript 7 + Vite 8（渲染进程沙箱 + `contextIsolation`） |
 | **设计系统** | CSS Variables 令牌 + Radix Primitives（headless）+ 自研组件 |
 | **可视化** | 自研 Canvas 2D（波形 / 频谱），纹理化 Canvas（声谱图） |
 | **DSP** | Rust：`auralis-dsp`，只依赖 `rustfft` 6.4 |
 | **编解码** | `symphonia` 0.6，`mp3` / `aiff` feature 显式声明 |
 | **并发** | 无锁 SPSC 环（`crossbeam-queue`）、`catch_unwind` 任务隔离 |
-| **IPC** | 标量走 Tauri Command，视图数据走预降采样的二进制缓冲 |
+| **IPC** | Rust 引擎子进程 + stdio JSON-Lines；视图数据预降采样后以 base64 → `Uint8Array` 传输 |
 | **验证** | Rust 单测 + numpy oracle + CI |
 | **基准** | Criterion 0.8 |
 
@@ -140,17 +151,22 @@ npm run tauri build
 
 ```
    ┌──────────────────────────────────────────────────────┐
-   │  React 19 · TypeScript · Vite                       │
+   │  React 19 · TypeScript · Vite（沙箱渲染进程）        │
    │  ── 只展示算好的缓冲，不做任何 DSP 计算。──           │
    │                                                      │
    │  Workspace · Spectrum · Spectrogram · Inspector      │
    └───────────────────────┬──────────────────────────────┘
-                           │  Tauri IPC
-                 标量     │  ──────────▶  (Hz, dB, 计数)
-                 缓冲     ◀───────────  (预降采样 f32 / u8)
+                           │  preload: window.auralis.invoke
+                           │  结构化克隆（字符串、Uint8Array）
    ┌───────────────────────▼──────────────────────────────┐
-   │  auralis-desktop（Tauri 外壳）                       │
-   │  commands · capability 集 · tracing 初始化           │
+   │  Electron 主进程                                     │
+   │  窗口 · 对话框 · 引擎子进程 · 生命周期               │
+   └───────────────────────┬──────────────────────────────┘
+                           │  stdio JSON-Lines RPC
+                 标量     │  base64 字段 → Uint8Array
+   ┌───────────────────────▼──────────────────────────────┐
+   │  auralis-engine（独立进程）                          │
+   │  快命令内联 · 慢命令 2 worker · 队列 8               │
    └───────┬───────────────────────────┬──────────────────┘
            │                           │
    ┌───────▼────────┐         ┌────────▼─────────────────┐
@@ -289,9 +305,11 @@ Criterion，release profile，48 kHz。完整方法与注意事项见
 ./scripts/check-oracle.ps1       # numpy 交叉验证 DSP
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace           # 205 个测试
-cargo test -p auralis-desktop ipc -- --nocapture   # IPC 载荷体积
+cargo test --workspace           # 237 个测试
+cargo test -p auralis-engine ipc -- --nocapture   # IPC 载荷体积
 cd apps\desktop && npm run typecheck
+cd apps\desktop && npm run electron:typecheck
+cd apps\desktop && npm run electron:build
 ```
 
 ## 里程碑进度
@@ -299,12 +317,13 @@ cd apps\desktop && npm run typecheck
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | **M0** | Rust workspace、工具链、深色主题、DSP 内核骨架、CI | ✅ 已完成 |
-| **M0.5** | UI 栈切换至 Tauri 2 + React、IPC 通路验证 | ✅ 已完成 |
+| **M0.5** | UI 栈切换至 Tauri 2 + React、IPC 通路验证 | ✅ 已完成（容器后由 Electron 取代） |
 | **M1** | WAV 导入、元数据、分块 PCM、取消 | ✅ 已完成 |
 | **M2** | FFT、幅值校正、峰值检测、多级波形包络 | ✅ 已完成 |
 | **M3** | 频谱交互：游标、缩放平移、参数检查器、峰值标记 | ✅ 已完成 |
-| **M4** | 实时采集（CPAL）+ 实时声谱图 | 🚧 进行中——CPAL 流、分析线程、UI 实时频谱已接通；视口分块声谱图与高频通道未做。**尚未在真实声卡上运行过。** |
-| M5 | 导出、配置持久化、异常恢复 | ⬜ 未开始 |
+| **M4** | 实时采集（CPAL）+ 实时声谱图 | 🚧 进行中——CPAL 流、分析线程、UI 实时频谱、带 offset 的视口分块声谱图已接通；高频通道未做。**尚未在真实声卡上运行过。** |
+| **M4.5** | 桌面容器 Tauri 2 → Electron 45；Rust 命令层抽为 `auralis-engine` 独立进程（ADR-019） | ✅ 已完成（2026-10-22） |
+| M5 | 导出、配置持久化、异常恢复 | ✅ 已完成——CSV/JSON 导出、布局持久化、进程级会话恢复（含异常退出提示）；`auralis-app` 用例层刻意推迟 |
 | M6 | 安装包、用户手册、许可证清单 | ⬜ 未开始 |
 
 ## 项目结构
@@ -317,7 +336,8 @@ auralis-studio/
 │   ├── auralis-codec/           # 容器与 PCM 解码（symphonia）
 │   ├── auralis-audio/           # SPSC 环、设备枚举、CPAL 采集
 │   ├── auralis-task/            # 离线任务调度、进度、取消
-│   └── auralis-visualization/   # 波形金字塔、声谱帧
+│   ├── auralis-visualization/   # 波形金字塔、声谱帧
+│   └── auralis-engine/          # 命令层 + stdio RPC 端点（无 UI、无窗口）
 ├── apps/desktop/
 │   ├── src/                     # React 19 前端——只负责展示
 │   │   ├── components/
@@ -326,7 +346,9 @@ auralis-studio/
 │   │   ├── layouts/             # Workspace
 │   │   ├── lib/                 # contracts.ts · ipc.ts
 │   │   └── styles/              # tokens.css · layout.css · globals.css
-│   └── src-tauri/               # Tauri 外壳：commands、capabilities、tracing
+│   ├── electron/                # 主进程、preload 桥、引擎宿主
+│   ├── scripts/                 # 开发启动器 + esbuild 配置
+│   └── dev/                     # 仅开发用的渲染自检页（不进生产构建）
 ├── scripts/
 │   ├── check-boundaries.ps1     # 架构被破坏时失败
 │   ├── check-oracle.ps1         # 驱动 numpy 交叉验证
@@ -373,8 +395,16 @@ auralis-studio/
 - **削波检测在命令层返回 0。** 完整的平顶检测需要逐样本轨迹，
   与「分块、内存有界」冲突，将在 M2 随波形金字塔一起实现。
   **返回 0 是刻意的，猜测不是。**
-- 拖放导入未实现——只有文件选择器。
-- **IPC 端到端延迟未实测**（载荷体积已测）。
+- **拖放导入已实现但只做过类型检查。** 路径由 preload 的
+  `webUtils.getPathForFile` 解析；尚未在本机用真实文件拖放验证。
+- **IPC 端到端延迟只测过一次，也未在负载下测。** 合成信号一帧
+  （含 4096 点 FFT）在开发机约 11 ms；持续实时吞吐未测。
+- **Electron 迁移只在一台机器上验证过。** 它消除了本机的最大化花屏，
+  但不保证所有 GPU/驱动组合。见
+  [ADR-019](./docs/ADR.md#adr-019桌面容器从-tauri-2-迁移到-electron)。
+- **会话恢复是尽力而为。** 它只重新打开上次成功探测的文件并重跑分析，
+  不恢复崩溃瞬间的未返回结果；运行标记写不了时应用仍能启动，
+  但无法判断上次是否异常退出。
 - **界面目前只有中文**，尚无 i18n 层。
 - macOS / Linux 未适配。
 
@@ -439,13 +469,15 @@ THD 或 THD+N」。硬要宣称，只会让这份 README 里其他所有数字�
 </details>
 
 <details>
-<summary><strong>为什么移除了 <code>tauri-plugin-log</code>？</strong></summary>
+<summary><strong>为什么桌面外壳从 Tauri 换成了 Electron？</strong></summary>
 
-因为它在 setup 阶段调用 `log::set_boxed_logger`，与 `tracing-subscriber`
-抢同一个全局 logger，开窗时直接 panic。CLI 子命令不走 `run()`，
-所以这个问题一直没暴露。
+因为在目标机器上，窗口最大化会**必现**屏幕级花屏；而用最小 Electron 壳
+加载同一个页面时不会。完整排查、排除驱动与刷新率的测量、以及
+「证明了什么、没证明什么」都写在
+[ADR-019](./docs/ADR.md#adr-019桌面容器从-tauri-2-迁移到-electron)。
 
-现在 `lib.rs` 的 `init_tracing()` 是唯一的日志出口。
+Electron 并不是「到处都不花屏」的保证。它把机器相关的 WebView2 运行时
+从变量里去掉，代价是安装包更大、Rust 引擎变成独立进程。
 
 </details>
 
@@ -455,10 +487,8 @@ THD 或 THD+N」。硬要宣称，只会让这份 README 里其他所有数字�
 内核是可移植的，crate 也是跨平台的，所以矩阵任务会在 `ubuntu-latest` 上
 也构建一遍。这能在到达 Windows 之前先发现纯 crate 里的平台相关问题。
 
-该任务会先安装 Tauri 的 GTK/WebKit 开发头文件，因为 `auralis-desktop`
-依赖 Tauri，而 Tauri 在 Linux 上没有这些头文件根本编不过。
-少了这一步，报错是一个让人摸不着头脑的
-`gobject-sys: glib-2.0 not found`，退出码 101。
+迁移到 Electron 之后，Rust 侧在 Linux 上只需要 ALSA 开发头文件
+（`libasound2-dev`），不再需要 Tauri 的 GTK/WebKit 头文件。
 
 不产出 Linux 产物——artifact 任务只跑 Windows。
 
@@ -477,7 +507,7 @@ THD 或 THD+N」。硬要宣称，只会让这份 README 里其他所有数字�
 | [测试与验收计划](./docs/TEST_PLAN.md) | 测试分层、合成信号集、验收目标、CI 命令 |
 | [开发实施计划](./docs/IMPLEMENTATION_PLAN.md) | M0–M6 里程碑与垂直切片 |
 | [性能基准记录](./docs/BENCHMARKS.md) | Criterion 结果、方法，以及它们对架构意味着什么 |
-| [架构决策记录 ADR](./docs/ADR.md) | ADR-001 … ADR-018，包括被推翻的那几条 |
+| [架构决策记录 ADR](./docs/ADR.md) | ADR-001 … ADR-019，包括被推翻的那几条 |
 | [开发环境设置](./docs/DEV_ENVIRONMENT.md) | 本机工具链、镜像与路径约定 |
 | [工程契约](././AGENTS.md) | 约束本项目的那些规则 |
 

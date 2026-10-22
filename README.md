@@ -14,7 +14,7 @@ reporting a figure nobody measured.**
 [![Forks](https://img.shields.io/github/forks/dengxingzhi000/auralis-studio?color=8ae8ff&labelColor=black&style=flat-square&logo=github)](https://github.com/dengxingzhi000/auralis-studio/network/members)
 [![Issues](https://img.shields.io/github/issues/dengxingzhi000/auralis-studio?color=ff80eb&labelColor=black&style=flat-square&logo=github)](https://github.com/dengxingzhi000/auralis-studio/issues)
 [![Rust](https://img.shields.io/badge/Rust-1.99-007396?logo=rust&logoColor=white&style=flat-square)](https://www.rust-lang.org/)
-[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white&style=flat-square)](https://tauri.app/)
+[![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white&style=flat-square)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black&style=flat-square)](https://react.dev/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square)](#license)
 
@@ -22,7 +22,8 @@ reporting a figure nobody measured.**
 
 ```powershell
 git clone https://github.com/dengxingzhi000/auralis-studio
-cd auralis-studio\apps\desktop && npm install && npm run tauri dev
+cargo build -p auralis-engine
+cd auralis-studio\apps\desktop && npm install && npm run electron:dev
 ```
 
 </div>
@@ -73,7 +74,7 @@ The result is an analyzer that is deliberately boring about its claims.
 |---|---|---|
 | **Rust** | 1.99.0 | Pinned by `rust-toolchain.toml` |
 | **MSVC build tools** | — | `+crt-static` is enabled so the exe is genuinely standalone (ADR-013) |
-| **Node.js** | 20 or 22 | CI tests both |
+| **Node.js** | 22.12+ or 24 | Required by Electron 45. CI also builds the renderer on Node 20 (build-only; branch protection keeps that check name) |
 | **Python** | 3.12 | Only for the numpy oracle cross-check |
 
 Local installation paths and mirror configuration are in
@@ -90,16 +91,26 @@ npm run dev          # Vite dev server
 ### 2. Full application
 
 ```powershell
+cargo build -p auralis-engine          # the Rust engine is a separate process
 cd apps\desktop
-npm run tauri dev    # Tauri dev — opens the WebView
+npm run electron:dev                  # starts Vite + Electron together
 ```
+
+`npm run electron:dev` waits for the Vite dev server, then launches
+Electron. The window loads `http://127.0.0.1:5173` and talks to the engine over
+stdio; see [ADR-019](./docs/ADR.md#adr-019桌面容器从-tauri-2-迁移到-electron).
 
 ### 3. Production build
 
 ```powershell
+cargo build -p auralis-engine --release
 cd apps\desktop
-npm run tauri build
+npm run electron:start                # vite build + esbuild main/preload + electron .
 ```
+
+There is **no installer yet** (M6). The engine binary must exist at
+`target\debug\auralis-engine.exe` (or `AURALIS_ENGINE` must point at it);
+a packaged build is expected to read `<resources>\engine\auralis-engine.exe`.
 
 > [!WARNING]
 > **The release binary is a GUI-subsystem executable.** Calling it directly
@@ -110,9 +121,9 @@ npm run tauri build
 ### CLI (no window required — what CI runs)
 
 ```powershell
-.\target\release\auralis-studio.exe --version
-.\target\release\auralis-studio.exe --self-test
-.\target\release\auralis-studio.exe --dump-reference out.json
+.\target\release\auralis-engine.exe --version
+.\target\release\auralis-engine.exe --self-test
+.\target\release\auralis-engine.exe --dump-reference out.json
 ```
 
 `--dump-reference` writes the reference vectors that the numpy oracle is
@@ -135,14 +146,14 @@ compared against.
 
 | Layer | Choice |
 | ----- | ------ |
-| **Desktop shell** | Tauri 2 on the system WebView2 — no bundled Chromium |
-| **UI** | React 19 + TypeScript 7 + Vite 8 |
+| **Desktop shell** | Electron 45 with a bundled Chromium — runtime version is fixed per release |
+| **UI** | React 19 + TypeScript 7 + Vite 8 (sandboxed renderer, `contextIsolation`) |
 | **Design system** | CSS custom-property tokens + Radix primitives (headless) + in-house components |
 | **Visualization** | In-house Canvas 2D for waveform and spectrum; texture-backed canvas for the spectrogram |
 | **DSP** | Rust: `auralis-dsp`, depending only on `rustfft` 6.4 |
 | **Codec** | `symphonia` 0.6 with `mp3` and `aiff` features declared explicitly |
 | **Concurrency** | Lock-free SPSC ring (`crossbeam-queue`), `catch_unwind` task isolation |
-| **IPC** | Tauri commands for scalars; pre-decimated binary buffers for view data |
+| **IPC** | Rust engine subprocess + stdio JSON-Lines; view data is pre-decimated and travels as base64 → `Uint8Array` |
 | **Verification** | Rust unit tests + numpy oracle + CI |
 | **Benchmarks** | Criterion 0.8 |
 
@@ -153,17 +164,22 @@ instruments, not forms.
 
 ```
    ┌──────────────────────────────────────────────────────┐
-   │  React 19 · TypeScript · Vite                       │
+   │  React 19 · TypeScript · Vite  (sandboxed renderer)  │
    │  ── displays finished buffers. Computes no DSP. ──   │
    │                                                      │
    │  Workspace · Spectrum · Spectrogram · Inspector      │
    └───────────────────────┬──────────────────────────────┘
-                           │  Tauri IPC
-                 scalars  │  ──────────▶  (Hz, dB, counts)
-                 buffers  ◀───────────  (pre-decimated f32 / u8)
+                           │  preload: window.auralis.invoke
+                           │  structured clone (strings, Uint8Array)
    ┌───────────────────────▼──────────────────────────────┐
-   │  auralis-desktop  (Tauri shell)                     │
-   │  commands · capability set · tracing setup           │
+   │  Electron main process                               │
+   │  window · dialogs · engine subprocess · lifecycle    │
+   └───────────────────────┬──────────────────────────────┘
+                           │  stdio JSON-Lines RPC
+                 scalars  │  base64 field → Uint8Array
+   ┌───────────────────────▼──────────────────────────────┐
+   │  auralis-engine  (separate process)                  │
+   │  fast lane inline · slow lane 2 workers · queue 8    │
    └───────┬───────────────────────────┬──────────────────┘
            │                           │
    ┌───────▼────────┐         ┌────────▼─────────────────┐
@@ -313,9 +329,11 @@ measurement rather than an opinion:
 ./scripts/check-oracle.ps1       # numpy cross-validation of the DSP
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace           # 205 tests
-cargo test -p auralis-desktop ipc -- --nocapture   # IPC payload sizes
+cargo test --workspace           # 237 tests
+cargo test -p auralis-engine ipc -- --nocapture   # IPC payload sizes
 cd apps\desktop && npm run typecheck
+cd apps\desktop && npm run electron:typecheck
+cd apps\desktop && npm run electron:build
 ```
 
 ## Milestones
@@ -323,12 +341,13 @@ cd apps\desktop && npm run typecheck
 | Milestone | Content | Status |
 | --------- | ------- | ------ |
 | **M0** | Rust workspace, toolchain, dark theme, DSP kernel skeleton, CI | ✅ done |
-| **M0.5** | UI stack switched to Tauri 2 + React, IPC path verified | ✅ done |
+| **M0.5** | UI stack switched to Tauri 2 + React, IPC path verified | ✅ done (container later replaced by Electron) |
 | **M1** | WAV import, metadata, chunked PCM, cancellation | ✅ done |
 | **M2** | FFT, amplitude correction, peak detection, waveform pyramid | ✅ done |
 | **M3** | Spectrum interaction: cursor, zoom/pan, parameter inspector, peak markers | ✅ done |
-| **M4** | Real-time capture (CPAL) + live spectrogram | 🚧 in progress — the CPAL stream, analyser thread, and live spectrum in the UI are in; the chunked (offset-aware) spectrogram and the high-refresh channel are not. **Not yet run against real audio hardware.** |
-| M5 | Export, config persistence, crash recovery | 🚧 in progress — CSV/JSON export and layout persistence are in; crash recovery is not |
+| **M4** | Real-time capture (CPAL) + live spectrogram | 🚧 in progress — the CPAL stream, analyser thread, live spectrum, and the offset-aware chunked spectrogram are in; the high-refresh channel is not. **Not yet run against real audio hardware.** |
+| **M4.5** | Desktop container replaced: Tauri 2 → Electron 45; Rust command layer extracted to `auralis-engine` (ADR-019) | ✅ done (2026-10-22) |
+| M5 | Export, config persistence, crash recovery | ✅ done — CSV/JSON export, layout persistence, and process-level session restore (including an unclean-exit notice). The `auralis-app` use-case layer is deliberately deferred |
 | M6 | Installer, user manual, license inventory | ⬜ not started |
 
 ## Project structure
@@ -342,16 +361,19 @@ auralis-studio/
 │   ├── auralis-audio/           # SPSC ring, device enumeration, CPAL capture
 │   ├── auralis-task/            # offline task scheduling, progress, cancellation
 │   ├── auralis-storage/         # export (CSV/JSON) + atomic writes
-│   └── auralis-visualization/   # waveform pyramid, spectrogram frames
+│   ├── auralis-visualization/   # waveform pyramid, spectrogram frames
+│   └── auralis-engine/          # command layer + stdio RPC endpoint (no UI, no window)
 ├── apps/desktop/
-│   ├── src/                     # React 19 frontend — display only
+│   ├── src/                     # React 19 renderer — display only
 │   │   ├── components/
 │   │   │   ├── audio-viz/       # WaveformView · SpectrumView · SpectrogramView
 │   │   │   └── ui/              # primitives.tsx · icons.tsx
 │   │   ├── layouts/             # Workspace
-│   │   ├── lib/                 # contracts.ts · ipc.ts · persist.ts
+│   │   ├── lib/                 # contracts.ts · ipc.ts · bridge.ts · persist.ts
 │   │   └── styles/              # tokens.css · layout.css · globals.css
-│   └── src-tauri/               # Tauri shell: commands, capabilities, tracing
+│   ├── electron/                # main process, preload bridge, engine host
+│   ├── scripts/                 # dev launcher + esbuild config
+│   └── dev/                     # dev-only render check (not in production build)
 ├── scripts/
 │   ├── check-boundaries.ps1     # fails if the architecture is violated
 │   ├── check-oracle.ps1         # drives the numpy cross-check
@@ -411,8 +433,19 @@ Read this before trusting a number. It is short on purpose.
   flat-topped-waveform detector needs a per-sample trace, which conflicts with
   chunked, memory-bounded decoding. It is scheduled for M2's waveform
   pyramid work. Returning 0 is deliberate; guessing is not.
-- **Drag-and-drop import is not implemented** — only the file picker.
-- **IPC end-to-end latency has not been measured.** Payload sizes have been.
+- **Drag-and-drop import is implemented but only typechecked.** It uses
+  Electron's `webUtils.getPathForFile` in preload; the code path has not yet
+  been exercised with a real OS drop on this machine.
+- **IPC round-trip has been measured once, not under load.** A synthetic frame
+  (4096-point FFT included) took ~11 ms end to end on the dev machine. Sustained
+  realtime throughput has not been measured.
+- **The Electron migration was verified on one machine only.** It removed the
+  maximize-time artifacts here; it is not a guarantee for every GPU/driver
+  combination. See [ADR-019](./docs/ADR.md#adr-019桌面容器从-tauri-2-迁移到-electron).
+- **Session recovery is best effort.** It reopens the last successfully probed
+  file and re-runs its analysis; it cannot restore an in-flight result. If the
+  marker file cannot be written, the app still runs but cannot tell you the
+  previous session ended uncleanly.
 - **The UI is Chinese-only.** There is no i18n layer yet.
 - **macOS and Linux are unadapted.**
 
@@ -486,14 +519,17 @@ honest about the same inputs.
 </details>
 
 <details>
-<summary><strong>Why is <code>tauri-plugin-log</code> removed?</strong></summary>
+<summary><strong>Why did the shell move from Tauri to Electron?</strong></summary>
 
-Because it calls `log::set_boxed_logger` during setup, which collides with
-`tracing-subscriber` and panics when the window opens. The CLI subcommands
-never reach `run()`, which is exactly why this went unnoticed for as long as
-it did.
+Because the app had a deterministic, screen-wide rendering failure on the
+target machine when the window was maximized, and a minimal Electron shell
+loading the same page did not. The investigation, the measurements that ruled
+out the driver and the refresh rate, and the exact scope of what was and was
+not proven are in [ADR-019](./docs/ADR.md#adr-019桌面容器从-tauri-2-迁移到-electron).
 
-`init_tracing()` in `lib.rs` is now the only logging exit point.
+Electron is not claimed to be artifact-free everywhere. It removes the
+machine-dependent WebView2 runtime from the equation, at the cost of a larger
+installer and a separate Rust engine process.
 
 </details>
 
@@ -502,12 +538,9 @@ it did.
 
 The kernel is portable and the crates are cross-platform, so the matrix job
 also builds on `ubuntu-latest`. It catches platform-specific breakage in the
-pure crates before it reaches Windows.
-
-That job installs Tauri's GTK/WebKit development headers first, because
-`auralis-desktop` depends on Tauri and Tauri will not compile on Linux
-without them. Without the step the failure is a confusing
-`gobject-sys: glib-2.0 not found` with exit code 101.
+pure crates before it reaches Windows. Since the Electron migration, the Rust
+side needs only ALSA development headers (`libasound2-dev`) on Linux; the
+Tauri GTK/WebKit headers are no longer required.
 
 No Linux artifact is produced — the artifact job is Windows-only.
 
@@ -526,7 +559,7 @@ Start here for the reasoning behind the code:
 | [Test and acceptance plan](./docs/TEST_PLAN.md) | Test layering, synthetic signal set, acceptance targets, CI commands |
 | [Implementation plan](./docs/IMPLEMENTATION_PLAN.md) | M0–M6 milestones and vertical slices |
 | [Benchmarks](./docs/BENCHMARKS.md) | Criterion results, method, and what they imply about the architecture |
-| [Architecture decision records](./docs/ADR.md) | ADR-001 … ADR-018, including the ones that were reversed |
+| [Architecture decision records](./docs/ADR.md) | ADR-001 … ADR-019, including the ones that were reversed |
 | [Development environment](./docs/DEV_ENVIRONMENT.md) | Toolchain, mirrors, and path conventions |
 | [Engineering contract](././AGENTS.md) | The rules this project is held to |
 
