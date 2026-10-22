@@ -18,7 +18,7 @@
 //! 全部 DSP 都在工作线程上跑（见 `docs/BENCHMARKS.md`：FFT 4096 需 271 µs，
 //! 而 48 kHz 回调预算只有约 20.8 µs，**超 13 倍**，所以放进回调必然掉帧）。
 //!
-//! ## 为什么用 `crossbeam_channel::ArrayQueue` 而不是自己写
+//! ## 为什么用 `crossbeam_queue::ArrayQueue` 而不是自己写
 //!
 //! 它是无锁的、定长的 SPSC 队列，且已在依赖树里。用它可以避免：
 //! - 自己用 `unsafe` 写环形缓冲（违反本项目 `#![forbid(unsafe_code)]`）
@@ -38,8 +38,13 @@
 
 pub mod capture;
 pub mod devices;
+pub mod realtime;
 pub mod ring;
 
-pub use capture::{BufferRecycler, CallbackBuffer, CaptureSession, start_capture};
+pub use capture::{
+    BufferRecycler, CallbackBuffer, CaptureSession, FormatRange, ResolvedFormat, resolve_format,
+    start_capture,
+};
 pub use devices::{AudioDeviceInfo, CaptureConfig, DeviceError, list_input_devices};
+pub use realtime::{RealtimeConfig, RealtimeSnapshot, RealtimeWorker};
 pub use ring::{DropPolicy, RingStats, SampleRing};

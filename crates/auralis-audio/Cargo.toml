@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 auralis-core = { workspace = true }
+auralis-dsp = { workspace = true }
 # ArrayQueue 在 crossbeam-queue 而非 crossbeam-channel 里
 crossbeam-queue = "0.3"
 cpal = "0.18"
