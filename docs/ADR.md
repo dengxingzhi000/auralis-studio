@@ -602,7 +602,7 @@ Tauri 的 `Command` 走 **JSON 序列化**。`Channel` 虽然用于流式，
 
 本 ADR 初稿断言「JSON 序列化等于每秒几十 MB」。**该断言被实测推翻。**
 
-`apps/desktop/src-tauri/src/ipc_bench.rs` 用同一份真实数据测得：
+`crates/auralis-engine/src/ipc_bench.rs`（迁移前位于 `apps/desktop/src-tauri/`）用同一份真实数据测得：
 
 ```text
 输入     : fft_size=4096, target_bins=1200, envelope=2000
