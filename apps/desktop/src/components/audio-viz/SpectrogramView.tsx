@@ -409,7 +409,13 @@ export function SpectrogramView({
         );
         // 钳位后无效（区间非法或窄到没有意义）时**不**回调：
         // 回传 null 会被调用方当成「复位」，把用户的缩放清掉。
-        if (next) onViewRangeChangeRef.current?.(next);
+        if (next) {
+          // 立刻把新区间写回本地：连续滚轮时 React 还没来得及重渲染，
+          // 下一次事件若仍读 prop 就会用同一个旧区间计算 —— 连滚四格
+          // 只生效一格。父组件的 state 会在下一帧用同一个值覆盖它。
+          stateRef.current.viewRange = next;
+          onViewRangeChangeRef.current?.(next);
+        }
         return;
       }
 
