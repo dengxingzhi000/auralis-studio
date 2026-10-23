@@ -340,9 +340,15 @@ export default function App() {
       // 截断的提示优先级最高：恢复会话的提示不能把它盖掉，
       // 否则用户看到「已恢复上次打开的文件」，却不知道文件其实不完整。
       if (a.truncated) {
+        // 「缺多少」比「只分析到哪」更有用：末尾少 0.01 秒和少 30 秒
+        // 是两种完全不同的处境，用户据此判断要不要重新获取文件。
+        const missing = Math.max(
+          0,
+          a.declaredDurationSeconds - a.decodedDurationSeconds,
+        );
         setNotice(
-          `文件不完整：只分析了前 ${a.decodedDurationSeconds.toFixed(2)} 秒` +
-            `（文件头声明 ${a.declaredDurationSeconds.toFixed(2)} 秒）`,
+          `文件不完整：已分析 ${a.decodedDurationSeconds.toFixed(2)} 秒` +
+            `（声明 ${a.declaredDurationSeconds.toFixed(2)} 秒，缺 ${missing.toFixed(2)} 秒）`,
         );
       } else if (restore === "crashed") {
         setNotice(`上次会话未正常结束，已恢复：${fi.fileName}`);
