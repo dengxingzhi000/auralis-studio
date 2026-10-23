@@ -864,6 +864,13 @@ Steinberg ASIO SDK**（通过 `CPAL_ASIO_DIR` 指定），SDK 不随本仓库分
 1. **截断不是错误**。`BlockDecoder` 遇到 `UnexpectedEof` 时结束数据流，
    记下 `truncated` 标记与底层原因，继续返回已解出的块。
    真正的损坏（容器头坏、编码不认识、seek 失败）仍然是错误。
+   判定用**两个信号取或**：
+   - 解码器撞到文件尾（`UnexpectedEof`）；
+   - **解码帧数少于文件头声明的帧数**。
+
+   第二个信号不是冗余：实测用户的 FLAC 属于「symphonia 只打一条 WARN
+   （`expected N frames but only read M`）就正常收尾」的情形，
+   解码器自己察觉不到短少，只有拿声明值对账才发现少了 508 帧。
 2. **如实报告覆盖范围**。`analyze_file` 的结果新增
    `truncated` / `declaredDurationSeconds` / `decodedDurationSeconds`，
    界面在状态栏说明「只分析了前 X 秒（文件头声明 Y 秒）」。

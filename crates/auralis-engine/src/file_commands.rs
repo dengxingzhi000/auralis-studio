@@ -655,7 +655,10 @@ pub fn export_analysis(
             codec: dto.info.codec.clone(),
             sample_rate_hz: dto.info.sample_rate,
             channels: dto.info.channels,
-            duration_s: dto.info.duration_seconds,
+            // duration_s 是**实际参与分析**的时长；截断文件比声明的短。
+            // （它同时决定 CSV 波形行的时间轴，用声明值会把波形拉长到
+            //   并不存在的那段时间里。）
+            duration_s: Some(dto.decoded_duration_seconds),
             declared_duration_s: Some(dto.declared_duration_seconds),
             truncated: dto.truncated,
             frames_decoded: dto.frames_decoded,
@@ -750,6 +753,10 @@ fn run_analysis(
     // 文件头声明的时长（探针读到的元数据）。截断文件里它大于实际解码时长，
     // 两者之差就是「缺了多少」。
     let declared_duration_seconds = info.duration_seconds;
+    // 文件头声明的帧数。用来交叉验证解码是否真的少了一截：
+    // 有些容器（FLAC）遇到帧数不足时只打一条 warning 就正常收尾，
+    // 解码器自己察觉不到——只有拿声明值对账才发现少了。
+    let declared_frames = info.total_frames;
 
     let mut decoder = BlockDecoder::open(path).map_err(|e| e.to_string())?;
 
@@ -830,7 +837,12 @@ fn run_analysis(
     // 数据流提前结束 = 文件被截断（没下完 / 拷贝不完整）。
     // 已解出的部分完全有效，因此**不**当作失败：照常给出结果，
     // 同时把「只分析了这么多」如实告诉调用方。
-    let truncated = decoder.is_truncated();
+    //
+    // 两个信号取或：解码器撞到文件尾（`UnexpectedEof`），或者解码出的帧数
+    // 少于文件头声明的帧数——后者能覆盖「容器只打了 warning 就正常收尾」
+    // 的情况（FLAC 就是这样）。
+    let truncated =
+        decoder.is_truncated() || declared_frames.is_some_and(|declared| declared > total_frames);
 
     if total_frames == 0 {
         return Err(if truncated {
