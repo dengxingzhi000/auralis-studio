@@ -106,7 +106,13 @@ jobs:
       - run: npm ci
       - name: TypeScript 类型检查（渲染进程）
         run: npm run typecheck
+      # vitest 5 要求 node >= 22.12，Node 20 上跑不起来。
+      #
+      # Node 20 那一档保留下来是因为**分支保护要求这个检查名存在**：
+      # 它仍然验证「渲染层能在更老的 Node 上构建」，这本身是个有用的信号。
+      # 单元测试在 Node 22 / 24 上跑。
       - name: 前端单元测试
+        if: matrix.node != '20'
         run: npm run test
       - name: TypeScript 类型检查（Electron 主进程）
         run: npm run electron:typecheck

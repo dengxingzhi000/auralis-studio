@@ -58,7 +58,7 @@ auralis-visualization = { path = "crates/auralis-visualization" }
 rustfft = "6.4"
 
 # --- 外部：通用 ---
-base64 = "0.22"
+base64 = "0.23"
 crossbeam-channel = "0.5"
 # ArrayQueue 在 crossbeam-queue 而非 crossbeam-channel 里（auralis-audio 用）
 crossbeam-queue = "0.3"
@@ -82,6 +82,10 @@ cpal = "0.18"
 symphonia = { version = "0.6", features = ["mp3", "aiff"] }
 # FLAC **编码器**，只作为 dev-dependency（不进产物），用来生成可复现的
 # 测试样本。真实样本验证需要能自己造出 FLAC 文件——仓库里没有现成的。
+#
+# **锁在 0.4**：0.5 产出的 FLAC，symphonia 0.6.1（最新）读不了 ——
+# 解码报「意外的文件结束」，四条 FLAC 集成测试全挂。symphonia 没有更新
+# 版本可换，所以升级 flacenc 只能等上游修好再试。
 flacenc = "0.4"
 
 [profile.release]
