@@ -9,15 +9,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { matchItems, type SearchableItem } from "@/lib/search";
+import type { PaletteItem } from "@/lib/palette";
+import { matchItems } from "@/lib/search";
 
 import { IconSearch } from "./icons";
 import { Modal } from "./primitives";
 
-export interface PaletteItem extends SearchableItem {
-  id: string;
-  run: () => void;
-}
+export type { PaletteItem };
 
 export interface SearchPaletteProps {
   open: boolean;

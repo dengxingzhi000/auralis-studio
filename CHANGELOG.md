@@ -179,6 +179,31 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Changed
 
+- **`App.tsx` is now an assembly layer instead of everything.** It had grown to
+  ~1 240 lines owning file opening, analysis, live capture, the task queue,
+  export, search, drag-and-drop and keyboard shortcuts in one component. The
+  concerns that stand on their own now live in `src/lib/`:
+
+  | Concern | Module |
+  |---|---|
+  | Display and analysis preferences | `use-prefs.ts` |
+  | Background task queue and history | `use-task-queue.ts` |
+  | Live-capture readouts | `use-live-capture.ts` |
+  | Keyboard and drag-and-drop | `use-shortcuts.ts` |
+  | Export | `use-export.ts` |
+  | Search-palette entries | `palette.ts` (pure function) |
+
+  `App.tsx` is ~920 lines and keeps what is genuinely coupled: the file
+  session, the synthetic-signal analysis and the spectrogram viewport — all of
+  them read and write the same `display` (what is currently on screen), so
+  splitting them further would mean passing that state around instead of
+  removing it.
+
+  The search palette became a pure function with 8 unit tests, which is the
+  part that had no coverage at all. Behaviour is unchanged; the app was
+  re-verified end to end in the real container (mount, five-region layout,
+  Ctrl+K / Esc / Ctrl+, shortcuts, preference persistence, task queue,
+  analysis of a real file, canvas pixels, export button, live panel).
 - **`App.tsx` split into presentational components and pure helpers.** The file
   had grown past 2 200 lines, mixing application state, IPC and roughly 900 lines
   of JSX. The sidebar, inspector and central canvas now live in

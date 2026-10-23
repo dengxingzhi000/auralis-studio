@@ -13,6 +13,25 @@
  *   ┌ 顶栏：品牌 + 全局动作 ─────────────────────────────┐
  *   ├ 侧栏 ┬ 中央画布（卡片堆叠） ┬ 检查器 ──────────────┤
  *   └ 状态栏：设备 / 采样率 / 端到端 / 载荷 ─────────────┘
+ *
+ * ## 这里放什么、不放什么
+ *
+ * 本组件是**装配层**：它持有「当前在看哪个文件、屏幕上是什么数据」这份
+ * 共享状态，把各个关注点接起来，然后渲染布局。
+ *
+ * 各自独立的关注点已经搬进 `src/lib/`：
+ *
+ * | 关注点 | 模块 |
+ * |---|---|
+ * | 显示与分析偏好 | `use-prefs.ts` |
+ * | 后台任务队列与历史 | `use-task-queue.ts` |
+ * | 实时采集读数 | `use-live-capture.ts` |
+ * | 键盘与拖放 | `use-shortcuts.ts` |
+ * | 搜索面板条目 | `palette.ts`（纯函数） |
+ *
+ * 留在这里的都是有**耦合**的部分：文件分析、合成信号分析、导出、声谱图
+ * 视口 —— 它们都读写同一份 `display`（屏幕上正在显示的数据），拆开
+ * 反而要把这份状态传来传去。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -22,13 +41,10 @@ import {
   analyzeFile,
   analyzeSynthetic,
   cancelTask,
-  exportAnalysis,
   fetchAppInfo,
   fetchSpectrogramView,
-  fetchTaskQueue,
   isAudioPath,
   pickAudioFile,
-  pickExportDestination,
   probeFile,
 } from "@/lib/ipc";
 import type {
@@ -36,11 +52,10 @@ import type {
   FileInfo,
   PeakInfo,
   SyntheticRequest,
-  TaskInfo,
 } from "@/lib/contracts";
 import type { DisplayData } from "@/lib/display";
 import { describeError, type UiError } from "@/lib/errors";
-import { fileNameOf, fmtHz } from "@/lib/format";
+import { fileNameOf } from "@/lib/format";
 import {
   canLoadSpectrogramWindow,
   canStartAnalysis,
@@ -49,32 +64,24 @@ import {
   openFileLabel,
   type OperationState,
 } from "@/lib/operations";
-import { pushHistory, type HistoryEntry } from "@/lib/task-history";
 import { scrollToPane } from "@/lib/scroll";
 import { readSession } from "@/lib/session";
-import type { ChannelLayout, SpectrumMode } from "@/lib/view";
 import { AnalysisCanvas } from "@/components/panels/AnalysisCanvas";
 import { InspectorPanel } from "@/components/panels/InspectorPanel";
 import { ResourcePanel } from "@/components/panels/ResourcePanel";
 import { readStoredJson, writeStoredJson } from "@/lib/persist";
-import {
-  clearPrefs,
-  clearSession,
-  DB_RANGES,
-  readPrefs,
-  resetLayout,
-  SESSION_KEY,
-  writePrefs,
-  type Prefs,
-} from "@/lib/prefs";
+import { DB_RANGES, SESSION_KEY } from "@/lib/prefs";
+import { buildPaletteItems } from "@/lib/palette";
+import { useExport } from "@/lib/use-export";
+import { useLiveCapture } from "@/lib/use-live-capture";
+import { usePrefs } from "@/lib/use-prefs";
+import { useShortcuts } from "@/lib/use-shortcuts";
+import { useTaskQueue } from "@/lib/use-task-queue";
 import { AboutDialog } from "@/components/ui/AboutDialog";
 import { HelpDialog } from "@/components/ui/HelpDialog";
 import { PreferencesDialog } from "@/components/ui/PreferencesDialog";
 import { SearchPalette, type PaletteItem } from "@/components/ui/SearchPalette";
 import { Button, Checkbox } from "@/components/ui/primitives";
-
-/** 面板可见性的持久化键。 */
-const VISIBILITY_KEY = "auralis.workspace.visibility.v1";
 
 const DEFAULTS: SyntheticRequest = {
   frequencyHz: 1000,
@@ -87,8 +94,6 @@ const DEFAULTS: SyntheticRequest = {
 
 /** 声谱图一屏的默认时长（秒），与 Rust 侧 `SPECTRUM_WINDOW_SECONDS` 一致。 */
 const SPECTROGRAM_WINDOW_SECONDS = 30;
-
-const DISPLAY_KEY = "auralis.display.v1";
 
 /** 正在进行、可取消的文件分析。`null` = 没有在跑的文件任务。 */
 interface ActiveTask {
@@ -107,9 +112,6 @@ export default function App() {
    * 集中在 `lib/operations.ts`，这里只保存事实。
    */
   const [analyzing, setAnalyzing] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  /** 一次渲染内的操作快照，供按钮文案与 disabled 使用。 */
-  const ops: OperationState = { analyzing, exporting };
   const [error, setError] = useState<UiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [cursorHz, setCursorHz] = useState<number | null>(null);
@@ -138,32 +140,22 @@ export default function App() {
   //
   // 一份真值源：顶栏复选框、检查器的「显示」分区、偏好设置对话框
   // 全部读写这同一份状态。改一处三处一致 —— 「改了没反应」几乎总是
-  // 因为两处各写各的。
-  //
-  // 初值来自 `readPrefs()`：它会先读新键，再从旧的
-  // `auralis.display.v1` / `auralis.workspace.visibility.v1` 迁移，
-  // 所以已有的用户设置不会因为换了存储位置而丢失。
-  // `useState` 的惰性初始化只跑一次；写成 `useRef(readPrefs()).current`
-  // 会在每次渲染都读一次 localStorage 并解析 JSON。
-  const [initialPrefs] = useState(readPrefs);
-  const [spectrumMode, setSpectrumMode] = useState<SpectrumMode>(
-    initialPrefs.spectrumMode,
-  );
-  const [dbRangeIdx, setDbRangeIdx] = useState(initialPrefs.dbRange);
-  const [channelLayout, setChannelLayout] = useState<ChannelLayout>(
-    initialPrefs.channelLayout,
-  );
-  // 面板可见性也持久化：一上来就隐藏资源栏的人，不希望每次启动都重新勾一遍
-  const [showLeft, setShowLeft] = useState(initialPrefs.showLeft);
-  const [showRight, setShowRight] = useState(initialPrefs.showRight);
-  /** 文件分析的波形包络点数 */
-  const [envelopePoints, setEnvelopePoints] = useState(
-    initialPrefs.envelopePoints,
-  );
-  /** 启动时是否自动恢复上次打开的文件 */
-  const [restoreSession, setRestoreSession] = useState(
-    initialPrefs.restoreSession,
-  );
+  // 因为两处各写各的。状态与落盘在 `use-prefs.ts`。
+  const prefsCtl = usePrefs(setNotice);
+  const {
+    spectrumMode,
+    setSpectrumMode,
+    dbRangeIdx,
+    setDbRangeIdx,
+    channelLayout,
+    setChannelLayout,
+    showLeft,
+    setShowLeft,
+    showRight,
+    setShowRight,
+    envelopePoints,
+    restoreSession,
+  } = prefsCtl;
 
   // ---- 真实文件 ----
   const [files, setFiles] = useState<FileInfo[]>([]);
@@ -176,159 +168,20 @@ export default function App() {
   const spectroTaskRef = useRef<number | null>(null);
 
   // ---- 实时采集（M4）----
-  const [livePeak, setLivePeak] = useState<number | null>(null);
-  const [liveRms, setLiveRms] = useState<number | null>(null);
-  const [livePeaks, setLivePeaks] = useState<(number | null)[]>([]);
-  const [liveRmsPerChannel, setLiveRmsPerChannel] = useState<
-    (number | null)[]
-  >([]);
-  const [liveDb, setLiveDb] = useState<Float32Array | null>(null);
-  const [liveStepHz, setLiveStepHz] = useState(1);
-  const [liveSampleRate, setLiveSampleRate] = useState<number | null>(null);
+  const live = useLiveCapture();
 
   // ---- 后台任务队列（M3）----
-  /** 运行中的任务；来自 Rust 的任务注册表 */
-  const [tasks, setTasks] = useState<TaskInfo[]>([]);
-  /** 最近完成的文件分析；Rust 侧任务结束即注销，结局只有发起方知道 */
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
-  /** 实时采集是否正在运行（用于导航项上的状态标记） */
-  const [liveRunning, setLiveRunning] = useState(false);
+  const taskQueue = useTaskQueue();
+
   /** 全局搜索面板是否打开 */
   const [searchOpen, setSearchOpen] = useState(false);
   /** 打开中的模态对话框；`null` = 都没开 */
   const [dialog, setDialog] = useState<null | "prefs" | "help" | "about">(null);
-  /** 布局重置计数：递增会重建 Workspace，让它重新读一遍面板宽度 */
-  const [layoutEpoch, setLayoutEpoch] = useState(0);
-
-  useEffect(() => {
-    writeStoredJson(VISIBILITY_KEY, { left: showLeft, right: showRight });
-  }, [showLeft, showRight]);
-
-  useEffect(() => {
-    writeStoredJson(DISPLAY_KEY, {
-      mode: spectrumMode,
-      dbRange: dbRangeIdx,
-      channelLayout,
-    });
-  }, [spectrumMode, dbRangeIdx, channelLayout]);
-
-  // 统一偏好存储键。状态是真值源，这个 effect 只是把它落盘。
-  useEffect(() => {
-    writePrefs({
-      spectrumMode,
-      dbRange: dbRangeIdx,
-      channelLayout,
-      showLeft,
-      showRight,
-      envelopePoints,
-      restoreSession,
-    });
-  }, [
-    spectrumMode,
-    dbRangeIdx,
-    channelLayout,
-    showLeft,
-    showRight,
-    envelopePoints,
-    restoreSession,
-  ]);
-
-  /** 把一份偏好应用到全部状态。 */
-  const applyPrefs = useCallback((p: Prefs) => {
-    setSpectrumMode(p.spectrumMode);
-    setDbRangeIdx(p.dbRange);
-    setChannelLayout(p.channelLayout);
-    setShowLeft(p.showLeft);
-    setShowRight(p.showRight);
-    setEnvelopePoints(p.envelopePoints);
-    setRestoreSession(p.restoreSession);
-  }, []);
-
-  /** 当前偏好的快照，供偏好设置对话框渲染。 */
-  const prefs = useMemo<Prefs>(
-    () => ({
-      spectrumMode,
-      dbRange: dbRangeIdx,
-      channelLayout,
-      showLeft,
-      showRight,
-      envelopePoints,
-      restoreSession,
-    }),
-    [
-      spectrumMode,
-      dbRangeIdx,
-      channelLayout,
-      showLeft,
-      showRight,
-      envelopePoints,
-      restoreSession,
-    ],
-  );
-
-  /**
-   * 重置某一组本地设置。
-   *
-   * 删除对应的存储键，并把运行中的界面同步回默认值 —— 只删键不刷新
-   * 界面的话，用户会看到「按钮按了没反应」。
-   */
-  const onResetPrefs = useCallback(
-    (kind: "prefs" | "layout" | "session") => {
-      if (kind === "prefs") {
-        clearPrefs();
-        applyPrefs(readPrefs());
-        setNotice("显示与分析偏好已重置");
-      } else if (kind === "layout") {
-        resetLayout();
-        // 侧栏宽度由 Workspace 组件自持；重建它才会重新读一次存储。
-        setLayoutEpoch((n) => n + 1);
-        applyPrefs({ ...readPrefs(), showLeft: true, showRight: true });
-        setNotice("面板布局已重置");
-      } else {
-        clearSession();
-        setNotice("会话记录已清除，下次启动不再自动恢复文件");
-      }
-    },
-    [applyPrefs],
-  );
 
   useEffect(() => {
     fetchAppInfo()
       .then(setInfo)
       .catch((e) => setError(describeError(e, "无法连接 Rust 后端")));
-  }, []);
-
-  /**
-   * 轮询后台任务队列。
-   *
-   * `task_queue` 是**快命令**：在 RPC 读取线程里就地执行，只读一张
-   * 哈希表，不会排在耗时的文件分析后面。500 ms 一次，开销可忽略。
-   *
-   * 失败时静默忽略：拿不到队列不代表分析失败，不该因此弹错误条。
-   */
-  useEffect(() => {
-    let alive = true;
-    // 同一时刻只允许一个队列请求在路上：后端卡住时，500 ms 的定时器
-    // 会不断叠加请求，占满 RPC 通道。
-    let inFlight = false;
-    const tick = () => {
-      if (inFlight) return;
-      inFlight = true;
-      fetchTaskQueue()
-        .then((t) => {
-          if (alive) setTasks(t);
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          inFlight = false;
-        });
-    };
-    tick();
-    const id = window.setInterval(tick, 500);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
   }, []);
 
   /** 取下一个任务号。毫秒时间戳 ×1000 + 序号，避开后端 0..N 的分配区间。 */
@@ -342,31 +195,9 @@ export default function App() {
    *
    * Rust 侧的任务注册表只暴露**运行中**的任务（结束即注销），所以
    * 「完成 / 已取消 / 失败」这个结局只有发起方知道 —— 这里就是那个
-   * 发起方。
-   *
-   * 只收文件分析：声谱图视口请求在自动平移时会连发，进历史会把
-   * 用户真正关心的分析挤掉。
+   * 发起方。记录本身在 `use-task-queue.ts`。
    */
-  const recordAnalysis = useCallback(
-    (
-      taskId: number,
-      label: string,
-      outcome: "succeeded" | "cancelled" | "failed",
-      elapsedMs: number,
-    ) => {
-      setHistory((h) =>
-        pushHistory(h, {
-          id: `analyze:${taskId}`,
-          kind: "analyze",
-          label,
-          outcome,
-          elapsedMs,
-          endedAt: Date.now(),
-        }),
-      );
-    },
-    [],
-  );
+  const recordAnalysis = taskQueue.record;
 
   /**
    * 分析一个已知路径。文件选择器与拖放都走这里，保证两条入口行为一致。
@@ -566,53 +397,19 @@ export default function App() {
   /**
    * 导出当前文件的分析结果。
    *
-   * 格式由保存对话框里选的扩展名决定（Rust 侧会校验两者一致），
-   * 这样只有一个按钮、没有额外的格式开关。用户取消保存不是错误。
+   * 导出是独立的第三条入口：有自己的忙碌位、自己的闸门、自己的失败
+   * 处理。逻辑在 `use-export.ts`，这里只把它接到界面状态上。
    */
-  const onExport = useCallback(async () => {
-    if (!selected) return;
-    // 分析进行中不导出（导出对象可能与屏幕内容对不上）；导出自身不可重入。
-    if (
-      !canStartExport({
-        analyzing: analyzingRef.current,
-        exporting: exportingRef.current,
-      })
-    ) {
-      setNotice(
-        analyzingRef.current ? "分析进行中，完成后再导出" : "正在导出，请等待完成",
-      );
-      return;
-    }
-    exportingRef.current = true;
-    setExporting(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const base = selected.fileName.replace(/\.[^.]+$/, "");
-      const picked = await pickExportDestination(`${base}.csv`);
-      if (!picked) return;
-      // 用户可能把扩展名删掉，补一个默认值而不是让 Rust 端报错
-      const destination = /\.(csv|json)$/i.test(picked) ? picked : `${picked}.csv`;
-      const format = destination.toLowerCase().endsWith(".json")
-        ? ("json" as const)
-        : ("csv" as const);
-
-      const out = await exportAnalysis(
-        selected.path,
-        destination,
-        format,
-        envelopePoints,
-      );
-      setNotice(
-        `已导出 ${out.format.toUpperCase()} · ${(out.bytesWritten / 1024).toFixed(1)} KiB → ${out.destination}`,
-      );
-    } catch (e) {
-      setError(describeError(e, "导出失败"));
-    } finally {
-      exportingRef.current = false;
-      setExporting(false);
-    }
-  }, [selected, envelopePoints]);
+  const exportCtl = useExport({
+    selected,
+    envelopePoints,
+    analyzing: analyzingRef,
+    exporting: exportingRef,
+    setNotice,
+    setError,
+  });
+  const onExport = exportCtl.onExport;
+  const exporting = exportCtl.exporting;
 
   /**
    * 把频率视口对准某个检测到的峰值。
@@ -639,86 +436,24 @@ export default function App() {
     [display, req.sampleRate],
   );
 
-  // ---- 键盘：Ctrl/Cmd+O 打开，Esc 取消，Ctrl/Cmd+R 重试，Ctrl/Cmd+K 搜索 ----
+  // ---- 键盘与拖放：两条「把文件送进分析」的输入通道 ----
   //
-  // 有模态打开时键盘归模态：否则在对话框里按 Esc 会同时「关闭对话框」
-  // 和「取消正在进行的分析」；在搜索面板里按 Ctrl+O 会在面板上再弹一个
-  // 文件选择器。
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const mod = e.ctrlKey || e.metaKey;
-      const key = e.key.toLowerCase();
-
-      if (mod && (key === "k" || key === "f")) {
-        e.preventDefault();
-        if (dialog === null) setSearchOpen(true);
-        return;
-      }
-
-      if (dialog !== null || searchOpen) return;
-
-      if (mod && key === "o") {
-        e.preventDefault();
-        void onOpenFile();
-      } else if (mod && key === ",") {
-        e.preventDefault();
-        setDialog("prefs");
-      } else if (e.key === "F1") {
-        e.preventDefault();
-        setDialog("help");
-      } else if (e.key === "Escape" && activeTask) {
-        e.preventDefault();
-        void onCancelTask();
-      } else if (mod && key === "r" && lastPathRef.current) {
-        e.preventDefault();
-        onRetry();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [
-    activeTask,
-    dialog,
-    onCancelTask,
-    onOpenFile,
-    onRetry,
+  // 监听逻辑在 `use-shortcuts.ts`；这里只把当前状态与动作接上去。
+  // 传的都是稳定的引用（useCallback / useState 的 setter），
+  // 否则监听器会每帧重挂一遍。
+  useShortcuts({
+    dialogOpen: dialog !== null,
     searchOpen,
-  ]);
-
-  // ---- 拖放：桌面音频应用的基本预期 ----
-  //
-  // Electron 不再提供 `onDragDropEvent`，走标准 DOM 拖放。Chromium 不把
-  // 磁盘路径交给页面，路径由 preload 的 `getPathForFile` 解析。
-  useEffect(() => {
-    const onDragOver = (e: DragEvent) => {
-      // 不 preventDefault 的话浏览器会拒绝 drop 事件。
-      if (e.dataTransfer?.types.includes("Files")) e.preventDefault();
-    };
-
-    const onDrop = (e: DragEvent) => {
-      const files = Array.from(e.dataTransfer?.files ?? []);
-      if (files.length === 0) return;
-      e.preventDefault();
-
-      const api = window.auralis;
-      if (!api) {
-        setError({ title: "拖放仅在桌面容器中可用", detail: null });
-        return;
-      }
-
-      const paths = files.map((file) => api.getPathForFile(file));
-      const path = paths.find(isAudioPath);
-      if (path) void analyzePath(path);
-      else setError({ title: "拖入的文件不是受支持的音频格式", detail: null });
-    };
-
-    window.addEventListener("dragover", onDragOver);
-    window.addEventListener("drop", onDrop);
-    return () => {
-      window.removeEventListener("dragover", onDragOver);
-      window.removeEventListener("drop", onDrop);
-    };
-  }, [analyzePath]);
+    hasActiveTask: activeTask != null,
+    lastPath: lastPathRef,
+    onOpenFile,
+    onCancelTask,
+    onRetry,
+    setSearchOpen,
+    setDialog,
+    onDropFile: analyzePath,
+    onError: setError,
+  });
 
   // 画布宽度变化时，把 targetBins 跟着调 —— ADR-018 规则 3：
   // 频谱点数应等于像素宽度，不多传。
@@ -811,112 +546,39 @@ export default function App() {
    *
    * 三组：文件（重新分析）、峰值（把频率视口对准它）、操作。
    * 全部是**已算好的东西**或纯界面动作，不触发新的音频计算。
+   * 组装逻辑在 `palette.ts`（纯函数，可直接测）。
    */
-  const paletteItems = useMemo<PaletteItem[]>(() => {
-    const items: PaletteItem[] = [];
-
-    for (const f of files) {
-      items.push({
-        id: `file:${f.path}`,
-        group: "文件",
-        label: f.fileName,
-        hint: `${f.containerName} · ${f.sampleRate.toLocaleString("en-US")} Hz`,
-        keywords: f.path,
-        run: () => void analyzePath(f.path),
-      });
-    }
-
-    for (const [i, p] of (display?.peaks ?? []).entries()) {
-      items.push({
-        id: `peak:${i}`,
-        group: "峰值",
-        label: `${fmtHz(p.frequencyHz)} Hz`,
-        hint: `${p.amplitudeDbfs.toFixed(2)} dBFS${p.estimated ? "（估算）" : ""}`,
-        keywords: "peak 峰值 频率 frequency",
-        run: () => focusPeak(p),
-      });
-    }
-
-    items.push(
-      {
-        id: "action:open",
-        group: "操作",
-        label: "打开文件…",
-        hint: "Ctrl+O",
-        keywords: "open 打开 文件",
-        run: () => void onOpenFile(),
-      },
-      {
-        id: "action:export",
-        group: "操作",
-        label: "导出分析结果…",
-        hint: "CSV / JSON",
-        keywords: "export 导出 保存",
-        run: () => void onExport(),
-      },
-      {
-        id: "action:synthetic",
-        group: "操作",
-        label: "生成并分析合成信号",
-        keywords: "synthetic 合成 正弦",
-        run: () => void run(),
-      },
-      {
-        id: "action:reset-zoom",
-        group: "操作",
-        label: "复位频率缩放",
-        hint: "全带宽",
-        keywords: "reset zoom 复位 缩放",
-        run: () => setViewRange(null),
-      },
-      {
-        id: "action:toggle-left",
-        group: "操作",
-        label: "显示 / 隐藏资源栏",
-        keywords: "toggle 资源栏 侧栏 panel",
-        run: () => setShowLeft((v) => !v),
-      },
-      {
-        id: "action:toggle-right",
-        group: "操作",
-        label: "显示 / 隐藏检查器",
-        keywords: "toggle 检查器 侧栏 panel",
-        run: () => setShowRight((v) => !v),
-      },
-      {
-        id: "action:prefs",
-        group: "操作",
-        label: "偏好设置…",
-        hint: "Ctrl+,",
-        keywords: "preferences 偏好 设置 settings",
-        run: () => setDialog("prefs"),
-      },
-      {
-        id: "action:help",
-        group: "操作",
-        label: "帮助与快捷键",
-        hint: "F1",
-        keywords: "help 帮助 快捷键 shortcut",
-        run: () => setDialog("help"),
-      },
-      {
-        id: "action:about",
-        group: "操作",
-        label: "关于 Auralis Studio",
-        keywords: "about 关于 版本 version",
-        run: () => setDialog("about"),
-      },
-    );
-
-    return items;
-  }, [
-    files,
-    display?.peaks,
-    focusPeak,
-    onOpenFile,
-    onExport,
-    run,
-  ]);
+  const paletteItems = useMemo<PaletteItem[]>(
+    () =>
+      buildPaletteItems({
+        files,
+        peaks: display?.peaks ?? [],
+        onOpenFile,
+        onOpenFileFor: analyzePath,
+        onExport,
+        onRunSynthetic: run,
+        onFocusPeak: focusPeak,
+        onResetZoom: () => setViewRange(null),
+        onToggleLeft: () => setShowLeft((v) => !v),
+        onToggleRight: () => setShowRight((v) => !v),
+        onOpenPrefs: () => setDialog("prefs"),
+        onOpenHelp: () => setDialog("help"),
+        onOpenAbout: () => setDialog("about"),
+      }),
+    [
+      files,
+      display?.peaks,
+      focusPeak,
+      onOpenFile,
+      onExport,
+      run,
+      analyzePath,
+      setViewRange,
+      setShowLeft,
+      setShowRight,
+      setDialog,
+    ],
+  );
 
   /**
    * 当前用于画频率轴的采样率。
@@ -924,8 +586,8 @@ export default function App() {
    * 实时采集时**必须**用采集设备的采样率：沿用一个已打开文件的 44.1 kHz
    * 会把 48 kHz 的实时数据画到错误的频率位置上，而界面看不出任何异常。
    */
-  const sampleRate = liveDb
-    ? (liveSampleRate ?? req.sampleRate)
+  const sampleRate = live.db
+    ? (live.sampleRate ?? req.sampleRate)
     : (display?.sampleRate ?? req.sampleRate);
 
   /** 当前 dB 量程。索引越界时回落到全量程，不让坏偏好把坐标轴画反。 */
@@ -1062,6 +724,9 @@ export default function App() {
     display?.source !== "synthetic" &&
     durationSeconds > 0;
 
+  /** 一次渲染内的操作快照，供按钮文案与 disabled 使用。 */
+  const ops: OperationState = { analyzing, exporting };
+
   return (
     <div className="app-shell">
       {/* ---- 顶部命令栏 ---- */}
@@ -1134,7 +799,7 @@ export default function App() {
 
       {/* ---- 主体 ---- */}
       <Workspace
-        key={layoutEpoch}
+        key={prefsCtl.layoutEpoch}
         leftVisible={showLeft}
         rightVisible={showRight}
         left={
@@ -1145,20 +810,12 @@ export default function App() {
             onSelect={analyzePath}
             analyzing={analyzing}
             version={version}
-            livePeak={livePeak}
-            liveRms={liveRms}
-            onLiveSnapshot={(snap) => {
-              setLiveDb(snap ? snap.spectrumDb : null);
-              setLiveStepHz(snap ? snap.binHz : 1);
-              setLiveSampleRate(snap ? snap.sampleRate : null);
-              setLivePeak(snap ? snap.peakDbfs : null);
-              setLiveRms(snap ? snap.rmsDbfs : null);
-              setLivePeaks(snap ? snap.peakDbfsPerChannel : []);
-              setLiveRmsPerChannel(snap ? snap.rmsDbfsPerChannel : []);
-            }}
-            liveRunning={liveRunning}
+            livePeak={live.peak}
+            liveRms={live.rms}
+            onLiveSnapshot={live.applySnapshot}
+            liveRunning={live.running}
             onLiveStatusChange={(running) => {
-              setLiveRunning(running);
+              live.applyStatus(running);
               // 文件与实时输入的奈奎斯特不同。进入采集时清掉文件留下的
               // 频率视口，否则 30–40 kHz 的文件缩放会映射到 44.1 kHz
               // 实时数据的绘图区之外，只剩一块空白。
@@ -1168,8 +825,8 @@ export default function App() {
             onOpenPrefs={() => setDialog("prefs")}
             onOpenHelp={() => setDialog("help")}
             onOpenAbout={() => setDialog("about")}
-            tasks={tasks}
-            history={history}
+            tasks={taskQueue.tasks}
+            history={taskQueue.history}
             onCancelTask={onCancelQueueTask}
           />
         }
@@ -1180,12 +837,12 @@ export default function App() {
             onRetry={onRetry}
             onDismissError={() => setError(null)}
             spectrumRef={spectrumRef}
-            liveDb={liveDb}
-            liveStepHz={liveStepHz}
-            livePeak={livePeak}
-            liveRms={liveRms}
-            livePeakPerChannel={livePeaks}
-            liveRmsPerChannel={liveRmsPerChannel}
+            liveDb={live.db}
+            liveStepHz={live.stepHz}
+            livePeak={live.peak}
+            liveRms={live.rms}
+            livePeakPerChannel={live.peaks}
+            liveRmsPerChannel={live.rmsPerChannel}
             display={display}
             selected={selected}
             sampleRate={sampleRate}
@@ -1248,10 +905,10 @@ export default function App() {
         ) : (
           <>
             <span
-              className={liveDb ? "state ok" : "state"}
+              className={live.db ? "state ok" : "state"}
               title="在左侧「实时输入」中启动采集"
             >
-              {liveDb ? "实时采集中" : "实时输入未启动"}
+              {live.db ? "实时采集中" : "实时输入未启动"}
             </span>
             <span className="dot">·</span>
             <span className="status-chip">
@@ -1301,9 +958,9 @@ export default function App() {
       <PreferencesDialog
         open={dialog === "prefs"}
         onClose={() => setDialog(null)}
-        prefs={prefs}
-        onChange={applyPrefs}
-        onReset={onResetPrefs}
+        prefs={prefsCtl.prefs}
+        onChange={prefsCtl.applyPrefs}
+        onReset={prefsCtl.reset}
       />
       <HelpDialog open={dialog === "help"} onClose={() => setDialog(null)} />
       <AboutDialog
