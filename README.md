@@ -133,7 +133,7 @@ compared against.
 
 | Icon | Area | What works today |
 | ---- | ---- | ---------------- |
-| 📂 | **Import** | WAV with metadata inspection, cancellable chunked PCM decode. FLAC / MP3 / AIFF decode but are **not verified** — see [the table below](#container-support--measured-not-assumed) |
+| 📂 | **Import** | WAV with metadata inspection, cancellable chunked PCM decode. FLAC and AIFF are verified against checked-in samples; MP3 decodes but is **not verified** — see [the table below](#container-support--measured-not-assumed) |
 | 📈 | **Time-domain** | Peak, RMS, DC offset, crest factor, over-full-scale sample counting, per-channel independence |
 | 📊 | **Frequency-domain** | FFT with explicit amplitude correction, peak detection with markers, zoom and pan, cursor readout |
 | 🌈 | **Spectrogram** | STFT with configurable window and hop, rendered to a texture-backed canvas |
@@ -250,12 +250,18 @@ A decoder that compiles is not a format that works. A format is marked verified
 only when a real sample round-trips through import → DSP and the result is
 checked.
 
-| Container | Compiled in | Verified against real samples |
-| --------- | ----------- | ------------------------------ |
+| Container | Compiled in | Verified against checked-in samples |
+| --------- | ----------- | ------------------------------------ |
 | **WAV** | yes | **yes** — 13 integration tests covering write → decode → DSP |
-| FLAC | yes | no |
+| **FLAC** | yes | **yes** — 4 integration tests + a fixture generator (`--ignored`), sample produced by the third-party `flacenc` encoder |
+| **AIFF** | yes (`aiff` feature declared explicitly) | **yes** — 4 integration tests + a fixture generator (`--ignored`), sample produced by this crate's hand-written writer |
 | MP3 | yes (`mp3` feature declared explicitly) | no |
-| AIFF | yes (`aiff` feature declared explicitly) | no |
+
+Sample strength differs and the docs should not blur it: WAV and AIFF fixtures
+come from hand-written writers in this repository, FLAC from a third-party
+encoder. None of them is a file captured from the real world, so "verified"
+here means "the writer and symphonia are two independent implementations that
+agree", not "tested against arbitrary field recordings".
 
 `verified_containers()` is a hard constraint in the UI: anything not in that
 list is rendered with an **unverified** marker rather than presented as
@@ -265,6 +271,11 @@ rule in [AGENTS.md](./AGENTS.md).
 > [!NOTE]
 > symphonia's default features **do not** include mp3 or aiff — measured
 > against symphonia 0.6.1, not assumed.
+
+> [!NOTE]
+> MP3 stays unverified because this machine has no MP3 encoder (`ffmpeg`,
+> `lame`, and `sox` are all absent) and downloading one is not an option here.
+> A reproducible sample cannot be produced, so no claim is made.
 
 ## Verification
 
@@ -421,8 +432,12 @@ Read this before trusting a number. It is short on purpose.
 - **No calibrated measurement.** No SPL, no LUFS, no SNR, no THD, no THD+N.
   Those algorithms are not implemented. This release makes no accuracy claim
   of any kind.
-- **Only WAV is verified.** FLAC, MP3, and AIFF decode, but no real sample has
-  been validated end to end. The UI marks them unverified.
+- **WAV, FLAC, and AIFF are verified against checked-in samples; MP3 is not.**
+  The fixtures are generated (hand-written writers for WAV/AIFF, `flacenc` for
+  FLAC), not captured from real-world sources, so this proves the decoders
+  agree with an independent encode-side implementation — not that arbitrary
+  files in the wild will work. MP3 decodes but has no sample, and the UI marks
+  it unverified.
 - **Real-time capture has never run against a real sound card.** The CPAL
   stream, the analyser thread, the drop/overwrite counters, and the live
   spectrum in the UI are implemented and unit-tested, but the only executed
@@ -499,14 +514,15 @@ make every other number in the README less trustworthy.
 </details>
 
 <details>
-<summary><strong>FLAC, MP3, and AIFF compile in. Why are they not marked supported?</strong></summary>
+<summary><strong>MP3 compiles in. Why is it not marked supported?</strong></summary>
 
-Because symphonia's default features do not include mp3 or aiff — that was
-measured, not assumed — so they are declared explicitly in the workspace
-manifest. That makes them *decode*. It does not make them *verified*.
+Because symphonia's default features do not include mp3 — that was measured,
+not assumed — so `mp3` is declared explicitly in the workspace manifest. That
+makes it *decode*. It does not make it *verified*.
 
-A format is marked verified only when a real sample round-trips through import
-→ DSP with checked results. WAV passes that today. The UI reflects this by
+A format is marked verified only when a checked-in sample round-trips through
+import → DSP with checked results. WAV, FLAC, and AIFF pass that today; MP3 has
+no sample because this machine has no MP3 encoder. The UI reflects this by
 showing an unverified marker rather than pretending.
 
 </details>

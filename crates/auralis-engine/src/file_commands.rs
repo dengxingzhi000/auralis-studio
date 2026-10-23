@@ -51,7 +51,7 @@ pub struct FileInfoDto {
     pub channels: u32,
     /// 时长秒。无法确定时为 `None`——不用 0 冒充。
     pub duration_seconds: Option<f64>,
-    /// 该格式是否已用真实样本验证。UI 据此决定是否承诺支持。
+    /// 该格式是否已用仓库内签入的样本验证。UI 据此决定是否承诺支持。
     pub verified: bool,
     /// 验证状态说明。
     pub verification_note: String,

@@ -100,7 +100,7 @@ pub struct AudioFileInfo {
 }
 
 impl AudioFileInfo {
-    /// 该容器是否已用真实样本验证过。
+    /// 该容器是否已用仓库内签入的样本验证过。
     ///
     /// UI 应当据此决定是否承诺支持 —— 见 crate 文档的「格式支持矩阵」。
     #[must_use]
@@ -112,20 +112,29 @@ impl AudioFileInfo {
     #[must_use]
     pub fn verification_note(&self) -> &'static str {
         if self.is_verified() {
-            "已用真实样本验证"
+            "已用仓库内签入样本验证"
         } else {
-            "可解码，但尚未用真实样本验证"
+            "可解码，但尚未用签入样本验证"
         }
     }
 }
 
-/// **已通过真实样本验证**的容器。
+/// **已通过仓库内签入样本验证**的容器。
 ///
 /// 这是 UI 的硬约束：只有这里列出的容器才允许在界面上宣称支持。
 /// 新增条目的前提是 `TEST_PLAN.md` §3 的样本测试已补齐。
+///
+/// 样本来源不同，证据强度也不同，文档不得混为一谈：
+/// - WAV / AIFF：仓库内签入的**手写生成器**产物（`wav_writer` / `aiff_writer`）。
+///   writer 与 symphonia 解码器是两份独立实现，能验证格式理解是否一致，
+///   但**不是**第三方工具导出的现实文件。
+/// - FLAC：由第三方编码器 `flacenc` 生成，独立性略强，但同样不是现实文件。
+///
+/// MP3 仍未列入：本机没有 MP3 编码器（ffmpeg / lame 均不可用），
+/// 无法在不下载第三方二进制的前提下造出可复现的样本。
 #[must_use]
 pub const fn verified_containers() -> &'static [ContainerKind] {
-    &[ContainerKind::Wav, ContainerKind::Flac]
+    &[ContainerKind::Wav, ContainerKind::Flac, ContainerKind::Aiff]
 }
 
 /// 打开文件并返回格式读取器。供 `reader` 与本模块共用。

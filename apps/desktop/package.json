@@ -7,11 +7,16 @@
   "license": "MIT OR Apache-2.0",
   "author": "Auralis Studio contributors",
   "homepage": "https://github.com/dengxingzhi000/auralis-studio",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dengxingzhi000/auralis-studio.git"
+  },
   "main": "electron/dist/main.cjs",
   "engines": {
     "node": ">=22.12.0"
   },
   "scripts": {
+    "postinstall": "node scripts/ensure-electron.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
@@ -109,5 +114,10 @@
       "artifactName": "Auralis-Studio-${version}-setup.${ext}",
       "deleteAppDataOnUninstall": false
     }
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "electron-winstaller@5.4.0": true,
+    "fsevents@2.3.3": true
   }
 }

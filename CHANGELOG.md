@@ -176,6 +176,17 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
   now carries action buttons instead of only printing a sentence.
 - **Per-channel peak readout** in the inspector for multi-channel files.
 - Regression test locking the spectrogram's time span to the analysed duration.
+- **AIFF is now verified against checked-in samples.** `auralis-codec` gained a
+  hand-written AIFF writer (big-endian, 80-bit extended sample rate, `SSND`
+  header) plus two fixtures (`tone-1k-mono.aiff`, `tone-stereo.aiff`) and four
+  integration tests (plus an ignored fixture generator): probe metadata, mono
+  reconstruction against the expected
+  −6.02 / −9.03 dBFS values, stereo channel isolation, and a byte-for-byte
+  fixture/generator check. `verified_containers()` now lists AIFF, so the UI
+  stops showing it as "unverified".
+  - MP3 remains unverified: this machine has no MP3 encoder (`ffmpeg`, `lame`,
+    `sox` are absent) and downloading one is not an option, so no reproducible
+    sample exists. The docs say so instead of implying coverage.
 
 ### Changed
 
@@ -298,6 +309,26 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Fixed
 
+- **`npm ci` left the Electron runtime missing on a clean checkout.**
+  electron@45.0.0 ships no `postinstall` (only an `install-electron` bin), so
+  reinstalling dependencies deleted `node_modules/electron/dist` and never
+  recreated it. Measured before/after on the same tree: the directory was
+  present before `npm ci` and absent after, which breaks `npm run electron:dev`
+  and `npm run package:win` (electron-builder's `electronDist` points there).
+  A `postinstall` hook (`scripts/ensure-electron.mjs`) now restores it, skips
+  when `ELECTRON_SKIP_BINARY_DOWNLOAD=1` is set (CI does not launch Electron),
+  and defaults to an npmmirror `ELECTRON_MIRROR` because the official host is
+  unreachable on this network.
+- **Unreviewed dependency install scripts were only a warning.** Measured on
+  npm 11.19.1: `npm install` and `npm ci` print `npm warn install-scripts` and
+  still run the script; only `--strict-allow-scripts` turns it into a hard
+  `ESTRICTALLOWSCRIPTS` failure. The project now sets
+  `strict-allow-scripts=true` in `apps/desktop/.npmrc` and records the reviewed
+  packages in `package.json#allowScripts` (`esbuild@0.28.2`,
+  `electron-winstaller@5.4.0`, plus `fsevents@2.3.3` for macOS, where it is not
+  inert). Verified by deleting `electron-winstaller/vendor/7z.exe` and running
+  `npm ci`: the file came back. npm 10 (the Node 20 CI job) ignores the unknown
+  key silently — checked with npm 10.9.9.
 - **The realtime rolling window reallocated its buffer on every round.** The
   window was reserved for `fft_size * 2` samples, but a round can push up to
   64 callback buffers (16 384 frames) before the old samples are trimmed, so

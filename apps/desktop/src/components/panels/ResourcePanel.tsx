@@ -102,7 +102,7 @@ export function ResourcePanel({
               <div className="empty" style={{ padding: "10px 4px" }}>
                 <span className="empty-hint">
                   还没有文件。可打开 WAV / FLAC / MP3 / AIFF / OGG；
-                  WAV / FLAC 已用真实样本验证，其余容器会在名字旁标注。
+                  WAV / FLAC / AIFF 已用签入样本验证，其余容器会在名字旁标注。
                 </span>
               </div>
             </li>

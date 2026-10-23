@@ -31,7 +31,7 @@
 |---|---|
 | `cargo fmt --all -- --check` | 见 CI 流水线 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 见 CI 流水线 |
-| `cargo test --workspace` | 当时 51 项 DSP/core 测试通过（2026-10-23 复核：全仓 281 项，其中 DSP 81 项；前端另 72 项） |
+| `cargo test --workspace` | 当时 51 项 DSP/core 测试通过（2026-10-23 复核：全仓 286 项，其中 DSP 81 项；前端另 77 项） |
 | `cargo build --workspace --release` | 见 CI 流水线 |
 | `--self-test` 无窗口 DSP 自检 | 通过 |
 | 架构边界检查 | 通过（正反用例均已验证） |
@@ -52,12 +52,12 @@
 
 验收：合成信号可跑通「Rust 计算 → 二进制 IPC → Canvas 渲染」全链路。
 
-> **未做**：未在真实图形会话中打开过窗口；IPC **端到端延迟未测**（只有载荷体积）。
-> 下一步 M1 接入真实文件时应补这个数据。
+> **M0.5 当时未做**：未在真实图形会话中打开过窗口；IPC **端到端延迟未测**（只有载荷体积）。
+> 这两项后来都在 M1 / M4 补齐：真实窗口渲染见 M4，端到端延迟见 M4 的实测条目。
 
 ### M1：文件与 PCM（约 1–2 周）
 
-状态：**已完成（文件路径 + 拖放）；IPC 延迟实测待补**
+状态：**已完成（文件路径 + 拖放 + IPC 端到端实测）**
 
 - [x] 创建 `auralis-codec`（symphonia，显式开启 mp3/aiff feature）
 - [x] 创建 `auralis-task`（取消令牌、任务事件、panic 隔离）
@@ -68,22 +68,26 @@
 - [x] `probe_file` / `analyze_file` / `cancel_task` 命令
 - [x] **可取消**：任务号由前端分配并在发起时传入（见 ADR-018 备注与 `AppState::try_register_token`）
 - [x] **WAV 真实样本端到端验证**：写入 → 解码 → DSP → 期望数值
-- [ ] **实测 IPC 端到端延迟**（M0.5 欠项；`--self-test` 覆盖不到 IPC，
-      必须在 GUI 中点一次并读状态栏）
+- [x] **实测 IPC 端到端延迟**（M0.5 欠项；`--self-test` 覆盖不到 IPC）
+      —— 见 M4 的「IPC 端到端延迟实测」条目
 
 ### 格式支持现状（必须如实呈现）
 
-| 容器 | 编译进产物 | **已用真实样本验证** |
+| 容器 | 编译进产物 | **已用签入样本验证** |
 |---|---|---|
-| WAV  | 是 | **是**（13 项集成测试） |
-| FLAC | 是 | **是**（5 项集成测试，样本在 `crates/auralis-codec/tests/fixtures/`） |
-| MP3  | 是（显式开 feature） | 否 |
-| AIFF | 是（显式开 feature） | 否 |
+| WAV  | 是 | **是**（13 项集成测试；样本由手写 writer 生成） |
+| FLAC | 是 | **是**（4 项常规集成测试 + 样本生成器；样本由第三方编码器 `flacenc` 生成） |
+| AIFF | 是（显式开 feature） | **是**（4 项常规集成测试 + 样本生成器；样本由手写 writer 生成） |
+| MP3  | 是（显式开 feature） | 否（本机无 MP3 编码器，造不出可复现样本） |
 
 `auralis_codec::verified_containers()` 是 UI 的硬约束：
-只有 WAV 与 FLAC 会被标记为「已验证」，其余格式在界面上显示「未验证」角标。
+WAV / FLAC / AIFF 会被标记为「已验证」，其余格式在界面上显示「未验证」角标。
 依据 `TEST_PLAN.md` §3「不支持的格式必须明确报错，不得崩溃」与
 `AGENTS.md`「不宣称未经验证的格式」。
+
+> **证据强度**：三类样本都产自本仓库或第三方编码器，**没有一份是现实世界
+> 采集的文件**。WAV / AIFF 的 writer 与 symphonia 解码器是两份独立实现，
+> 因此能证明格式理解一致；但这不等于「任意来源的文件都能正确处理」。
 
 > symphonia 的 default features **不含** mp3 / aiff / aacc —— 这是实测结论。
 > 若不显式开启，UI 会出现 MP3 入口但打开失败。
@@ -252,12 +256,19 @@ ADR-018「回调只做拷贝、全部 DSP 在工作线程」的架构由实测�
 - [x] 二进制字段 base64 过线，主进程还原为 `Uint8Array`
 - [x] 对话框走 Electron `dialog`；拖放走 DOM + `webUtils.getPathForFile`
 - [x] 一条命令启动开发：`npm run electron:dev`
-- [x] **IPC 端到端延迟实测**（2026-10-23，走 preload 桥接 `window.auralis.invoke`，
-      非人工点击状态栏）：快命令 `app_info` ≈1 ms、控制泳道 `stop_realtime` ≈1–2 ms、
-      `input_devices` ≈94 ms（**debug 引擎**构建；release 构建更快）。
-      文件分析路径的延迟另计：900 秒 WAV 经 Electron 全链路 14.6 s（debug 构建），
-      同一文件直接走引擎 release 构建约 1.2 s——差异来自构建 profile，不是 IPC 开销。
-      release 构建下的端到端数字仍需补测。
+- [x] **IPC 端到端延迟实测**（走 preload 桥接 `window.auralis.invoke`，
+      非人工点击状态栏；2026-10-23 先测 debug，2026-10-23 复核 release）：
+      - **release 引擎，快命令**（3–7 次采样中位数，首次调用含引擎冷启动不计入）：
+        `app_info` 4.9 ms、`probe_file` 1.5 ms、`input_devices` 6.8 ms、
+        `stop_realtime` 11 ms。
+      - **release 引擎，文件分析**：900 秒 / 48 kHz / 立体声 WAV（172.8 MB），
+        `analyze_file`（`envelopePoints=2048`，返回含 2.8 MB base64 声谱图）
+        经 Electron 全链路 **5.9 s**；同一文件、同一命令直接走引擎 stdio
+        **6.1 s（冷）/ 3.9 s（页缓存热）**。两条路径在噪声范围内，
+        说明耗时由解码 + STFT 决定，IPC 与容器不是瓶颈。
+      - debug 引擎对照：同一文件全链路 14.6 s。
+      - 之前记录的「release 直连 1.2 s」在相同负载下**无法复现**
+        （应来自不同文件或未包含声谱图），以本节数字为准。
 - [x] 真实 WAV 走通引擎 RPC 的 probe / analyze / CSV+JSON 导出
 - [x] Electron 渲染进程 → preload → 引擎的 `probe_file` / `analyze_file`
       验证；二进制字段到达渲染层为 `Uint8Array`
