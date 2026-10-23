@@ -111,13 +111,33 @@ const DEFAULTS: SyntheticRequest = {
 /** 声谱图一屏的默认时长（秒），与 Rust 侧 `SPECTRUM_WINDOW_SECONDS` 一致。 */
 const SPECTROGRAM_WINDOW_SECONDS = 30;
 
+/** 当前显示的数据来自哪里。 */
+type DisplaySource = "file" | "synthetic";
+
 /** 真实文件分析结果的显示形状（供 Canvas 组件消费）。 */
 interface DisplayData {
+  /**
+   * 这份数据的来源。
+   *
+   * 必须记着：合成信号分析会**替换**画布上的数据，但文件元数据还在。
+   * 不带来源就分不清「现在画的是文件的还是合成信号的」——
+   * 波形面板顶着文件名画合成信号、检查器报着文件的时长，
+   * 看起来就像一个挂着文件名的默认页。
+   */
+  source: DisplaySource;
   db: Float32Array | null;
   startHz: number;
   stepHz: number;
   env: Float32Array | null;
   sampleRate: number;
+  /**
+   * 这份数据实际覆盖的时长，秒。
+   *
+   * 文件取 Rust 的解码时长（截断文件短于声明值）；合成信号取
+   * `sampleCount / sampleRate`。别用包络点数推算——包络是降采样后的
+   * 显示点，和信号时长没有固定比例。
+   */
+  durationSeconds: number;
   peakDbfs: number | null;
   rmsDbfs: number | null;
   crestDb: number | null;
@@ -301,11 +321,13 @@ export default function App() {
       }
 
       setDisplay({
+        source: "file",
         db: a.spectrumBins > 0 ? a.spectrumDb : null,
         startHz: 0,
         stepHz: a.spectrumStepHz,
         env: a.waveformEnvelope,
         sampleRate: a.info.sampleRate,
+        durationSeconds: a.decodedDurationSeconds,
         peakDbfs: a.peakDbfs,
         rmsDbfs: a.rmsDbfs,
         crestDb: a.crestDb,
@@ -532,11 +554,13 @@ export default function App() {
     try {
       const r = await analyzeSynthetic(req);
       setDisplay({
+        source: "synthetic",
         db: r.spectrumDb,
         startHz: r.spectrumStartHz,
         stepHz: r.spectrumStepHz,
         env: r.waveformEnvelope,
-        sampleRate: req.sampleRate,
+        sampleRate: r.metrics.sampleRate,
+        durationSeconds: r.metrics.sampleCount / r.metrics.sampleRate,
         peakDbfs: r.metrics.peakDbfs,
         rmsDbfs: r.metrics.rmsDbfs,
         crestDb: r.metrics.crestDb,
@@ -564,7 +588,9 @@ export default function App() {
       // 「分析合成信号」当成「分析这个文件」——明说一次，别让人以为
       // 自己的文件被分析成了那声 1 kHz 正弦。
       if (selected) {
-        setNotice(`已切换到合成信号分析：${selected.fileName} 的结果已被替换`);
+        setNotice(
+          `已切换到合成信号分析：${selected.fileName} 的显示已被替换 · 点左侧文件名可恢复`,
+        );
       }
     } catch (e) {
       setError(describeError(e, "合成信号分析失败"));
@@ -589,17 +615,18 @@ export default function App() {
   const maxDb = dbRange.max;
 
   /**
-   * 分析覆盖的时长，秒。
+   * 画布横轴覆盖的时长，秒。只用于画刻度，不参与任何 DSP 判断。
    *
-   * 优先用 Rust 的 `FileInfo.durationSeconds`（唯一权威来源）；
-   * 该字段缺失时才回退到「包络点数 / 采样率」——只用于画刻度，
-   * 不参与任何 DSP 判断。
+   * 文件：优先用 `FileInfo.durationSeconds`（头里声明的时长）；
+   * 合成信号：用 Rust 报的 `sampleCount / sampleRate` —— 合成信号是
+   * **一个 FFT 帧**，不是「包络点数 / 采样率」。算错就会把 85 ms 的波形
+   * 拉到文件的 204 秒坐标轴上，画出来是一条贴底的直线。
    */
   const durationSeconds = useMemo(() => {
+    if (display?.source === "synthetic") return display.durationSeconds;
     if (selected?.durationSeconds != null) return selected.durationSeconds;
-    const n = display?.env?.length ?? 0;
-    return n > 1 ? n / sampleRate : 0;
-  }, [selected, display, sampleRate]);
+    return display?.durationSeconds ?? 0;
+  }, [selected, display]);
 
   /**
    * 声谱图矩阵自身覆盖的时长。
@@ -631,7 +658,16 @@ export default function App() {
     async (targetStart: number) => {
       // 文件分析进行中时拒绝新视口请求：此时 display 还是旧文件的矩阵，
       // 结果会被随后的分析结果覆盖，徒增一次解码。
-      if (!selected || !display || durationSeconds <= 0 || busy) return;
+      // 合成信号的 display 里没有声谱图；往里塞文件的矩阵会造出
+      // 「频谱是合成信号、声谱图是文件」的混合状态。
+      if (
+        !selected ||
+        !display ||
+        display.source === "synthetic" ||
+        durationSeconds <= 0 ||
+        busy
+      )
+        return;
 
       const maxStart = Math.max(0, durationSeconds - spectrogramWindow);
       const start = Math.min(Math.max(0, targetStart), maxStart);
@@ -695,6 +731,17 @@ export default function App() {
     [info],
   );
 
+  /**
+   * 声谱图翻页按钮只在「画的是文件」时出现。
+   *
+   * 合成信号的 display 里没有声谱图矩阵；此时翻页会把文件的矩阵塞进来，
+   * 变成「频谱是合成信号、声谱图是文件」的混合状态。
+   */
+  const showSpectroPaging =
+    selected != null &&
+    display?.source !== "synthetic" &&
+    durationSeconds > 0;
+
   return (
     <div className="app-shell">
       {/* ---- 顶部命令栏 ---- */}
@@ -706,8 +753,16 @@ export default function App() {
         <Button onClick={onOpenFile} disabled={busy} title="Ctrl+O">
           {busy ? "分析中…" : "打开文件…"}
         </Button>
-        <Button onClick={run} disabled={busy}>
-          合成信号
+        <Button
+          onClick={run}
+          disabled={busy}
+          title={
+            selected
+              ? `用合成信号自检 IPC 与渲染（会顶替 ${selected.fileName} 的显示，不修改文件）`
+              : "用合成信号自检 IPC 与渲染"
+          }
+        >
+          合成信号自检
         </Button>
         {activeTask && (
           <Button
@@ -736,7 +791,7 @@ export default function App() {
           disabled={busy || !selected || display == null}
           title={
             selected
-              ? "导出 CSV / JSON（含算法版本与参数）"
+              ? `导出 ${selected.fileName} 的分析结果（CSV / JSON，含算法版本与参数）`
               : "先打开一个音频文件"
           }
         >
@@ -822,6 +877,13 @@ export default function App() {
                       : "FFT 4096"}
                   <span className="sep">·</span>
                   {fmtHzInt(sampleRate / 2)} Hz 奈奎斯特
+                  {/* 画的是合成信号时必须标出来：否则用户会以为这是文件的频谱。 */}
+                  {!liveDb && display?.source === "synthetic" && (
+                    <>
+                      <span className="sep">·</span>
+                      <span className="est-tag">合成信号</span>
+                    </>
+                  )}
                   {viewRange && (
                     <>
                       <span className="sep">·</span>
@@ -882,7 +944,9 @@ export default function App() {
                   <span className="sep">·</span>
                   {display && display.spectrogramFrames > 0
                     ? `${display.spectrogramFrames} × ${display.spectrogramBins}`
-                    : "等待数据"}
+                    : display?.source === "synthetic"
+                      ? "合成信号不产生声谱图"
+                      : "等待数据"}
                   {display && display.spectrogramHopMs > 0 && (
                     <>
                       <span className="sep">·</span>
@@ -902,7 +966,7 @@ export default function App() {
                   )}
                 </span>
                 <span className="spacer" />
-                {selected && durationSeconds > 0 && (
+                {showSpectroPaging && (
                   <>
                     <Button
                       size="tiny"
@@ -971,19 +1035,33 @@ export default function App() {
                   min/max 包络
                   <span className="sep">·</span>
                   {display?.env?.length ?? 0} 点
-                  {selected && (
+                  {/* 标题跟着**显示数据的来源**走：合成信号不能顶着文件名，
+                      否则看起来就是一个挂着文件名的默认页。 */}
+                  {display?.source === "synthetic" ? (
                     <>
                       <span className="sep">·</span>
-                      {selected.fileName}
+                      <span className="est-tag">合成信号</span>
                     </>
+                  ) : (
+                    selected && (
+                      <>
+                        <span className="sep">·</span>
+                        {selected.fileName}
+                      </>
+                    )
                   )}
                 </span>
               </div>
               <div className="pane-body">
+                {/* 合成信号是单声道：别拿已打开文件的声道数去切它的包络。 */}
                 <WaveformView
                   envelope={display?.env ?? null}
                   sampleRate={sampleRate}
-                  channels={selected?.channels ?? 1}
+                  channels={
+                    display?.source === "synthetic"
+                      ? 1
+                      : (selected?.channels ?? 1)
+                  }
                   durationSeconds={durationSeconds}
                   layout={channelLayout}
                 />
@@ -1115,7 +1193,7 @@ function ResourcePanel({
               <div className="empty" style={{ padding: "10px 4px" }}>
                 <span className="empty-hint">
                   还没有文件。可打开 WAV / FLAC / MP3 / AIFF / OGG；
-                  仅 WAV 已用真实样本验证，其余容器会在名字旁标注。
+                  WAV / FLAC 已用真实样本验证，其余容器会在名字旁标注。
                 </span>
               </div>
             </li>
@@ -1259,7 +1337,8 @@ function InspectorPanel({
   channelLayout: ChannelLayout;
   onChannelLayoutChange: (l: ChannelLayout) => void;
 }) {
-  const set = <K extends keyof SyntheticRequest>(    k: K,
+  const set = <K extends keyof SyntheticRequest>(
+    k: K,
     v: SyntheticRequest[K],
   ) => setReq((r) => ({ ...r, [k]: v }));
 
@@ -1369,7 +1448,7 @@ function InspectorPanel({
         <div className="label" style={{ marginBottom: 2 }}>
           参数
         </div>
-        <Collapsible title="合成信号" defaultOpen>
+        <Collapsible title="合成信号自检">
           <FormField label="频率" unit="Hz">
             <input
               type="number"
@@ -1404,17 +1483,33 @@ function InspectorPanel({
             </Button>
           </div>
           <p className="note">
-            合成 1 kHz 正弦，用于验证 IPC 通路与渲染。
-            {selected ? "会替换当前文件的分析结果。" : ""}
+            合成 1 kHz 正弦，用于验证 IPC 通路与渲染；不读取也不修改任何文件。
+            {selected
+              ? "运行后会顶替画布上当前文件的结果，点左侧文件名可重新分析恢复。"
+              : ""}
           </p>
         </Collapsible>
 
         {selected && (
           <Collapsible
             title="文件"
-            meta={selected.verified ? undefined : "未验证"}
+            meta={
+              [
+                // 合成信号分析会把画布换掉：此时这一节讲的是**已打开的文件**，
+                // 不是屏幕上画的东西，必须点名，否则就是在标签上撒谎。
+                display?.source === "synthetic" ? "未显示" : null,
+                selected.verified ? null : "未验证",
+              ]
+                .filter(Boolean)
+                .join(" · ") || undefined
+            }
             defaultOpen
           >
+            {display?.source === "synthetic" && (
+              <p className="note warn-note">
+                下列是已打开文件的属性；画布上显示的是合成信号，不是这份文件。
+              </p>
+            )}
             <DataRow label="容器" value={selected.containerName} />
             <DataRow label="编码" value={selected.codec} />
             <DataRow
