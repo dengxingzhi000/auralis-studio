@@ -31,6 +31,12 @@
 
 import { useEffect, useRef } from "react";
 
+import {
+  binRangeForView,
+  clampViewRange,
+  frequencyTicks,
+} from "@/lib/spectrogram-viewport";
+
 import { fitCanvas } from "./canvas-fit";
 
 export interface SpectrogramViewProps {
@@ -61,6 +67,20 @@ export interface SpectrogramViewProps {
    * 由调用方决定请求哪个窗口并对结果做防抖/取消。
    */
   onPan?: (deltaSeconds: number) => void;
+  /**
+   * 可见频率区间（Hz）；`null` = 全带宽。
+   *
+   * 与频谱图**共享**同一份状态：两个视图是同一份信号的两个投影，
+   * 用户「盯着某一段频率看」时应当一起聚焦。
+   */
+  viewRange?: [number, number] | null;
+  /**
+   * 频率视口变化回调。
+   *
+   * 缩放是**裁剪**：只画区间内的 bin 并铺满绘图区，而不是拉伸整张图 ——
+   * 后者会破坏「频率 ↔ bin」的对应关系，读数就是错的。
+   */
+  onViewRangeChange?: (r: [number, number]) => void;
 }
 
 const PAD = { left: 50, right: 34, top: 10, bottom: 24 };
@@ -78,9 +98,19 @@ export function SpectrogramView({
   durationSeconds = 0,
   startSeconds = 0,
   onPan,
+  viewRange = null,
+  onViewRangeChange,
 }: SpectrogramViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  // 回调放进 ref：父组件每次渲染都会传入新的箭头函数，直接放进 effect
+  // 依赖会让监听器反复重建 —— 拖拽进行到一半被换掉，手感很差。
+  const onPanRef = useRef(onPan);
+  const onViewRangeChangeRef = useRef(onViewRangeChange);
+  useEffect(() => {
+    onPanRef.current = onPan;
+    onViewRangeChangeRef.current = onViewRangeChange;
+  }, [onPan, onViewRangeChange]);
   // 色阶在渲染时从 CSS 变量解析，因此用 ref 传给 effect，
   // 避免把 Color 对象放进依赖数组导致每帧重建
   const stateRef = useRef({
@@ -93,6 +123,7 @@ export function SpectrogramView({
     nyquistHz,
     durationSeconds,
     startSeconds,
+    viewRange,
   });
   stateRef.current = {
     matrix,
@@ -104,6 +135,7 @@ export function SpectrogramView({
     nyquistHz,
     durationSeconds,
     startSeconds,
+    viewRange,
   };
 
   useEffect(() => {
@@ -151,20 +183,34 @@ export function SpectrogramView({
       const hasMatrix =
         matrix != null && frames > 0 && bins > 0 && matrix.length >= frames * bins;
 
+      // 频率视口。钳位在组件内部做：视口是**全局共享**的，可能来自
+      // 另一个采样率的文件（例如 48 kHz 的文件缩放到 20 kHz，再打开
+      // 44.1 kHz 的文件），不钳位就会裁出一片空白。
+      const view = clampViewRange(s.viewRange, s.nyquistHz);
+      const binView = binRangeForView(view, s.nyquistHz, bins);
+      const firstBin = binView.first;
+      const lastBin = binView.last;
+      const visBins = lastBin - firstBin + 1;
+
       if (hasMatrix) {
         // 把矩阵渲染到离屏 ImageData，再一次性 drawImage 缩放到绘图区。
         // 直接对主画布逐像素填充会按设备像素率放大 4 倍开销。
-        const img = new ImageData(frames, bins);
+        //
+        // 缩放是**裁剪**：只画可见 bin 区间，并把它铺满绘图区。
+        // 拉伸整张图会破坏「频率 ↔ bin」的对应关系 —— 放大后看到的
+        // 仍然是一张被拉长的图，读数是错的。
+        const img = new ImageData(frames, visBins);
         const lut = infernoLut();
         const span = Math.max(1e-6, s.maxDb - s.minDb);
 
         for (let t = 0; t < frames; t++) {
-          for (let b = 0; b < bins; b++) {
+          for (let vb = 0; vb < visBins; vb++) {
+            const b = firstBin + vb;
             const v = matrix[t * bins + b]!;
             const u = Math.min(1, Math.max(0, (v - s.minDb) / span));
             const [r, g, bl] = lut[Math.round(u * 255)]!;
-            // 低频在下：频率 bin 翻转成图像行
-            const o = ((bins - 1 - b) * frames + t) * 4;
+            // 低频在下：可见区间内最低的 bin 放在最下面一行
+            const o = ((visBins - 1 - vb) * frames + t) * 4;
             img.data[o] = r;
             img.data[o + 1] = g;
             img.data[o + 2] = bl;
@@ -174,7 +220,7 @@ export function SpectrogramView({
 
         const off = document.createElement("canvas");
         off.width = frames;
-        off.height = bins;
+        off.height = visBins;
         off.getContext("2d")?.putImageData(img, 0, 0);
         ctx.imageSmoothingEnabled = true;
         ctx.drawImage(off, plotX, plotY, plotW, plotH);
@@ -225,13 +271,16 @@ export function SpectrogramView({
       ctx.lineTo(plotX + plotW, plotY + plotH + 0.5);
       ctx.stroke();
 
-      // 频率刻度（低频在下）
+      // 频率刻度（低频在下）。缩放后必须**跟着变** —— 刻度还标全带宽
+      // 的话，画面和坐标轴对不上，读数就是错的。
+      const ticks = frequencyTicks(view, s.nyquistHz, 4);
       ctx.fillStyle = token("--axis-label");
       ctx.font = `10px ${monoFont}`;
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
       for (let i = 0; i <= 4; i++) {
-        const hz = (s.nyquistHz * (4 - i)) / 4;
+        // 低频在下：i = 0 是绘图区顶边，对应最高频率
+        const hz = ticks[4 - i]!;
         const y = plotY + (plotH * i) / 4;
         ctx.fillText(fmtHz(hz), plotX - 7, y);
       }
@@ -254,8 +303,17 @@ export function SpectrogramView({
       }
 
       // ---- 频率游标 ----
-      if (s.cursorHz != null && s.cursorHz >= 0 && s.cursorHz <= s.nyquistHz) {
-        const y = plotY + plotH * (1 - s.cursorHz / s.nyquistHz);
+      // 游标位置按**可见区间**换算；游标不在可见区间内时不画 ——
+      // 在别的频段画一条线只会误导。
+      const viewLo = view ? view[0] : 0;
+      const viewHi = view ? view[1] : s.nyquistHz;
+      if (
+        s.cursorHz != null &&
+        s.cursorHz >= viewLo &&
+        s.cursorHz <= viewHi &&
+        viewHi > viewLo
+      ) {
+        const y = plotY + plotH * (1 - (s.cursorHz - viewLo) / (viewHi - viewLo));
         ctx.strokeStyle = token("--cursor");
         ctx.globalAlpha = 0.55;
         ctx.beginPath();
@@ -295,54 +353,111 @@ export function SpectrogramView({
     nyquistHz,
     durationSeconds,
     startSeconds,
+    viewRange,
   ]);
 
   // ---- 视口交互：滚轮 / 拖动 / 双击 ----
   // 用原生监听器而不是 React onWheel：只有原生监听器能以 passive:false
   // 调用 preventDefault，否则滚轮会同时滚动页面。
+  //
+  // 两个轴各占一套操作，互不抢：
+  //   - 时间轴：滚轮平移、拖拽平移、双击回到文件开头
+  //   - 频率轴：Shift + 滚轮缩放、Shift + 拖拽框选
+  // `Shift` 是唯一不与既有操作冲突的修饰键。
   useEffect(() => {
     const wrap = wrapRef.current;
-    if (!wrap || !onPan) return;
+    if (!wrap) return;
 
-    let dragX: number | null = null;
+    /** 当前拖拽：记录轴与起点。 */
+    let drag: { mode: "time" | "freq"; x: number; y: number } | null = null;
 
     const span = () =>
       stateRef.current.durationSeconds > 0
         ? stateRef.current.durationSeconds
         : 0;
 
+    /** 屏幕 y -> 频率 Hz（低频在下，故底边是 lo）。 */
+    const yToHz = (clientY: number): number => {
+      const s = stateRef.current;
+      const r = wrap.getBoundingClientRect();
+      const plotY = r.top + PAD.top;
+      const plotH = r.height - PAD.top - PAD.bottom;
+      const view = clampViewRange(s.viewRange, s.nyquistHz);
+      const lo = view ? view[0] : 0;
+      const hi = view ? view[1] : s.nyquistHz;
+      if (plotH <= 0 || hi <= lo) return lo;
+      const t = Math.min(1, Math.max(0, (clientY - plotY) / plotH));
+      return lo + (1 - t) * (hi - lo);
+    };
+
     const onWheel = (e: WheelEvent) => {
-      const seconds = span();
-      if (seconds <= 0) return;
       const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
       if (delta === 0) return;
       e.preventDefault();
+
+      if (e.shiftKey) {
+        // 频率缩放：以光标所在频率为中心。
+        const s = stateRef.current;
+        const nyq = s.nyquistHz;
+        const view = clampViewRange(s.viewRange, nyq);
+        const [lo0, hi0] = view ?? [0, nyq];
+        const focus = yToHz(e.clientY);
+        const factor = delta > 0 ? 1.25 : 0.8;
+        const next = clampViewRange(
+          [focus - (focus - lo0) * factor, focus + (hi0 - focus) * factor],
+          nyq,
+        );
+        // 钳位后无效（区间非法或窄到没有意义）时**不**回调：
+        // 回传 null 会被调用方当成「复位」，把用户的缩放清掉。
+        if (next) onViewRangeChangeRef.current?.(next);
+        return;
+      }
+
+      const seconds = span();
+      if (seconds <= 0) return;
       // 一格滚轮 = 半屏；方向与内容移动方向一致（向下/向右 = 更晚）。
-      onPan(Math.sign(delta) * seconds * 0.5);
+      onPanRef.current?.(Math.sign(delta) * seconds * 0.5);
     };
 
     const onPointerDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
-      dragX = e.clientX;
+      drag = {
+        mode: e.shiftKey ? "freq" : "time",
+        x: e.clientX,
+        y: e.clientY,
+      };
       wrap.setPointerCapture(e.pointerId);
       wrap.style.cursor = "grabbing";
     };
 
     const onPointerUp = (e: PointerEvent) => {
       wrap.style.cursor = "grab";
-      if (dragX == null) return;
-      const dx = e.clientX - dragX;
-      dragX = null;
+      const d = drag;
+      drag = null;
+      if (!d) return;
+
+      if (d.mode === "freq") {
+        const a = yToHz(d.y);
+        const b = yToHz(e.clientY);
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        if (hi - lo < 1) return;
+        const next = clampViewRange([lo, hi], stateRef.current.nyquistHz);
+        if (next) onViewRangeChangeRef.current?.(next);
+        return;
+      }
+
+      const dx = e.clientX - d.x;
       const seconds = span();
       if (seconds <= 0 || Math.abs(dx) < 4) return;
       // 只在绘图区宽度上映射；左侧 50px 是频率刻度。
       const plotW = Math.max(1, wrap.clientWidth - 84);
-      onPan((-dx / plotW) * seconds);
+      onPanRef.current?.((-dx / plotW) * seconds);
     };
 
     const onDoubleClick = () => {
       const start = stateRef.current.startSeconds;
-      if (start > 0) onPan(-start);
+      if (start > 0) onPanRef.current?.(-start);
     };
 
     wrap.style.cursor = "grab";
@@ -359,7 +474,7 @@ export function SpectrogramView({
       wrap.removeEventListener("dblclick", onDoubleClick);
       wrap.style.cursor = "";
     };
-  }, [onPan]);
+  }, []);
 
   return (
     <div ref={wrapRef} className="viz-canvas">

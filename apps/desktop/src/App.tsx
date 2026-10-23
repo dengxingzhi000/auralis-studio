@@ -330,6 +330,9 @@ export default function App() {
         sanitizedSamples: a.sanitizedSamples,
       });
       setSpectroStart(a.spectrogramStartSeconds);
+      // 新文件的频率轴可能与旧的视口不匹配（比如 48 kHz 文件缩到
+      // 20 kHz，再打开 44.1 kHz 文件）—— 保留视口会裁出一片空白。
+      setViewRange(null);
       // 新文件的结果替换了旧矩阵；旧的视口请求已经无意义。
       if (spectroTaskRef.current != null) {
         void cancelTask(spectroTaskRef.current).catch(() => undefined);
@@ -554,6 +557,7 @@ export default function App() {
         sanitizedSamples: r.metrics.sanitizedSamples,
       });
       setSpectroStart(0);
+      setViewRange(null);
     } catch (e) {
       setError(describeError(e, "合成信号分析失败"));
     } finally {
@@ -790,7 +794,7 @@ export default function App() {
                 />
               </div>
             )}
-            <section className="pane" style={{ flex: "1.35" }}>
+            <section className="pane" id="pane-spectrum" style={{ flex: "1.35" }}>
               <div className="pane-head">
                 <span className="pane-title">
                   频谱
@@ -862,7 +866,7 @@ export default function App() {
 
             <div className="splitter splitter-h" />
 
-            <section className="pane" style={{ flex: 1 }}>
+            <section className="pane" id="pane-spectrogram" style={{ flex: 1 }}>
               <div className="pane-head">
                 <span className="pane-title">声谱图</span>
                 <span className="pane-meta">
@@ -890,6 +894,20 @@ export default function App() {
                   )}
                 </span>
                 <span className="spacer" />
+                {viewRange && (
+                  <>
+                    <span className="pane-meta num" title="当前频率视口">
+                      {fmtHz(viewRange[0])}–{fmtHz(viewRange[1])} Hz
+                    </span>
+                    <Button
+                      size="tiny"
+                      onClick={() => setViewRange(null)}
+                      title="恢复全带宽频率视口"
+                    >
+                      频率复位
+                    </Button>
+                  </>
+                )}
                 {selected && durationSeconds > 0 && (
                   <>
                     <Button
@@ -942,17 +960,29 @@ export default function App() {
                   minDb={minDb}
                   maxDb={maxDb}
                   cursorHz={cursorHz}
-                  nyquistHz={sampleRate / 2}
+                  // 声谱图画的是**文件**的矩阵，频率轴必须用文件自己的
+                  // 采样率。实时采集开着时 `sampleRate` 会切成设备的采样率，
+                  // 那样频率刻度会整体错位 —— 而画面看上去完全正常。
+                  nyquistHz={(display?.sampleRate ?? sampleRate) / 2}
                   durationSeconds={spectrogramSeconds}
                   startSeconds={spectroStart}
                   onPan={panSpectrogram}
+                  viewRange={viewRange}
+                  onViewRangeChange={setViewRange}
                 />
+              </div>
+              <div className="pane-note">
+                滚轮 / 拖拽平移时间
+                <span className="sep">·</span>
+                Shift + 滚轮缩放频率 · Shift + 拖拽框选频段
+                <span className="sep">·</span>
+                双击回到文件开头
               </div>
             </section>
 
             <div className="splitter splitter-h" />
 
-            <section className="pane" style={{ flex: 1 }}>
+            <section className="pane" id="pane-waveform" style={{ flex: 1 }}>
               <div className="pane-head">
                 <span className="pane-title">波形</span>
                 <span className="pane-meta">
