@@ -11,13 +11,32 @@
 
 import type { PeakInfo } from "@/lib/contracts";
 
+/** 当前显示的数据来自哪里。 */
+export type DisplaySource = "file" | "synthetic";
+
 /** 真实文件分析结果的显示形状（供 Canvas 组件与指标视图消费）。 */
 export interface DisplayData {
+  /**
+   * 这份数据的来源。
+   *
+   * 合成信号分析会**替换**画布上的数据，但文件元数据还在。不带来源
+   * 就分不清「现在画的是文件的还是合成信号的」——波形面板顶着文件名
+   * 画合成信号、检查器报着文件的时长，看起来就像一个挂着文件名的默认页。
+   */
+  source: DisplaySource;
   db: Float32Array | null;
   startHz: number;
   stepHz: number;
   env: Float32Array | null;
   sampleRate: number;
+  /**
+   * 这份数据实际覆盖的时长，秒。
+   *
+   * 文件取 Rust 的解码时长（截断文件短于声明值）；合成信号取
+   * `sampleCount / sampleRate`。别用包络点数推算——包络是降采样后的
+   * 显示点，和信号时长没有固定比例。
+   */
+  durationSeconds: number;
   peakDbfs: number | null;
   rmsDbfs: number | null;
   crestDb: number | null;

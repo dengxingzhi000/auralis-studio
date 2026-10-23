@@ -125,7 +125,7 @@ impl AudioFileInfo {
 /// 新增条目的前提是 `TEST_PLAN.md` §3 的样本测试已补齐。
 #[must_use]
 pub const fn verified_containers() -> &'static [ContainerKind] {
-    &[ContainerKind::Wav]
+    &[ContainerKind::Wav, ContainerKind::Flac]
 }
 
 /// 打开文件并返回格式读取器。供 `reader` 与本模块共用。

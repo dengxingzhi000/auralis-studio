@@ -192,6 +192,20 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Fixed
 
+- **「分析合成信号」 looked like "the default data page".** Running the self-test
+  replaced the canvas but kept the file's labels: the waveform panel still said
+  `file.flac`, its time axis still spanned the file's duration, and the inspector
+  still reported the file's properties — so a one-frame 1 kHz tone drawn across a
+  204-second axis read as "nothing was analysed, here is some default data".
+  `DisplayData` now records where it came from (`source: "file" | "synthetic"`),
+  and every label follows it: the waveform and spectrum panel titles show a
+  「合成信号」 tag instead of the file name, the waveform axis uses the actual
+  signal length (`sampleCount ÷ sampleRate`, ≈85 ms at 48 kHz, not the envelope
+  point count), the spectrogram says it has no data for a synthetic signal
+  instead of「等待数据」, and the inspector's file section is marked 「未显示」 with
+  an explicit note. The self-test section is renamed 「合成信号自检」 and starts
+  collapsed. One click on the file name restores the file's analysis, and the
+  status-bar notice says so.
 - **The spectrogram time axis was short by the downsampling factor.** When the
   STFT produced more than 1024 frames, `to_matrix` reduced them to 1024 columns,
   but `spectrogram_hop_ms` still reported the source hop. A 30-second window was

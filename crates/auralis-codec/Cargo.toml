@@ -16,6 +16,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 auralis-dsp = { workspace = true }
+# FLAC 编码器：只用来生成测试样本，不进产物。
+flacenc = { workspace = true }
 
 [lints.rust]
 missing_docs = "warn"

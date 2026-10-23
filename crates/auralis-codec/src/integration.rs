@@ -1,6 +1,6 @@
 //! `auralis-codec` 的集成测试：真实文件 -> 真实解码。
 //!
-//! 这些测试是「WAV 已验证」这一声明的**唯一依据**。
+//! 这些测试是「WAV / FLAC 已验证」这一声明的**唯一依据**。
 //! 若它们失败，crate 文档里的格式支持矩阵必须同步改回去。
 
 use std::path::PathBuf;
@@ -189,6 +189,183 @@ fn complete_wav_is_not_reported_as_truncated() {
     assert!(!decoder.is_truncated(), "完整文件不得被标记为截断");
 
     std::fs::remove_file(&path).ok();
+}
+
+/* ============================================================
+ * FLAC：真实样本验证
+ *
+ * 「已验证」是 UI 的硬约束（见 crate 文档的格式支持矩阵）。
+ * 要把 FLAC 列进 `verified_containers()`，仓库里必须有一份可复现的
+ * FLAC 样本，并且解码出来的数值必须与预期一致。
+ * ============================================================ */
+
+/// 重新生成仓库里的 FLAC 样本。
+///
+/// 平时不跑（`--ignored`）；样本需要更新时手动跑一次并提交。
+///
+/// ```text
+/// cargo test -p auralis-codec -- --ignored regenerate_flac_fixtures
+/// ```
+#[test]
+#[ignore = "样本生成器：改动后手动跑一次并提交"]
+fn regenerate_flac_fixtures() {
+    let dir = crate::fixture_path("");
+    std::fs::create_dir_all(&dir).expect("create fixtures dir");
+
+    // 单声道 1 kHz，44.1 kHz —— 与 WAV 样本同样的信号，便于交叉比对
+    let mono = sine_i16(1_000.0, 0.5, 44_100, 44_100);
+    crate::flac_writer::write_fixture("tone-1k-mono.flac", 44_100, 1, &mono)
+        .expect("write mono fixture");
+
+    // 立体声：左右不同幅度，验证通道隔离
+    let stereo = stereo_tone_i16(44_100, 44_100);
+    crate::flac_writer::write_fixture("tone-stereo.flac", 44_100, 2, &stereo)
+        .expect("write stereo fixture");
+}
+
+/// 样本缺失时给出可执行的修复命令，而不是一句「文件不存在」。
+fn require_fixture(name: &str) -> std::path::PathBuf {
+    let path = crate::fixture_path(name);
+    assert!(
+        path.exists(),
+        "缺少 FLAC 样本 {name}；生成命令：\n  \
+         cargo test -p auralis-codec -- --ignored regenerate_flac_fixtures"
+    );
+    path
+}
+
+#[test]
+fn probes_a_real_flac_file() {
+    let path = require_fixture("tone-1k-mono.flac");
+
+    let info = probe(&path).expect("probe should succeed on FLAC");
+
+    assert_eq!(info.container, ContainerKind::Flac);
+    assert_eq!(info.format.sample_rate.get(), 44_100);
+    assert_eq!(info.format.channels.get(), 1);
+    assert_eq!(info.total_frames, Some(44_100));
+    assert!(
+        (info.duration_seconds - 1.0).abs() < 1e-9,
+        "1 秒音频的时长应为 1.0，实得 {}",
+        info.duration_seconds
+    );
+    assert!(
+        info.is_verified(),
+        "FLAC 已有真实样本验证，必须标记为已验证"
+    );
+}
+
+#[test]
+fn decodes_a_real_flac_file_and_reconstructs_the_signal() {
+    let path = require_fixture("tone-1k-mono.flac");
+
+    let mut decoder = BlockDecoder::open(&path).expect("decoder should open");
+    assert_eq!(decoder.format().sample_rate.get(), 44_100);
+    assert_eq!(decoder.format().channels.get(), 1);
+
+    let mut collected = Vec::new();
+    let mut expected_first_frame = 0u64;
+    while let Some(block) = decoder.next_block().expect("decode should not fail") {
+        assert_eq!(
+            block.first_frame, expected_first_frame,
+            "帧偏移必须连续，不能跳变"
+        );
+        expected_first_frame += block.pcm.frame_count() as u64;
+        collected.extend_from_slice(&block.pcm.samples);
+    }
+
+    assert!(decoder.is_finished());
+    assert_eq!(collected.len(), 44_100, "应解码出全部样本");
+    assert_eq!(expected_first_frame, 44_100);
+
+    // 数值必须与 WAV 样本一致（FLAC 是无损的）
+    let stats = analyze_channel(&collected, ClippingConfig::default());
+    let peak_db = stats.peak.dbfs().clamped(-140.0);
+    assert!(
+        (peak_db - -6.020_6).abs() < 0.1,
+        "解码后峰值应接近 -6.02 dBFS，实得 {peak_db}"
+    );
+    let rms_db = stats.rms.dbfs().clamped(-140.0);
+    assert!(
+        (rms_db - -9.030_9).abs() < 0.1,
+        "解码后 RMS 应接近 -9.03 dBFS，实得 {rms_db}"
+    );
+}
+
+#[test]
+fn decodes_stereo_flac_with_channel_isolation() {
+    let path = require_fixture("tone-stereo.flac");
+
+    let info = probe(&path).expect("probe stereo flac");
+    assert_eq!(info.format.channels.get(), 2);
+    assert_eq!(info.channel_layout, auralis_core::ChannelLayout::Stereo);
+
+    let mut decoder = BlockDecoder::open(&path).expect("open stereo flac");
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    while let Some(block) = decoder.next_block().expect("decode") {
+        left.extend(block.pcm.channel_view(0));
+        right.extend(block.pcm.channel_view(1));
+    }
+
+    let l = analyze_channel(&left, ClippingConfig::default());
+    let r = analyze_channel(&right, ClippingConfig::default());
+    assert!(
+        (l.peak.amplitude - 0.5).abs() < 0.01,
+        "L={}",
+        l.peak.amplitude
+    );
+    assert!(
+        (r.peak.amplitude - 0.15).abs() < 0.01,
+        "R={}",
+        r.peak.amplitude
+    );
+}
+
+#[test]
+fn flac_fixture_matches_the_generator() {
+    // 仓库里的样本必须与生成器产出一致——否则「样本」和「代码」会各说各话。
+    let checked_in = require_fixture("tone-1k-mono.flac");
+
+    let dir = scratch("flac-regen");
+    let regenerated = dir.join("tone-1k-mono.flac");
+    let samples = sine_i16(1_000.0, 0.5, 44_100, 44_100);
+    crate::flac_writer::write_flac_s16(&regenerated, 44_100, 1, &samples).expect("regenerate");
+
+    let decode = |path: &std::path::Path| -> Vec<f32> {
+        let mut decoder = BlockDecoder::open(path).expect("open");
+        let mut out = Vec::new();
+        while let Some(block) = decoder.next_block().expect("decode") {
+            out.extend_from_slice(&block.pcm.samples);
+        }
+        out
+    };
+
+    let a = decode(&checked_in);
+    let b = decode(&regenerated);
+    assert_eq!(a.len(), b.len(), "样本长度应一致");
+    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+        assert!((x - y).abs() < 1e-6, "第 {i} 个样本不一致：{x} vs {y}");
+    }
+
+    std::fs::remove_file(&regenerated).ok();
+}
+
+#[test]
+fn garbage_and_empty_files_are_rejected_without_panicking() {
+    // 这两条对 FLAC 同样成立：容器不认识就是不认识，不许崩。
+    let dir = scratch("flac-garbage");
+    let garbage = dir.join("garbage.flac");
+    std::fs::write(&garbage, b"not a flac file at all, just bytes").expect("write garbage");
+    assert!(probe(&garbage).is_err(), "垃圾文件必须报错");
+    assert!(BlockDecoder::open(&garbage).is_err(), "垃圾文件不能打开");
+
+    let empty = dir.join("empty.flac");
+    std::fs::write(&empty, b"").expect("write empty");
+    assert!(probe(&empty).is_err(), "空文件必须报错");
+
+    std::fs::remove_file(&garbage).ok();
+    std::fs::remove_file(&empty).ok();
 }
 
 #[test]

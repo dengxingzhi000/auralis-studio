@@ -18,11 +18,13 @@ import { MetricsPanel } from "./MetricsPanel";
 
 function makeDisplay(over: Partial<DisplayData> = {}): DisplayData {
   return {
+    source: "file",
     db: null,
     startHz: 0,
     stepHz: 1,
     env: null,
     sampleRate: 48000,
+    durationSeconds: 2,
     peakDbfs: -3,
     rmsDbfs: -12,
     crestDb: 9,

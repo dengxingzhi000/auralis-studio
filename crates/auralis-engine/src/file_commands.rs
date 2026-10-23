@@ -872,11 +872,15 @@ fn run_analysis(
     // 削波检测用逐声道视图
     let clipping_regions = detect_clipping_regions(total_frames, channels);
 
-    // --- 频谱：取开头 fft_size 帧（FFT 用更长窗，频率分辨率更高）---
-    let fft_input: &[f32] = &spectrum_capture[..spectrum_capture.len().min(fft_size)];
-    let spectrum_result = if fft_input.len() >= fft_size {
+    // --- 频谱：取开头 SPECTRUM_WINDOW_SECONDS 秒，逐 bin 取各帧最大值 ---
+    //
+    // 这里必须喂**整段**而不是只喂一个 FFT 窗：8192 样本在 44.1 kHz 下只有
+    // 186 ms，开头是静音的文件会因此得到一条贴底的「空」频谱（实测用户的
+    // FLAC 正是如此：前 100 ms 静音 → 频谱全是 -140 dB，界面看上去像没分析）。
+    // 喂整段再逐 bin 取最大值，才是下面注释里说的峰值频谱。
+    let spectrum_result = if spectrum_capture.len() >= fft_size {
         Some(compute_spectrum(
-            fft_input,
+            &spectrum_capture,
             sample_rate,
             spectrum_cfg,
             spectrum_points(channels),
@@ -1139,10 +1143,12 @@ fn compute_spectrum(
     }
 
     let mut tmp = last.clone();
-    tmp.amplitudes = merged;
+    tmp.amplitudes = merged.clone();
     let (db, step) = tmp.downsample_db(target_bins);
-    let peaks = last
-        .peaks
+
+    // 峰值必须从**合并后**的谱里检出：合并前的单帧峰值只是那一瞬间的，
+    // 与界面上画出来的峰值频谱对不上（实测文件的峰值曾与曲线相差几十 dB）。
+    let peaks = auralis_dsp::detect_peaks(&merged, tmp.bin_hz, 8)
         .iter()
         .take(8)
         .map(|p| PeakDto {
@@ -1273,6 +1279,52 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
         std::fs::remove_file(&full_path).ok();
+    }
+
+    #[test]
+    fn spectrum_covers_the_whole_window_not_only_its_first_fft_frame() {
+        // 前 200 ms 是静音，之后才是 1 kHz 正弦。
+        //
+        // 旧实现只把**第一个 FFT 窗**（8192 样本 @48 kHz ≈ 171 ms）送进
+        // FFT，于是这段静音直接变成一条贴底的「空」频谱：界面上看起来
+        // 就是「分析了但什么都没出来」。实测用户的 FLAC 正是这种文件。
+        let dir = scratch("silent-start");
+        let path = dir.join("late-tone.wav");
+
+        let sample_rate = 48_000_u32;
+        let mut samples: Vec<i16> = vec![0; 9_600]; // 200 ms 静音
+        samples.extend(sine_i16(1_000.0, 0.5, sample_rate, 48_000));
+
+        write_wav_s16(&path, sample_rate, 1, &samples);
+
+        let d = run_analysis(&path, &CancelToken::new(), 512).expect("analysis");
+
+        assert_eq!(d.outcome, "succeeded");
+        assert!(d.spectrum_bins > 0, "应产出频谱");
+
+        // 频谱里必须有高于底噪的内容（底噪是 -140 dB）。
+        let spectrum = f32s_from_le_bytes(&d.spectrum_db);
+        let loudest = spectrum.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert!(loudest > -60.0, "频谱不应是空的，实得最高 {loudest} dBFS");
+
+        // 峰值应落在 1 kHz 附近，而不是静音段的残留。
+        let top = d
+            .peaks
+            .iter()
+            .max_by(|a, b| a.amplitude_dbfs.total_cmp(&b.amplitude_dbfs))
+            .expect("应检出峰值");
+        assert!(
+            (top.frequency_hz - 1_000.0).abs() < 60.0,
+            "峰值频率应在 1 kHz 附近，实得 {} Hz",
+            top.frequency_hz
+        );
+        assert!(
+            top.amplitude_dbfs > -12.0,
+            "峰值幅度应接近 -6 dBFS，实得 {} dBFS",
+            top.amplitude_dbfs
+        );
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
