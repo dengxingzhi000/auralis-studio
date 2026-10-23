@@ -179,6 +179,19 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Changed
 
+- **External links are restricted to http(s).** The Electron main process
+  handed every URL the renderer asked to open to `shell.openExternal`, which
+  launches whatever program the URL's scheme names — a `file://` or a custom
+  scheme would have been executed by the system. The decision is now a
+  tested predicate (`electron/external-links.ts`), and the vitest run covers
+  the `electron/` directory as well as `src/`. Chromium blocks some schemes
+  on its own (a `file://` `window.open` never even reaches the handler), but
+  that is the browser's policy, not ours — the second layer is ours.
+- **External dependency versions are declared once.** `cpal` and
+  `crossbeam-queue` were the only two dependencies that carried a version
+  number in a member crate instead of the workspace table, which ADR-007 does
+  not allow. Both now live in `[workspace.dependencies]`; the resolved
+  versions are unchanged, so `Cargo.lock` did not move.
 - **`App.tsx` is now an assembly layer instead of everything.** It had grown to
   ~1 240 lines owning file opening, analysis, live capture, the task queue,
   export, search, drag-and-drop and keyboard shortcuts in one component. The
@@ -267,6 +280,18 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Fixed
 
+- **The realtime rolling window reallocated its buffer on every round.** The
+  window was reserved for `fft_size * 2` samples, but a round can push up to
+  64 callback buffers (16 384 frames) before the old samples are trimmed, so
+  the `Vec` outgrew its capacity and reallocated — every round, in the
+  analysis worker. The capacity is now reserved for the whole round up front
+  and only ever grows.
+- **Task progress events were never actually throttled.** The comment claimed
+  "进度事件节流" but there was no throttling: a long analysis emits one
+  progress notification per decoded block, which fills the 256-slot channel
+  and squeezes out everything else — including the terminal event. Progress
+  is now throttled to one per 100 ms, and the terminal event is delivered
+  with a bounded wait instead of being dropped along with the rest.
 - **The realtime recycle pool could reallocate on every callback on
   multi-channel devices.** The pool was preheated with `frames * 4` samples,
   which quietly assumes at most four channels. A six- or eight-channel

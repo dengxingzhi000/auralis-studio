@@ -25,7 +25,9 @@ import path from "node:path";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.test.{ts,tsx}"],
+    // `electron/` 里也有纯逻辑（外链协议判定等），一并覆盖。
+    // 主进程与 preload 由 esbuild 单独打包，不进 vite 构建。
+    include: ["src/**/*.test.{ts,tsx}", "electron/**/*.test.ts"],
   },
   resolve: {
     // 与 vite.config.ts 保持一致的别名，测试里的 import 才能用 "@/lib/..."。

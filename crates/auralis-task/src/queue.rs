@@ -79,6 +79,20 @@ impl TaskRequest {
     }
 }
 
+/// 进度事件的最短间隔，毫秒。
+///
+/// 见 [`TaskEngine::emit_progress`]：节流之后，通道里装的最多是
+/// 「每 100 ms 一条」，终态事件几乎总有位置。
+const PROGRESS_THROTTLE_MS: u64 = 100;
+
+/// 毫秒时间戳。节流只需要相对间隔，墙钟够用。
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// 任务引擎。
 pub struct TaskEngine {
     next_id: std::sync::atomic::AtomicU64,
@@ -86,6 +100,8 @@ pub struct TaskEngine {
     sender: Sender<TaskEvent>,
     receiver: Receiver<TaskEvent>,
     finished: AtomicBool,
+    /// 上一次发出进度事件的时刻（毫秒时间戳）。节流用。
+    last_progress: std::sync::atomic::AtomicU64,
 }
 
 impl TaskEngine {
@@ -104,6 +120,7 @@ impl TaskEngine {
             sender,
             receiver,
             finished: AtomicBool::new(false),
+            last_progress: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -197,7 +214,7 @@ impl TaskEngine {
             "task finished"
         );
 
-        self.emit(TaskEvent::Finished {
+        self.emit_terminal(TaskEvent::Finished {
             id,
             outcome,
             message,
@@ -210,15 +227,52 @@ impl TaskEngine {
     /// 推送一个事件。
     ///
     /// 用 `try_send`：通道满时**丢弃**而不是阻塞。
-    /// 丢失的只会是进度提示，终态事件在任务结束时通道通常已空。
+    /// 丢的只会是进度提示 —— 终态事件走 [`Self::emit_terminal`]。
     fn emit(&self, event: TaskEvent) {
         if self.sender.try_send(event).is_err() {
             tracing::debug!("event channel full; dropping update");
         }
     }
 
-    /// 进度事件节流：避免每个解码包都发一次。
+    /// 推送一个**终态**事件（任务的结束状态）。
+    ///
+    /// 终态必须送达：它是「这次任务结束了」的唯一信号，丢了就再也补不回来
+    /// —— 进度事件可以丢（UI 只是少一帧进度），终态不行。
+    ///
+    /// 这里最多等 100 ms：通道满时消费者很快就会腾出位置，而进度事件已经
+    /// 节流，通道本来也不会满到哪儿去。等的是一个有界的时刻，不是无限期。
+    fn emit_terminal(&self, event: TaskEvent) {
+        if self
+            .sender
+            .send_timeout(event, std::time::Duration::from_millis(100))
+            .is_err()
+        {
+            tracing::warn!("terminal task event could not be delivered");
+        }
+    }
+
+    /// 进度事件节流：两次之间至少隔 [`PROGRESS_THROTTLE_MS`]。
+    ///
+    /// 分析是按解码块推进的，一个 3 小时的音频能产生上万次进度通知。
+    /// 不节流的话，256 容量的通道会被灌满 —— UI 拿到的全是过期进度，
+    /// 别的事件（尤其是终态）反而挤不进去。节流的是**频率**，不是
+    /// 「丢不丢」。
     fn emit_progress(&self, id: TaskId, progress: TaskProgress) {
+        let now = unix_millis();
+        let last = self.last_progress.load(Ordering::Relaxed);
+        // 用 wrapping_sub：墙钟被 NTP 回拨时差值会变成一个巨大的正数，
+        // 于是「时间过去了」成立，不会把进度节流到时钟追上来为止。
+        if now.wrapping_sub(last) < PROGRESS_THROTTLE_MS {
+            return;
+        }
+        // 用 CAS 抢「本轮」：抢不到说明同一时刻有别的线程正在发。
+        if self
+            .last_progress
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
         self.emit(TaskEvent::Progress { id, progress });
     }
 
@@ -437,6 +491,72 @@ mod tests {
     fn cancel_unknown_task_returns_false() {
         let e = engine();
         assert!(!e.cancel(TaskId(9999)));
+    }
+
+    /// 回归测试：进度事件必须节流。
+    ///
+    /// 早先的注释写着「进度事件节流」，但代码里**根本没有节流** ——
+    /// 分析按解码块推进，一个长文件能产生上万次进度通知，把 256 容量的
+    /// 通道灌满，别的事件（尤其是终态）反而挤不进去。
+    #[test]
+    fn progress_events_are_throttled() {
+        let e = engine();
+        let id = TaskId(1);
+        for i in 0..1000u64 {
+            e.emit_progress(
+                id,
+                TaskProgress {
+                    frames_done: i,
+                    frames_total: Some(1000),
+                    bytes_done: i,
+                },
+            );
+        }
+        let events: Vec<TaskEvent> = e.events().try_iter().collect();
+        let progress = events
+            .iter()
+            .filter(|ev| matches!(ev, TaskEvent::Progress { .. }))
+            .count();
+        assert!(
+            progress <= 2,
+            "1000 次进度通知应被节流到个位数，实得 {progress}"
+        );
+    }
+
+    /// 回归测试：终态事件必须送达。
+    ///
+    /// 进度丢了无所谓（UI 少一帧进度），终态丢了就再也补不回来 ——
+    /// 那是「这次分析结束了」的唯一信号。
+    #[test]
+    fn the_terminal_event_is_delivered() {
+        let e = engine();
+        let r = TaskRequest::new("x.wav", |_t, _p| {
+            Ok(Arc::new(TaskOutput {
+                path: "x.wav".into(),
+                sample_rate: 48_000,
+                channels: 2,
+                frames_processed: 1000,
+                peak_dbfs: Some(-6.0),
+                rms_dbfs: Some(-9.0),
+                dc: 0.0,
+                crest_db: Some(3.0),
+                over_full_scale_samples: 0,
+                clipping_regions: 0,
+                elapsed_ms: 1,
+            }))
+        });
+        e.submit(r);
+        let events: Vec<TaskEvent> = e.events().try_iter().collect();
+        assert!(
+            events.iter().any(|ev| matches!(
+                ev,
+                TaskEvent::Finished {
+                    outcome: TaskOutcome::Succeeded,
+                    ..
+                }
+            )),
+            "终态事件必须送达，实得 {events:?}"
+        );
     }
 
     #[test]

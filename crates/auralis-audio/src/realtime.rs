@@ -72,6 +72,18 @@ const fn is_overwrite(published: u64, taken: u64) -> bool {
     taken < published
 }
 
+/// 为滚动窗口预留容量。
+///
+/// 容量**只增不减**：第一次见到某一轮的帧数时按它预留，之后同样的 chunk
+/// 再来也不会重新分配。预留不足的话，推样本的过程中（裁剪要等整块推完
+/// 才做）长度会涨过 `fft_size`，`Vec` 就会在**每一轮**重新分配一次。
+fn reserve_window(tail: &mut Vec<f32>, fft_size: usize, chunk_frames: usize) {
+    let need = fft_size + chunk_frames;
+    if tail.capacity() < need {
+        tail.reserve(need - tail.len());
+    }
+}
+
 /// 一帧实时结果。
 #[derive(Debug, Clone, Default)]
 pub struct RealtimeSnapshot {
@@ -176,6 +188,17 @@ impl RealtimeWorker {
                     // 频谱再用 mid-sum（只用于显示），电平绝不在 downmix 之后算。
                     let consumed: u64 = chunk.iter().map(|b| (b.len() / channels) as u64).sum();
                     processed += consumed;
+
+                    // 容量只增不减：先按本轮的总帧数预留，再往里推。
+                    //
+                    // 裁剪在整块 chunk 推完之后才做（每推一块就裁一次会把
+                    // 8 KB 的 memmove 变成 512 KB），所以推的过程中长度会
+                    // 短暂超过 `fft_size`。不预留的话，那一下就会触发
+                    // `Vec` 重分配 —— 每轮一次，纯属白花。
+                    let chunk_frames: usize = chunk.iter().map(|b| b.len() / channels).sum();
+                    for tail in &mut tails {
+                        reserve_window(tail, config.fft_size, chunk_frames);
+                    }
 
                     for buf in &chunk {
                         let frames = buf.len() / channels;
@@ -345,6 +368,48 @@ mod tests {
     fn recycler() -> BufferRecycler {
         // 独立回收池，测试里不与真实回调共享
         BufferRecycler::for_tests(64)
+    }
+
+    /// 回归测试：滚动窗口的容量只增不减。
+    ///
+    /// 早先的容量按 `fft_size * 2` 估，而一轮 chunk 最多能推进
+    /// 64 块 × 256 帧 = 16384 帧，裁剪却要等整块推完才做 —— 推的过程中
+    /// 长度会涨到 `fft_size + 16384`，远超预留的容量，于是**每轮**都触发
+    /// 一次 `Vec` 重分配。
+    #[test]
+    fn the_rolling_window_capacity_is_reserved_once() {
+        const FFT_SIZE: usize = 2048;
+        const CHUNK_FRAMES: usize = 64 * 256;
+
+        let mut tail: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
+        let before = tail.capacity();
+
+        reserve_window(&mut tail, FFT_SIZE, CHUNK_FRAMES);
+        let after_first = tail.capacity();
+        assert!(
+            after_first >= FFT_SIZE + CHUNK_FRAMES,
+            "容量必须一次装得下整轮，实得 {after_first}"
+        );
+
+        // 同样大小的 chunk 再来一次：容量不该再变。
+        reserve_window(&mut tail, FFT_SIZE, CHUNK_FRAMES);
+        assert_eq!(tail.capacity(), after_first, "容量只增不减，不应重新分配");
+        assert!(before < after_first);
+    }
+
+    #[test]
+    fn the_rolling_window_capacity_is_enough_for_the_whole_chunk() {
+        // 推完之后的长度会短暂超过 fft_size；预留必须覆盖这个峰值。
+        const FFT_SIZE: usize = 512;
+        const CHUNK_FRAMES: usize = 4096;
+        let mut tail: Vec<f32> = Vec::new();
+        reserve_window(&mut tail, FFT_SIZE, CHUNK_FRAMES);
+        tail.resize(FFT_SIZE + CHUNK_FRAMES, 0.0);
+        assert_eq!(
+            tail.capacity(),
+            FFT_SIZE + CHUNK_FRAMES,
+            "推满整轮也不该触发重分配"
+        );
     }
 
     #[test]
