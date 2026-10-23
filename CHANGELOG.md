@@ -255,6 +255,15 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
   operation the reading sat at 1.0 permanently. It now reports actual
   occupancy (pushed − popped − evicted) over the real capacity, and the
   capacity can no longer be passed in wrong, because the ring knows it.
+- **The default peak-picking config silently filtered frame-level peaks.**
+  `PeakPickConfig`'s documentation said the default "keeps the old
+  behaviour (no prominence / dynamic-range filtering)", but the default
+  `dynamic_range_db` was 120 — which *is* a filter: any peak more than
+  120 dB below the loudest one was dropped. `detect_peaks` is the entry
+  point for the frame-level paths (STFT, live capture, synthetic analysis),
+  so their peak lists quietly changed. The default is now "no gate"
+  (infinity), which is what the documentation always claimed; callers that
+  want a gate have to pass one explicitly, as the file-spectrum panel does.
 - **The realtime ring buffer's `popped_frames` counter could wrap to
   `u64::MAX`.** The `DropOldest` policy decremented a counter that had never
   been incremented for the evicted item. Evictions are now counted separately

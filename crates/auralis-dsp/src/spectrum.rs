@@ -445,15 +445,29 @@ impl SpectrumAnalyzer {
 ///
 /// 默认值保持旧行为（不按 prominence / 动态范围过滤），只有显式配置时
 /// 才启用更严格的挑选。这样帧级调用者（STFT / 实时）不会被意外改变。
+///
+/// 三个「不启用」的取值：
+/// - `min_prominence_db <= 0`：不做 prominence 过滤；
+/// - `dynamic_range_db` 为无穷：不做动态范围门限；
+/// - `min_distance_bins` 不是开关，是两个**被选中**峰之间的最小间隔。
+///
+/// 早先把 `dynamic_range_db` 默认成 120 dB，文档却写着「不按动态范围
+/// 过滤」——文档是假的：任何比最强峰低 120 dB 的峰都会被丢掉，而
+/// `detect_peaks` 正是帧级路径（STFT / 实时 / 合成信号）走的入口。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PeakPickConfig {
     /// 最多返回多少个峰。
     pub max_peaks: usize,
     /// 最小 prominence，dB。低于它的局部极大视为噪声/旁瓣。
+    ///
+    /// `<= 0` 表示不做 prominence 过滤。
     pub min_prominence_db: f32,
-    /// 两个峰之间至少相隔多少个 bin。
+    /// 两个被选中的峰之间至少相隔多少个 bin。
     pub min_distance_bins: f32,
     /// 动态范围门限：低于「最强峰 − 该值」的峰被丢弃。
+    ///
+    /// **无穷表示不做门限**。注意这不是「门限很宽」——早先的默认值
+    /// 120.0 会在帧级路径上真的丢峰，只是丢的是低于 -120 dBFS 的底噪。
     pub dynamic_range_db: f32,
 }
 
@@ -463,7 +477,9 @@ impl Default for PeakPickConfig {
             max_peaks: 8,
             min_prominence_db: 0.0,
             min_distance_bins: 1.0,
-            dynamic_range_db: 120.0,
+            // 无穷 = 不做动态范围门限。默认必须与旧的帧级行为一致；
+            // 需要门限的调用方显式给一个 dB 值（文件频谱面板给 80）。
+            dynamic_range_db: f32::INFINITY,
         }
     }
 }
@@ -575,6 +591,10 @@ pub fn detect_peaks_with(amplitudes: &[f32], bin_hz: f64, config: &PeakPickConfi
     }
 
     // 动态范围门限：先丢掉明显低于最强峰的旁瓣/底噪。
+    //
+    // `dynamic_range_db` 为无穷时**整段跳过**——这是「不做门限」的表达，
+    // 不是「门限宽到没影响」。默认走的就是这条路，帧级行为与引入
+    // prominence 之前保持一致。
     let loudest = peaks
         .iter()
         .map(|p| p.amplitude_dbfs)
@@ -1408,6 +1428,54 @@ mod tests {
         let mut a = vec![1e-7_f32; 64];
         a[20] = 1.0;
         a[40] = 1e-5; // -100 dBFS，低于 -80 dB 动态范围
+        let picked = detect_peaks_with(
+            &a,
+            1.0,
+            &PeakPickConfig {
+                max_peaks: 8,
+                min_prominence_db: 0.0,
+                min_distance_bins: 1.0,
+                dynamic_range_db: 80.0,
+            },
+        );
+        assert!(picked.iter().all(|p| p.bin_index != 40));
+        assert!(picked.iter().any(|p| p.bin_index == 20));
+    }
+
+    /// 回归测试：默认配置**不做**任何过滤。
+    ///
+    /// 文档写着「默认值保持旧行为（不按 prominence / 动态范围过滤）」，
+    /// 但默认值是 `dynamic_range_db: 120.0` —— 门限照常生效，任何比最强
+    /// 峰低 120 dB 的峰都被丢掉。`detect_peaks` 正是帧级路径
+    /// （STFT / 实时 / 合成信号）的入口，于是那里的行为被悄悄改掉了。
+    #[test]
+    fn default_config_applies_no_prominence_or_dynamic_range_filter() {
+        // 底噪 -160 dBFS，主峰 0 dBFS，bin 40 是 -140 dBFS 的局部极大
+        // （比主峰低 140 dB：旧的 120 dB 默认门限会把它丢掉）。
+        let mut a = vec![1e-8_f32; 64];
+        a[20] = 1.0;
+        a[40] = 1e-7;
+
+        let picked = detect_peaks_with(&a, 1.0, &PeakPickConfig::default());
+        assert!(
+            picked.iter().any(|p| p.bin_index == 40),
+            "默认不该做动态范围门限，实得 {picked:?}"
+        );
+
+        // 同一个输入，走「旧入口」也必须保留 —— 它是帧级路径的入口。
+        let legacy = detect_peaks(&a, 1.0, 8);
+        assert!(
+            legacy.iter().any(|p| p.bin_index == 40),
+            "detect_peaks 必须保持旧行为，实得 {legacy:?}"
+        );
+    }
+
+    /// 显式给出门限时才过滤 —— 证明上面的「不过滤」不是门限失效。
+    #[test]
+    fn an_explicit_dynamic_range_does_filter() {
+        let mut a = vec![1e-8_f32; 64];
+        a[20] = 1.0;
+        a[40] = 1e-7; // -140 dBFS
         let picked = detect_peaks_with(
             &a,
             1.0,
