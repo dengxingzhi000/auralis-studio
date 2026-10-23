@@ -11,6 +11,24 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Added
 
+- **Control lane for capture commands.** `input_devices`, `start_realtime` and
+  `stop_realtime` moved out of the slow command queue into their own lane
+  (1 worker, bounded queue of 2). They used to share the slow lane with file
+  analysis, whose 2 workers were both busy whenever two analyses ran — so
+  "stop capture" had to queue behind an analysis that could take minutes,
+  while the microphone kept recording and the ring buffer kept dropping
+  frames. Measured on a 15-minute WAV with two concurrent analyses: the stop
+  command now returns in ~1 ms *while the analyses are still running*; before
+  the change it returned only after both had finished.
+- **Engine request timeout.** The Electron↔engine bridge now rejects a
+  request that gets no answer (default 60 s) instead of leaving the UI
+  spinning forever. Commands that legitimately re-decode a whole file
+  (`analyze_file`, `export_analysis`, `spectrogram_view`) opt out — a long
+  analysis is not a hang, and `cancel_task` remains available.
+- **Panic isolation on every RPC lane.** A command that panics now returns a
+  normal `ok:false` error. Previously the worker thread simply died: the
+  request was never answered (permanent spinner in the UI) and the pool lost
+  a worker without a word in the logs.
 - **DSP correctness and accuracy pass.**
   - **Waveform min/max, per channel, whole timeline.** The wire format now
     carries `waveformMin` alongside `waveformEnvelope` (channel-major,
@@ -224,6 +242,15 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Fixed
 
+- **The realtime ring buffer's `popped_frames` counter could wrap to
+  `u64::MAX`.** The `DropOldest` policy decremented a counter that had never
+  been incremented for the evicted item. Evictions are now counted separately
+  in `evicted_frames` (they are lost data and must be visible); `popped_frames`
+  keeps its meaning of "frames the consumer actually took".
+- **The realtime session lock was held across slow work.** Opening a device
+  or joining the analysis thread happened while holding the mutex that the
+  30 Hz snapshot poll needs, so the live spectrum could freeze for the whole
+  duration of a device open. The lock now only guards the pointer swap.
 - **Export no longer masquerades as analysis.** Export and analysis shared a
   single `busy` flag, so while a CSV/JSON export was running the top bar and the
   sidebar CTA both read 「分析中…」, and drag-and-drop or the command palette were

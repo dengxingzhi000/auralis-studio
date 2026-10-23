@@ -179,7 +179,7 @@ instruments, not forms.
                  scalars  │  base64 field → Uint8Array
    ┌───────────────────────▼──────────────────────────────┐
    │  auralis-engine  (separate process)                  │
-   │  fast lane inline · slow lane 2 workers · queue 8    │
+   │  fast lane inline · control lane · slow lane (2/8)   │
    └───────┬───────────────────────────┬──────────────────┘
            │                           │
    ┌───────▼────────┐         ┌────────▼─────────────────┐

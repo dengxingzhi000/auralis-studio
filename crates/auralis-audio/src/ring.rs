@@ -35,6 +35,18 @@ pub enum DropPolicy {
 }
 
 /// 环形缓冲统计量。全部是原子的，可在回调中递增、在任意线程读取。
+///
+/// # 计数器语义
+///
+/// | 计数器 | 含义 |
+/// |---|---|
+/// | [`Self::pushed_frames`] | **进过**环形缓冲的帧数 |
+/// | [`Self::dropped_frames`] | 写入时被拒绝、从未进过环的帧数 |
+/// | [`Self::popped_frames`] | **被消费方取走**的帧数 |
+/// | [`Self::evicted_frames`] | 进过环、但被 `DropOldest` 策略挤掉、没被消费方看到的帧数 |
+///
+/// 不变式：`pushed == popped + evicted + 环内残留`。
+/// 四者单位都是**帧**（不是项）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RingStats {
     /// 成功写入的帧数。
@@ -42,7 +54,17 @@ pub struct RingStats {
     /// 因队列满而丢弃的帧数。**UI 必须显示这个数**。
     pub dropped_frames: u64,
     /// 被消费方取走的帧数。
+    ///
+    /// 只表示「消费方实际取走了多少」。被策略挤掉的数据算在
+    /// [`Self::evicted_frames`]，**不**在这里做减法——早先的实现在挤掉
+    /// 最旧项时对这里减一，而那一项从没被加过，原子减法会回绕成
+    /// `u64::MAX`，整个计数器从此失真。
     pub popped_frames: u64,
+    /// 被 `DropOldest` 策略挤出的帧数。
+    ///
+    /// 这部分数据**进过**环形缓冲却没被消费方看到，属于丢失，必须单独
+    /// 计数，否则「溢出必然可见」这条就不成立。
+    pub evicted_frames: u64,
 }
 
 impl RingStats {
@@ -84,6 +106,7 @@ pub struct SampleRing<T> {
     pushed: AtomicU64,
     dropped: AtomicU64,
     popped: AtomicU64,
+    evicted: AtomicU64,
     closed: AtomicBool,
 }
 
@@ -105,6 +128,7 @@ impl<T> SampleRing<T> {
             pushed: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
             popped: AtomicU64::new(0),
+            evicted: AtomicU64::new(0),
             closed: AtomicBool::new(false),
         }
     }
@@ -128,6 +152,7 @@ impl<T> SampleRing<T> {
             pushed_frames: self.pushed.load(Ordering::Relaxed),
             dropped_frames: self.dropped.load(Ordering::Relaxed),
             popped_frames: self.popped.load(Ordering::Relaxed),
+            evicted_frames: self.evicted.load(Ordering::Relaxed),
         }
     }
 
@@ -182,16 +207,25 @@ impl<T> SampleRing<T> {
             }
             DropPolicy::DropOldest => {
                 if self.queue.pop().is_some() {
-                    self.popped
-                        .fetch_sub(self.frames_per_item as u64, Ordering::Relaxed);
-                    self.pushed
+                    // 被挤出的那一项：**进过环、但消费方没看到**，属于丢失。
+                    // 记在 `evicted` 上，**不动 `popped`**——
+                    // `popped` 只表示「消费方实际取走了多少」，
+                    // 那一项从没被加过，在这里减一会让原子计数回绕成 u64::MAX。
+                    self.evicted
                         .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
-                    // 刚腾出一个位置，正常不会失败；真失败也必须把 item 还回去
-                    if self.queue.push(item).is_err() {
-                        self.dropped
-                            .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
+                    // 腾出一个位置后写入新项；真失败也必须把 item 还回去。
+                    match self.queue.push(item) {
+                        Ok(()) => {
+                            self.pushed
+                                .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
+                            Ok(())
+                        }
+                        Err(item) => {
+                            self.dropped
+                                .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
+                            Err(item)
+                        }
                     }
-                    Ok(())
                 } else {
                     self.dropped
                         .fetch_add(self.frames_per_item as u64, Ordering::Relaxed);
@@ -288,7 +322,37 @@ mod tests {
         let mut out = Vec::new();
         let _ = r.pop_chunk(&mut out);
         assert_eq!(out, vec![2, 3], "DropOldest 应保留最新数据");
-        assert_eq!(r.stats().dropped_frames, 0, "挤掉旧数据不算丢弃");
+        assert_eq!(r.stats().dropped_frames, 0, "挤掉旧数据不算写入拒绝");
+    }
+
+    #[test]
+    fn drop_oldest_does_not_corrupt_the_popped_counter() {
+        // 回归测试：早先的实现挤掉最旧项时对 `popped` 做减一，
+        // 而那一项从没被加过 → 原子减法回绕成 u64::MAX，计数器从此失真。
+        let r: SampleRing<u32> = SampleRing::new(2, 1, DropPolicy::DropOldest);
+        for i in 0..10 {
+            let _ = r.push(i);
+        }
+        let s = r.stats();
+        assert_eq!(s.evicted_frames, 8, "被挤掉的 8 项必须单独计数");
+        assert_eq!(s.popped_frames, 0, "消费方还没取过东西，计数必须是 0");
+        assert_eq!(s.pushed_frames, 10, "10 次写入都进过环");
+        // 不变式：pushed == popped + evicted + 环内残留（此时残留 2）
+        assert_eq!(s.pushed_frames, s.popped_frames + s.evicted_frames + 2);
+    }
+
+    #[test]
+    fn drop_oldest_evicted_frames_stay_counted_after_consumption() {
+        let r: SampleRing<u32> = SampleRing::new(2, 1, DropPolicy::DropOldest);
+        for i in 0..5 {
+            let _ = r.push(i);
+        }
+        let mut out = Vec::new();
+        let _ = r.pop_chunk(&mut out);
+        let s = r.stats();
+        assert_eq!(s.popped_frames, 2, "消费方取走了 2 项");
+        assert_eq!(s.evicted_frames, 3, "3 项被策略挤掉");
+        assert!(s.popped_frames < u64::MAX / 2, "计数器不得回绕");
     }
 
     #[test]

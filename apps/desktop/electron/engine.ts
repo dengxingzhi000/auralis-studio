@@ -26,6 +26,38 @@ const BINARY_FIELDS = new Set([
   "spectrogramDb",
 ]);
 
+/**
+ * 默认请求超时（毫秒）。
+ *
+ * 绝大多数命令都在百毫秒量级：探测只读文件头，快命令只加锁取值，
+ * 设备枚举最多几百毫秒。60 秒足够宽裕，又足以在引擎「不回话」时
+ * 立刻把错误交给界面，而不是让 spinner 永远转下去。
+ */
+const DEFAULT_TIMEOUT_MS = 60_000;
+
+/**
+ * 合法地需要跑很久的命令：它们要重解码整个文件。
+ *
+ * 这些命令不设超时——3 小时的音频本来就可能分析好几分钟，
+ * 用户还有 `cancel_task` 可以中止。超时在这里只会误伤正常的长任务。
+ */
+const LONG_RUNNING_COMMANDS = new Set([
+  "analyze_file",
+  "export_analysis",
+  "spectrogram_view",
+]);
+
+/** 单次请求的可选参数。 */
+export interface RequestOptions {
+  /**
+   * 超时毫秒。`0` 表示不超时。
+   *
+   * 不传时按命令名取默认值：长任务命令不超时，其余用
+   * [`DEFAULT_TIMEOUT_MS`]。
+   */
+  timeoutMs?: number;
+}
+
 /** 一次请求的待决回调。 */
 interface Pending {
   resolve: (value: unknown) => void;
@@ -92,8 +124,17 @@ export class Engine {
     this.proc = child;
   }
 
-  /** 发送一条命令并等待响应。 */
-  request(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
+  /**
+   * 发送一条命令并等待响应。
+   *
+   * 带超时兜底：引擎进程若因故不回这条命令（worker 线程已死、
+   * 引擎卡死），Promise 必须自己 reject，界面不能永远转圈。
+   */
+  request(
+    cmd: string,
+    args: Record<string, unknown> = {},
+    options: RequestOptions = {},
+  ): Promise<unknown> {
     if (!this.proc) this.start();
 
     const proc = this.proc;
@@ -102,11 +143,43 @@ export class Engine {
     }
 
     const id = this.nextId++;
+    const timeoutMs =
+      options.timeoutMs ??
+      (LONG_RUNNING_COMMANDS.has(cmd) ? 0 : DEFAULT_TIMEOUT_MS);
+
     return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const clearTimer = () => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+      };
+
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimer();
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimer();
+          reject(error);
+        },
+      });
+
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          // 超时后必须把请求从待决表里摘掉，否则它会一直泄漏。
+          // 引擎随后补回来的响应会找不到对应的 pending，被安全忽略。
+          if (!this.pending.delete(id)) return;
+          reject(new Error(`引擎命令 "${cmd}" 超时（${timeoutMs} ms）`));
+        }, timeoutMs);
+      }
+
       proc.stdin.write(`${JSON.stringify({ id, cmd, args })}\n`, (error) => {
         if (error) {
           this.pending.delete(id);
+          clearTimer();
           reject(new Error(`写入引擎失败：${error.message}`));
         }
       });

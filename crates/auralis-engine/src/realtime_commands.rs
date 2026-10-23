@@ -136,14 +136,15 @@ pub fn start_realtime(
     sample_rate: Option<u32>,
     channels: Option<u16>,
 ) -> Result<CaptureStatusDto, String> {
-    let mut rt = realtime.inner.lock().map_err(|e| e.to_string())?;
-
-    // 已经在跑就先停掉，避免资源泄漏
-    if let Some(w) = rt.worker.as_mut() {
-        w.stop();
-    }
-    rt.worker = None;
-    rt.session = None;
+    // 先把旧会话摘出来，**不要**持锁做停止与设备打开：
+    // 停止会 join 分析线程，打开设备要走 cpal 后端（几十到几百毫秒）。
+    // 持锁期间，快通道的快照轮询（20–30 Hz）会被整段卡住，
+    // 界面上的实时频谱会僵住不动。
+    let previous = {
+        let mut rt = realtime.inner.lock().map_err(|e| e.to_string())?;
+        (rt.worker.take(), rt.session.take())
+    };
+    stop_previous(previous.0, previous.1);
 
     let config = CaptureConfig {
         sample_rate: sample_rate.unwrap_or(48_000),
@@ -188,6 +189,7 @@ pub fn start_realtime(
     )
     .map_err(|e| format!("无法启动实时分析线程：{e}"))?;
 
+    let mut rt = realtime.inner.lock().map_err(|e| e.to_string())?;
     rt.config = CaptureConfig {
         sample_rate: actual.sample_rate,
         channels: actual.channels,
@@ -210,14 +212,29 @@ pub fn start_realtime(
 /// # Errors
 /// 内部锁中毒。
 pub fn stop_realtime(realtime: &RealtimeSession) -> Result<CaptureStatusDto, String> {
-    let mut rt = realtime.inner.lock().map_err(|e| e.to_string())?;
-    if let Some(w) = rt.worker.as_mut() {
+    // 与 `start_realtime` 同一个原则：停止要 join 分析线程、放掉 cpal 流，
+    // 这些都**不**在锁内做。锁只用来把会话从状态里摘出去。
+    let previous = {
+        let mut rt = realtime.inner.lock().map_err(|e| e.to_string())?;
+        (rt.worker.take(), rt.session.take())
+    };
+    stop_previous(previous.0, previous.1);
+
+    tracing::info!("realtime capture stopped");
+    let rt = realtime.inner.lock().map_err(|e| e.to_string())?;
+    Ok(capture_status(&rt))
+}
+
+/// 收尾一个旧会话：先停分析线程，再释放采集会话。
+///
+/// 顺序有讲究：分析线程还在消费环形缓冲时丢掉会话会关闭缓冲；
+/// 而丢掉分析线程（它的 `Drop` 会 join 工作线程）会先把消费端停掉。
+fn stop_previous(mut worker: Option<RealtimeWorker>, session: Option<CaptureSession>) {
+    if let Some(mut w) = worker.take() {
         w.stop();
     }
-    rt.worker = None;
-    rt.session = None;
-    tracing::info!("realtime capture stopped");
-    Ok(capture_status(&rt))
+    // `CaptureSession` 的 `Drop` 会关闭环形缓冲并释放 cpal 流。
+    drop(session);
 }
 
 /// 采集状态（丢帧等）。

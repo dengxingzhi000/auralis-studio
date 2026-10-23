@@ -30,9 +30,14 @@ import {
 } from "./contracts";
 
 /**
- * Rust `Vec<u8>` 在 WebView2 上实测到达的是普通数字数组。
- * 这里如实描述，避免用 `Uint8Array` 做类型断言而掩盖运行时差异
- * （那个断言正是「图表全空」这个 bug 的成因）。
+ * Rust `Vec<u8>` 经主进程还原后的形态。
+ *
+ * Rust 侧以 base64 字符串过线（见 `crates/auralis-engine/src/b64.rs`），
+ * 主进程的 `electron/engine.ts` 会把它还原成 `Uint8Array` 再交给渲染层。
+ *
+ * 保留 `number[]` 分支是为了兼容没有 preload 的浏览器预览环境
+ * （`bridge()` 在那种环境里会退化），因此这里如实描述两种可能，
+ * 而不是拿 `Uint8Array` 做一次掩盖运行时差异的类型断言。
  */
 type RawBytes = number[] | Uint8Array;
 
@@ -41,6 +46,9 @@ type RawBytes = number[] | Uint8Array;
  *
  * 桥接对象在模块加载时不取：浏览器（无 preload）里打开 dev server 时，
  * `window.auralis` 不存在，只有在真正调用时才应该报错。
+ *
+ * 超时策略在主进程侧（`electron/engine.ts`）：默认 60 秒，
+ * 需要重解码整个文件的长任务命令不设超时。
  */
 function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return bridge().invoke<T>(cmd, args);

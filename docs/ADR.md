@@ -675,10 +675,25 @@ ADR-016 关于「React + TypeScript 承担 UI、Rust 承担音频计算」的决
    它不依赖 Tauri、不创建窗口，只保留命令与 stdio 端点。
 3. **宿主与引擎用 stdio JSON-Lines RPC 通信**（`crates/auralis-engine/src/rpc.rs`）：
    一行一条 JSON，`id` 配对请求与响应。没有端口、没有鉴权、不会留孤儿进程
-   （stdin EOF 即退出）。慢命令（分析/导出/探测/设备枚举）交给
-   2 个固定工作线程 + 有界队列（8），队列满立即回 `engine busy`；
-   高频轻命令（`app_info`、`cancel_task`、`capture_status_cmd`、
-   `realtime_snapshot`）在读取线程内联执行，不排在长分析后面。
+   （stdin EOF 即退出）。命令分三条泳道：
+
+   | 泳道 | 命令 | 并发模型 | 判据 |
+   |---|---|---|---|
+   | 快 | `app_info`、`cancel_task`、`capture_status_cmd`、`realtime_snapshot`、`task_queue` | 读取线程内联执行 | 每 20–30 Hz 被轮询，绝不能排在长任务后面 |
+   | 控制 | `input_devices`、`start_realtime`、`stop_realtime` | 1 个固定 worker + 有界队列（2） | 与用户的手指直接相关，必须立刻响应 |
+   | 慢 | 分析、导出、探测 | 2 个固定 worker + 有界队列（8） | 耗时且可并行；队列满立即回 `engine busy` |
+
+   控制泳道是单独分出来的原因：早先 `start_realtime` / `stop_realtime` 与
+   文件分析共用慢通道，而慢通道只有 2 个 worker。两个分析同时在跑时，
+   用户点「停止采集」只能排队等分析结束才生效——期间麦克风一直在采集、
+   环形缓冲一直在丢帧，而界面看起来像「停止按钮坏了」。
+   实测（15 分钟 WAV × 2 并发分析）：修复前 `stop_realtime` 在两个分析
+   之后才返回，修复后在分析仍在运行时 1 ms 返回。
+
+   所有泳道的命令执行都包在 `catch_unwind` 里：worker 线程一旦因 panic
+   退出，那条请求既不 resolve 也不 reject（前端永久转圈），而且线程池
+   会少一个 worker，少掉的过程没有任何日志。panic 必须变成一条
+   `ok:false` 响应。
 4. **渲染进程保持最小权限**：`sandbox: true`、`contextIsolation: true`、
    `nodeIntegration: false`。能力只经 preload 的窄接口
    `window.auralis`（`invoke` / `openFile` / `saveFile` / `getPathForFile`）暴露。

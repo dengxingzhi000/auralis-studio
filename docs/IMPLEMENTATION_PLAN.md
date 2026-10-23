@@ -247,11 +247,17 @@ ADR-018「回调只做拷贝、全部 DSP 在工作线程」的架构由实测�
 - [x] Electron 45 主进程 + preload 窄接口（sandbox / contextIsolation /
       无 Node 集成）
 - [x] Rust 命令层从 `src-tauri` 迁到 `crates/auralis-engine`，不再依赖 Tauri
-- [x] stdio JSON-Lines RPC：快命令内联、慢命令 2 worker + 有界队列 8、
+- [x] stdio JSON-Lines RPC：快命令内联、控制泳道 1 worker + 队列 2、慢命令 2 worker + 有界队列 8、
       stdin EOF 先排空已接受任务再退出
 - [x] 二进制字段 base64 过线，主进程还原为 `Uint8Array`
 - [x] 对话框走 Electron `dialog`；拖放走 DOM + `webUtils.getPathForFile`
 - [x] 一条命令启动开发：`npm run electron:dev`
+- [x] **IPC 端到端延迟实测**（2026-10-23，走 preload 桥接 `window.auralis.invoke`，
+      非人工点击状态栏）：快命令 `app_info` ≈1 ms、控制泳道 `stop_realtime` ≈1–2 ms、
+      `input_devices` ≈94 ms（**debug 引擎**构建；release 构建更快）。
+      文件分析路径的延迟另计：900 秒 WAV 经 Electron 全链路 14.6 s（debug 构建），
+      同一文件直接走引擎 release 构建约 1.2 s——差异来自构建 profile，不是 IPC 开销。
+      release 构建下的端到端数字仍需补测。
 - [x] 真实 WAV 走通引擎 RPC 的 probe / analyze / CSV+JSON 导出
 - [x] Electron 渲染进程 → preload → 引擎的 `probe_file` / `analyze_file`
       验证；二进制字段到达渲染层为 `Uint8Array`
