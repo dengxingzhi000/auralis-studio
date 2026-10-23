@@ -1,4 +1,4 @@
-﻿//! # auralis-codec
+//! # auralis-codec
 //!
 //! 音频文件探测与**分块**解码。
 //!
@@ -16,13 +16,20 @@
 //! | 容器 | symphonia feature | 编译进产物 | **已用真实样本验证** |
 //! |---|---|---|---|
 //! | WAV  | `wav`（default） | 是 | **是** |
-//! | FLAC | `flac`（default） | 是 | **否** |
+//! | FLAC | `flac`（default） | 是 | **是** |
 //! | MP3  | `mp3`（显式开启） | 是 | **否** |
 //! | AIFF | `aiff`（显式开启） | 是 | **否** |
 //! | OGG/Vorbis | default | 是 | **否** |
 //!
-//! **「已验证」列是给 UI 的硬约束**：只有 WAV 可以宣称支持。
+//! **「已验证」列是给 UI 的硬约束**：只有 WAV 与 FLAC 可以宣称支持。
 //! 其余格式能解码，但没有样本验证，不得在界面上承诺。
+//!
+//! FLAC 的样本在 `tests/fixtures/`，由 `flacenc`（仅 dev-dependency）生成；
+//! 样本需要更新时手动跑一次生成器并提交：
+//!
+//! ```text
+//! cargo test -p auralis-codec -- --ignored regenerate_flac_fixtures
+//! ```
 //!
 //! 特别注意：symphonia 的 default features **不含** mp3 / aiff / aacc。
 //! 这是实测结论，不是推测 —— 见根 `Cargo.toml` 的注释。
@@ -33,6 +40,23 @@ pub mod error;
 pub mod info;
 pub mod reader;
 pub mod wav_writer;
+
+/// FLAC 编码器：只用于生成测试样本（dev-dependency，不进产物）。
+#[cfg(test)]
+pub mod flac_writer;
+
+/// 测试样本（`tests/fixtures/`）里的文件路径。
+///
+/// # Panics
+/// 不可能：`CARGO_MANIFEST_DIR` 在编译期确定。
+#[cfg(test)]
+#[must_use]
+pub fn fixture_path(relative: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(relative)
+}
 
 pub use error::{CodecError, Result};
 pub use info::{AudioFileInfo, ContainerKind, probe, verified_containers};

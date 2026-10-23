@@ -74,6 +74,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # 若不显式开启，UI 上出现 MP3 入口但打开会失败 —— 这正是 TAD §4 说的
 # 「按需启用 codec features」，也是 AGENTS.md 说的「不宣称未验证的格式」。
 symphonia = { version = "0.6", features = ["mp3", "aiff"] }
+# FLAC **编码器**，只作为 dev-dependency（不进产物），用来生成可复现的
+# 测试样本。真实样本验证需要能自己造出 FLAC 文件——仓库里没有现成的。
+flacenc = "0.4"
 
 [profile.release]
 opt-level = 3

@@ -60,6 +60,8 @@ pub struct BlockDecoder {
     truncated: bool,
     /// 截断的底层描述。
     truncation_note: Option<String>,
+    /// 容器声明的总帧数；流式容器可能不声明。
+    declared_frames: Option<u64>,
 }
 
 impl BlockDecoder {
@@ -113,6 +115,7 @@ impl BlockDecoder {
             finished: false,
             truncated: false,
             truncation_note: None,
+            declared_frames: track.num_frames,
         })
     }
 
@@ -271,12 +274,31 @@ impl BlockDecoder {
                 continue;
             }
 
-            let frames = u64::try_from(decoded.frames()).unwrap_or(0);
+            let mut frames = u64::try_from(decoded.frames()).unwrap_or(0);
             let first_frame = self.frames_decoded;
 
             // symphonia 直接产出交错样本，并按目标类型转换（i16 -> f32 等）
             let mut samples: Vec<f32> = Vec::with_capacity(decoded.samples_interleaved());
             decoded.copy_to_vec_interleaved(&mut samples);
+
+            // 容器声明的总帧数是权威值：有些编码器把最后一帧**补零**到整个
+            // 块大小（FLAC 固定块编码就是这样），照单全收会多出几百个
+            // 静音样本——实测 44,100 帧的文件解出 45,056 帧。
+            // 多出来的样本会让 RMS/峰值算错，所以按声明值截断。
+            if let Some(total) = self.declared_frames {
+                let remaining = total.saturating_sub(self.frames_decoded);
+                if remaining < frames {
+                    frames = remaining;
+                    let channels = self.format_info.channels.get().max(1) as usize;
+                    samples.truncate(frames as usize * channels);
+                }
+            }
+
+            if frames == 0 {
+                // 已经到声明的末尾：数据流到此为止。
+                self.finished = true;
+                return Ok(None);
+            }
 
             let pcm = PcmBlock::new(self.format_info, first_frame, samples)?;
 
