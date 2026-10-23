@@ -105,7 +105,13 @@ export function RealtimePanel({ onSnapshot, onStatusChange }: RealtimePanelProps
 
   // 只在采集中轮询。依赖里只有 `running`，定时器不会因为重渲染而重建。
   useEffect(() => {
-    if (!running) return;
+    if (!running) {
+      // 采集可能被外部停掉（设备拔出、后端会话结束）。那条路径不会经过
+      // `stop()`，最后一帧快照会永远留在界面上，还挂着「实时」徽标。
+      // 状态一旦变成未运行，就清掉实时读数。
+      snapshotRef.current?.(null);
+      return;
+    }
     let alive = true;
     let ticks = 0;
 

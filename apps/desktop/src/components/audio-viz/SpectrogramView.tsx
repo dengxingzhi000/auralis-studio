@@ -29,7 +29,7 @@
  * - 右侧 8px 色阶条 + dB 刻度，说明「亮 = 多少 dB」
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   binRangeForView,
@@ -103,6 +103,11 @@ export function SpectrogramView({
 }: SpectrogramViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  /** Shift 拖拽中正在框选的频段（CSS px，相对画布顶部）；null = 没有在拖 */
+  const [dragBand, setDragBand] = useState<{
+    top: number;
+    height: number;
+  } | null>(null);
   // 回调放进 ref：父组件每次渲染都会传入新的箭头函数，直接放进 effect
   // 依赖会让监听器反复重建 —— 拖拽进行到一半被换掉，手感很差。
   const onPanRef = useRef(onPan);
@@ -432,12 +437,27 @@ export function SpectrogramView({
         x: e.clientX,
         y: e.clientY,
       };
+      setDragBand(null);
       wrap.setPointerCapture(e.pointerId);
       wrap.style.cursor = "grabbing";
     };
 
+    /** Shift 拖拽时把正在框选的频段画成半透明带，否则用户看不到选区。 */
+    const onPointerMove = (e: PointerEvent) => {
+      if (!drag || drag.mode !== "freq") return;
+      const r = wrap.getBoundingClientRect();
+      const topEdge = PAD.top;
+      const bottomEdge = r.height - PAD.bottom;
+      const clampY = (clientY: number) =>
+        Math.min(bottomEdge, Math.max(topEdge, clientY - r.top));
+      const y0 = clampY(drag.y);
+      const y1 = clampY(e.clientY);
+      setDragBand({ top: Math.min(y0, y1), height: Math.abs(y1 - y0) });
+    };
+
     const onPointerUp = (e: PointerEvent) => {
       wrap.style.cursor = "grab";
+      setDragBand(null);
       const d = drag;
       drag = null;
       if (!d) return;
@@ -469,12 +489,14 @@ export function SpectrogramView({
     wrap.style.cursor = "grab";
     wrap.addEventListener("wheel", onWheel, { passive: false });
     wrap.addEventListener("pointerdown", onPointerDown);
+    wrap.addEventListener("pointermove", onPointerMove);
     wrap.addEventListener("pointerup", onPointerUp);
     wrap.addEventListener("pointercancel", onPointerUp);
     wrap.addEventListener("dblclick", onDoubleClick);
     return () => {
       wrap.removeEventListener("wheel", onWheel);
       wrap.removeEventListener("pointerdown", onPointerDown);
+      wrap.removeEventListener("pointermove", onPointerMove);
       wrap.removeEventListener("pointerup", onPointerUp);
       wrap.removeEventListener("pointercancel", onPointerUp);
       wrap.removeEventListener("dblclick", onDoubleClick);
@@ -485,6 +507,17 @@ export function SpectrogramView({
   return (
     <div ref={wrapRef} className="viz-canvas">
       <canvas ref={canvasRef} />
+      {dragBand && (
+        <div
+          className="viz-drag-band"
+          style={{
+            left: PAD.left,
+            right: PAD.right,
+            top: dragBand.top,
+            height: dragBand.height,
+          }}
+        />
+      )}
     </div>
   );
 }

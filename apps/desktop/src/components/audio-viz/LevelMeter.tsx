@@ -28,10 +28,10 @@ export interface LevelMeterProps {
   minDb: number;
   /** 量程上限 dB */
   maxDb: number;
-  /** 超过满刻度的样本数（|x| > 1） */
-  overFullScale: number;
-  /** 削波平顶片段数（启发式） */
-  clippingRegions: number;
+  /** 超过满刻度的样本数（|x| > 1）；`null` = 未统计（例如实时输入） */
+  overFullScale: number | null;
+  /** 削波平顶片段数（启发式）；`null` = 未统计 */
+  clippingRegions: number | null;
 }
 
 /** dB -> 轨道百分比。非有限值（静音）按 0% 处理，绝不编造一个电平。 */
@@ -98,10 +98,18 @@ export function LevelMeter({
           {minDb} … {maxDb} dBFS
         </span>
         <span className="spacer" />
-        {overFullScale > 0 ? (
+        {overFullScale == null ? (
+          // 未知不等于「没有」：实时输入没有文件级统计，显示 0 会变成
+          // 「检查过，没发现超量程」的假声明。
+          <span className="muted" title="实时输入不统计文件级数据质量">
+            —
+          </span>
+        ) : overFullScale > 0 ? (
           <span
             className="meter-clip"
-            title={`${overFullScale.toLocaleString("en-US")} 个样本超过满刻度；平顶片段 ${clippingRegions}`}
+            title={`${overFullScale.toLocaleString("en-US")} 个样本超过满刻度；平顶片段 ${
+              clippingRegions ?? 0
+            }`}
           >
             超量程 {overFullScale.toLocaleString("en-US")}
           </span>

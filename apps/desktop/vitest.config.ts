@@ -16,14 +16,16 @@ import path from "node:path";
  * 这些都不需要 DOM。用 node 环境比 jsdom 轻一个数量级，也避免了
  * 「测试里能跑、浏览器里行为不同」的假象——被测代码本来就不碰 DOM。
  *
- * 组件渲染目前不做自动化测试（见 docs/TEST_PLAN.md）：仓库没有前端
- * 组件测试设施，引入 jsdom + Testing Library 是一整套新基建，
- * 与「不预建空设施」的原则冲突。组件行为靠人工验收清单覆盖。
+ * 少数组件（`MetricsPanel`）的**渲染输出本身**就是正确性契约
+ * （`null` 必须渲染成「—」而不是 0，实时态不能混入文件读数）。
+ * 这类组件没有 hooks/DOM 依赖，可以直接用 `react-dom/server` 的
+ * `renderToStaticMarkup` 断言 HTML，不需要引入 jsdom + Testing Library
+ * 那一整套新基建。需要 DOM 的交互仍靠人工验收清单覆盖。
  */
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
   },
   resolve: {
     // 与 vite.config.ts 保持一致的别名，测试里的 import 才能用 "@/lib/..."。

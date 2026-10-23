@@ -11,11 +11,16 @@
  * ## 为什么面板默认折叠
  *
  * 侧栏宽度有限，而且绝大多数时候没有任务在跑。一个永远占着半屏的
- * 空列表是干扰。有任务时自动展开，没任务时折叠。
+ * 空列表是干扰。有任务时自动展开，没任务时保持折叠；用户也可以手动
+ * 展开查看本次会话的「最近完成」。折叠状态不影响任务本身。
  */
+
+import { useEffect, useState } from "react";
 
 import type { TaskInfo } from "@/lib/contracts";
 import type { HistoryEntry, TaskOutcome } from "@/lib/task-history";
+
+import { IconChevronDown } from "@/components/ui/icons";
 
 export interface TaskQueuePanelProps {
   /** 运行中的任务（来自 `task_queue`） */
@@ -56,19 +61,41 @@ export function TaskQueuePanel({
   onCancel,
 }: TaskQueuePanelProps) {
   const empty = running.length === 0 && history.length === 0;
+  // 默认折叠。**有运行中的任务时自动展开**：用户不需要先点开一个
+  // 折叠面板才知道分析已经在跑。手动折叠后不会被下一次同数量轮询顶开。
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (running.length > 0) setOpen(true);
+  }, [running.length]);
 
   return (
     <div className="task-queue">
-      <div className="rt-head">
+      <button
+        type="button"
+        className="task-head"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
         <span className="label">后台任务</span>
         {running.length > 0 && (
           <span className="rt-live-dot" title="有任务正在运行" />
         )}
-      </div>
+        <span className="spacer" />
+        {running.length > 0 ? (
+          <span className="num muted">{running.length} 运行中</span>
+        ) : history.length > 0 ? (
+          <span className="num muted">{history.length} 已完成</span>
+        ) : null}
+        <span className="chev">
+          <IconChevronDown size={13} />
+        </span>
+      </button>
 
-      {empty && <div className="muted rt-note">没有正在运行的任务。</div>}
+      {open && empty && (
+        <div className="muted rt-note">没有正在运行的任务。</div>
+      )}
 
-      {running.length > 0 && (
+      {open && running.length > 0 && (
         <>
           <div className="task-section-label">运行中</div>
           <ul className="task-list">
@@ -93,7 +120,7 @@ export function TaskQueuePanel({
         </>
       )}
 
-      {history.length > 0 && (
+      {open && history.length > 0 && (
         <>
           <div className="task-section-label">最近完成</div>
           <ul className="task-list">

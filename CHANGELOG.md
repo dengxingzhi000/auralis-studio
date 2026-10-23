@@ -44,8 +44,6 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
   read a stale prop because React had not re-rendered between them, so four
   notches of the wheel moved the viewport one notch.
 
-### Added
-
 - **Viewport-chunked spectrogram.** The spectrogram no longer stops at the first
   30 seconds with no way to see the rest. A new `spectrogram_view` command takes
   `startSeconds` and `windowSeconds`, seeks in the container (sample-accurate

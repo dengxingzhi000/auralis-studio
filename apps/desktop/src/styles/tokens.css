@@ -68,6 +68,9 @@
   --btn-top-strong: #2e3036; /* bg-elevated + 8% white */
   --bg-note: #161a20; /* bg-elevated 60% + bg-panel 40% */
 
+  /* ---- 遮罩 ---- */
+  --overlay-backdrop: rgb(0 0 0 / 55%); /* 模态背景；不写死在组件里 */
+
   /* ---- 图表 ---- */
   --grid-major: #232a34;
   --grid-minor: #1a2028;

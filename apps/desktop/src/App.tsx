@@ -182,6 +182,18 @@ export default function App() {
   const [activeTask, setActiveTask] = useState<ActiveTask | null>(null);
   /** 上一个成功 probe 的路径，供「重试」使用 */
   const lastPathRef = useRef<string | null>(null);
+  /**
+   * 是否已有一次文件分析在跑。
+   *
+   * 侧栏按钮/列表会用 `busy` 禁用，但拖放与搜索面板是**第二、第三条入口**，
+   * 它们不看 busy。没有这个闸门时，第二次分析会和第一次并行，两个 promise
+   * 各自 setDisplay，先结束的那个还会把后一个的 activeTask 清掉 ——
+   * 最终屏幕上可能是「高亮的文件 A + 显示的频谱 B」。
+   */
+  const analyzingRef = useRef(false);
+  /** `busy` 的同步镜像，供事件回调读取（state 在回调里是旧的）。 */
+  const busyRef = useRef(false);
+  busyRef.current = busy;
 
   // ---- 统一偏好（持久化）----
   //
@@ -192,7 +204,9 @@ export default function App() {
   // 初值来自 `readPrefs()`：它会先读新键，再从旧的
   // `auralis.display.v1` / `auralis.workspace.visibility.v1` 迁移，
   // 所以已有的用户设置不会因为换了存储位置而丢失。
-  const initialPrefs = useRef(readPrefs()).current;
+  // `useState` 的惰性初始化只跑一次；写成 `useRef(readPrefs()).current`
+  // 会在每次渲染都读一次 localStorage 并解析 JSON。
+  const [initialPrefs] = useState(readPrefs);
   const [spectrumMode, setSpectrumMode] = useState<SpectrumMode>(
     initialPrefs.spectrumMode,
   );
@@ -351,12 +365,20 @@ export default function App() {
    */
   useEffect(() => {
     let alive = true;
+    // 同一时刻只允许一个队列请求在路上：后端卡住时，500 ms 的定时器
+    // 会不断叠加请求，占满 RPC 通道。
+    let inFlight = false;
     const tick = () => {
+      if (inFlight) return;
+      inFlight = true;
       fetchTaskQueue()
         .then((t) => {
           if (alive) setTasks(t);
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight = false;
+        });
     };
     tick();
     const id = window.setInterval(tick, 500);
@@ -407,6 +429,13 @@ export default function App() {
    * 分析一个已知路径。文件选择器与拖放都走这里，保证两条入口行为一致。
    */
   const analyzePath = useCallback(async (path: string, restore?: "clean" | "crashed") => {
+    // 拖放、搜索面板、侧栏三条入口可能同时到达。只让第一次通过，
+    // 其余给出可见提示，而不是静默丢弃。
+    if (analyzingRef.current || busyRef.current) {
+      setNotice("已有分析在进行中，请等待完成或先取消");
+      return;
+    }
+    analyzingRef.current = true;
     setError(null);
     setNotice(null);
     setBusy(true);
@@ -496,6 +525,7 @@ export default function App() {
       recordAnalysis(id, fileNameOf(path), "failed", 0);
       setError(describeError(e, "打开文件失败"));
     } finally {
+      analyzingRef.current = false;
       setActiveTask(null);
       setBusy(false);
     }
@@ -862,6 +892,29 @@ export default function App() {
         keywords: "toggle 检查器 侧栏 panel",
         run: () => setShowRight((v) => !v),
       },
+      {
+        id: "action:prefs",
+        group: "操作",
+        label: "偏好设置…",
+        hint: "Ctrl+,",
+        keywords: "preferences 偏好 设置 settings",
+        run: () => setDialog("prefs"),
+      },
+      {
+        id: "action:help",
+        group: "操作",
+        label: "帮助与快捷键",
+        hint: "F1",
+        keywords: "help 帮助 快捷键 shortcut",
+        run: () => setDialog("help"),
+      },
+      {
+        id: "action:about",
+        group: "操作",
+        label: "关于 Auralis Studio",
+        keywords: "about 关于 版本 version",
+        run: () => setDialog("about"),
+      },
     );
 
     return items;
@@ -1081,7 +1134,13 @@ export default function App() {
               setLiveRms(snap ? snap.rmsDbfs : null);
             }}
             liveRunning={liveRunning}
-            onLiveStatusChange={setLiveRunning}
+            onLiveStatusChange={(running) => {
+              setLiveRunning(running);
+              // 文件与实时输入的奈奎斯特不同。进入采集时清掉文件留下的
+              // 频率视口，否则 30–40 kHz 的文件缩放会映射到 44.1 kHz
+              // 实时数据的绘图区之外，只剩一块空白。
+              if (running) setViewRange(null);
+            }}
             onSearch={() => setSearchOpen(true)}
             onOpenPrefs={() => setDialog("prefs")}
             onOpenHelp={() => setDialog("help")}
@@ -1749,8 +1808,8 @@ function InspectorPanel({
           peakPerChannel={display?.peakPerChannel ?? []}
           minDb={minDb}
           maxDb={maxDb}
-          overFullScale={display?.overFullScaleSamples ?? 0}
-          clippingRegions={display?.clippingRegions ?? 0}
+          overFullScale={display ? display.overFullScaleSamples : null}
+          clippingRegions={display ? display.clippingRegions : null}
         />
       </div>
 
@@ -1786,16 +1845,24 @@ function InspectorPanel({
         {/* 数据质量：这些计数为 0 也要显示，否则「有没有检查过」无法区分 */}
         <DataRow
           label="超量程样本"
-          value={(display?.overFullScaleSamples ?? 0).toLocaleString("en-US")}
+          value={
+            display
+              ? display.overFullScaleSamples.toLocaleString("en-US")
+              : "—"
+          }
         />
         <DataRow
           label="平顶片段"
-          value={(display?.clippingRegions ?? 0).toLocaleString("en-US")}
+          value={
+            display ? display.clippingRegions.toLocaleString("en-US") : "—"
+          }
           title="启发式计数，不是模拟削波的证据"
         />
         <DataRow
           label="清理样本"
-          value={(display?.sanitizedSamples ?? 0).toLocaleString("en-US")}
+          value={
+            display ? display.sanitizedSamples.toLocaleString("en-US") : "—"
+          }
           title="NaN / Inf 被替换为 0 的数量"
         />
       </div>

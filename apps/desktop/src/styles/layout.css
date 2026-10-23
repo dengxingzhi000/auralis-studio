@@ -379,6 +379,10 @@
 /* 卡片内可滚动的正文（指标表在窄窗口下会换行变高） */
 .pane-scroll {
   overflow: auto;
+  /* 指标卡的三列是否放得下取决于**中央画布宽度**，不是窗口宽度：
+     两侧栏各占几百像素时，1100px 的窗口只剩 ~520px 给这一栏。
+     用容器查询让列数跟着真实可用宽度走。 */
+  container-type: inline-size;
 }
 
 /* ---- 后台任务队列 ---- */
@@ -388,6 +392,31 @@
   flex-direction: column;
   gap: 4px;
   padding: 6px 0 2px;
+}
+
+.task-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.task-head:hover {
+  background: var(--bg-hover);
+}
+.task-head .chev {
+  display: inline-flex;
+  color: var(--text-disabled);
+  transition: transform 120ms ease;
+}
+.task-head[aria-expanded="true"] .chev {
+  transform: rotate(180deg);
 }
 
 .task-section-label {
@@ -468,7 +497,7 @@ dialog.modal {
 }
 
 dialog.modal::backdrop {
-  background: rgb(0 0 0 / 55%);
+  background: var(--overlay-backdrop);
 }
 
 .modal-card {
@@ -793,7 +822,9 @@ dialog.modal-palette {
   text-align: center;
 }
 
-@media (max-width: 980px) {
+/* 容器查询：按中央画布的实际宽度收起为单列，而不是按窗口宽度。
+   窗口最小 1100px 时 `@media (max-width: 980px)` 永远不会命中。 */
+@container (max-width: 620px) {
   .metrics-grid {
     grid-template-columns: 1fr;
   }
@@ -842,6 +873,12 @@ dialog.modal-palette {
 }
 .viz-canvas canvas {
   display: block;
+}
+/* Shift 拖拽框选频段时的选区带（覆盖层，不触发画布重绘） */
+.viz-drag-band {
+  position: absolute;
+  background: var(--selection-fill);
+  pointer-events: none;
 }
 
 /* 内嵌说明条（图表下方的口径提示，不抢主体） */

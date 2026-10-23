@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import { fitCanvas } from "./canvas-fit";
+import { clampViewRange } from "@/lib/spectrogram-viewport";
 
 export interface PeakInfo {
   frequencyHz: number;
@@ -123,7 +124,9 @@ export function SpectrumView({
     const plotX = r.left + PAD.left;
     const plotW = r.width - PAD.left - PAD.right;
     const nyq = s.sampleRate / 2;
-    const [lo, hi] = s.viewRange ?? [0, nyq];
+    // 视口是**全局共享**的，可能来自另一个采样率的视图（文件 ↔ 实时）。
+    // 不钳位就会把区间外的 bin 映射到负坐标，画出一片空白。
+    const [lo, hi] = clampViewRange(s.viewRange ?? null, nyq) ?? [0, nyq];
     const t = Math.min(1, Math.max(0, (clientX - plotX) / Math.max(1, plotW)));
     return lo + t * (hi - lo);
   }, []);
@@ -133,7 +136,7 @@ export function SpectrumView({
       const el = e.currentTarget;
       const s = stateRef.current;
       const nyq = s.sampleRate / 2;
-      const [lo0, hi0] = s.viewRange ?? [0, nyq];
+      const [lo0, hi0] = clampViewRange(s.viewRange ?? null, nyq) ?? [0, nyq];
       const focus = xToHz(e.clientX, el);
       // ctrl+wheel 或普通 wheel 都做缩放：以光标位置为中心
       const factor = e.deltaY > 0 ? 1.25 : 0.8;
@@ -142,7 +145,11 @@ export function SpectrumView({
       if (lo < 0) lo = 0;
       if (hi > nyq) hi = nyq;
       if (hi - lo < 1) return;
-      onViewRangeChange?.([lo, hi]);
+      // 立刻写回本地视口：同一帧内连续滚轮时 React 还没重渲染，
+      // 下一次事件若仍读 prop 就会用同一个旧区间 —— 连滚四格只生效一格。
+      const next: [number, number] = [lo, hi];
+      stateRef.current.viewRange = next;
+      onViewRangeChange?.(next);
     },
     [xToHz, onViewRangeChange],
   );
@@ -180,7 +187,7 @@ export function SpectrumView({
 
       const s = stateRef.current;
       const nyq = s.sampleRate / 2;
-      const [loHz, hiHz] = s.viewRange ?? [0, nyq];
+      const [loHz, hiHz] = clampViewRange(s.viewRange ?? null, nyq) ?? [0, nyq];
       const spanHz = Math.max(1e-6, hiHz - loHz);
       const hzToX = (hz: number) => plotX + ((hz - loHz) / spanHz) * plotW;
       const dbToY = (db: number) => {
@@ -397,7 +404,8 @@ export function SpectrumView({
     (e: React.MouseEvent<HTMLDivElement>) => {
       const r = e.currentTarget.getBoundingClientRect();
       const nyq = stateRef.current.sampleRate / 2;
-      const [lo, hi] = stateRef.current.viewRange ?? [0, nyq];
+      const [lo, hi] =
+        clampViewRange(stateRef.current.viewRange ?? null, nyq) ?? [0, nyq];
 
       if (dragRef.current && e.shiftKey) {
         // Shift 拖拽 = 平移视口

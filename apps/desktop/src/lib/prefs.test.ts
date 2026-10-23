@@ -69,6 +69,12 @@ describe("parsePrefs", () => {
     expect(parsePrefs({ ...DEFAULT_PREFS, dbRange: 99 })).toBeNull();
   });
 
+  it("拒绝非整数的 dB 量程索引", () => {
+    // 1.5 能通过范围检查，但 DB_RANGES[1.5] 不存在 —— 下拉框会匹配不到选项。
+    expect(parsePrefs({ ...DEFAULT_PREFS, dbRange: 1.5 })).toBeNull();
+    expect(parsePrefs({ ...DEFAULT_PREFS, dbRange: NaN })).toBeNull();
+  });
+
   it("拒绝未知的频谱形态", () => {
     expect(parsePrefs({ ...DEFAULT_PREFS, spectrumMode: "bogus" })).toBeNull();
   });
@@ -161,6 +167,26 @@ describe("清除", () => {
     expect(localStorage.getItem(PREFS_KEY)).toBeNull();
     expect(localStorage.getItem(SESSION_KEY)).not.toBeNull();
     expect(localStorage.getItem(WIDTHS_KEY)).not.toBeNull();
+  });
+
+  it("clearPrefs 删掉全部迁移来源，重置不会被旧键「复活」", () => {
+    // 模拟旧版本用户：两个旧键都在，而且当前还没有新键。
+    localStorage.setItem(
+      LEGACY_DISPLAY_KEY,
+      JSON.stringify({ mode: "line", dbRange: 1, channelLayout: "overlay" }),
+    );
+    localStorage.setItem(
+      LEGACY_VISIBILITY_KEY,
+      JSON.stringify({ left: false, right: false }),
+    );
+
+    clearPrefs();
+    expect(localStorage.getItem(LEGACY_DISPLAY_KEY)).toBeNull();
+    expect(localStorage.getItem(LEGACY_VISIBILITY_KEY)).toBeNull();
+
+    // 关键：紧接着读取必须是默认值，且不能又写回一个新键。
+    expect(readPrefs()).toEqual(DEFAULT_PREFS);
+    expect(localStorage.getItem(PREFS_KEY)).toBeNull();
   });
 
   it("resetLayout 删可见性与宽度，保留偏好与会话", () => {

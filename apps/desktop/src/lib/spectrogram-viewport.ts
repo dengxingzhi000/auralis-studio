@@ -40,6 +40,10 @@ export function clampViewRange(
   nyquistHz: number,
 ): HzRange | null {
   if (range === null) return null;
+  // 非有限或非正的奈奎斯特频率无法定义坐标轴：此时任何区间都不可信。
+  // 不做这个检查的话 `Math.min(NaN, hi)` 会把 NaN 混进返回值，
+  // 下游画出来的是一条空白带，而界面看不出异常。
+  if (!Number.isFinite(nyquistHz) || nyquistHz <= 0) return null;
 
   const [lo, hi] = range;
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
@@ -106,9 +110,13 @@ export function frequencyTicks(
 ): number[] {
   const lo = range === null ? 0 : range[0];
   const hi = range === null ? nyquistHz : range[1];
+  // `count = 0` 时除法会产生 NaN —— 返回单个刻度（区间起点）而不是
+  // 一个画不出坐标的坏值。负数/非整数同理向下取整。
+  const steps = Number.isFinite(count) ? Math.floor(count) : 0;
+  if (steps <= 0) return [lo];
   const ticks: number[] = [];
-  for (let i = 0; i <= count; i++) {
-    ticks.push(lo + ((hi - lo) * i) / count);
+  for (let i = 0; i <= steps; i++) {
+    ticks.push(lo + ((hi - lo) * i) / steps);
   }
   return ticks;
 }

@@ -114,7 +114,9 @@ export function SearchPalette({
           }}
           aria-label="搜索"
           aria-controls="palette-results"
-          aria-activedescendant={filtered[active] ? `palette-${filtered[active]!.id}` : undefined}
+          aria-activedescendant={
+            filtered[active] ? `palette-opt-${active}` : undefined
+          }
         />
         <kbd className="kbd">Esc</kbd>
       </div>
@@ -134,7 +136,10 @@ export function SearchPalette({
                 <button
                   type="button"
                   key={item.id}
-                  id={`palette-${item.id}`}
+                  // DOM id 用**下标**而不是条目 id：条目 id 可能来自文件路径
+                  // （空格、反斜杠、冒号），作为 HTML id 不合法，
+                  // aria-activedescendant 会引用不到。
+                  id={`palette-opt-${index}`}
                   data-index={index}
                   role="option"
                   aria-selected={index === active}

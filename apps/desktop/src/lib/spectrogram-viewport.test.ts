@@ -54,6 +54,13 @@ describe("clampViewRange", () => {
   it("钳位后区间为空时视为未缩放", () => {
     expect(clampViewRange([25000, 30000], 24000)).toBeNull();
   });
+
+  it("奈奎斯特非有限或非正时视为未缩放", () => {
+    // NaN 会让 Math.min/max 把 NaN 混进结果；非正数则没有可用频段。
+    expect(clampViewRange([1000, 2000], NaN)).toBeNull();
+    expect(clampViewRange([1000, 2000], 0)).toBeNull();
+    expect(clampViewRange([1000, 2000], -1)).toBeNull();
+  });
 });
 
 describe("binRangeForView", () => {
@@ -102,5 +109,11 @@ describe("frequencyTicks", () => {
 
   it("缩放后在可见区间内等分", () => {
     expect(frequencyTicks([1000, 2000], 24000, 2)).toEqual([1000, 1500, 2000]);
+  });
+
+  it("count 为 0 时不产生 NaN", () => {
+    expect(frequencyTicks([1000, 2000], 24000, 0)).toEqual([1000]);
+    expect(frequencyTicks(null, 24000, -1)).toEqual([0]);
+    expect(frequencyTicks(null, 24000, NaN)).toEqual([0]);
   });
 });

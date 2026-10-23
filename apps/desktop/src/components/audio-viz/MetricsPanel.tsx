@@ -52,7 +52,10 @@ export function MetricsPanel({
     );
   }
 
-  // 实时采集时电平表显示**当前**读数；其余指标仍属于已打开的文件。
+  // 实时采集时电平表显示**当前**读数，且只显示这条实时读数：
+  // 文件里的逐声道峰值、超量程计数都属于**另一个信号**，套在「实时」
+  // 徽标下会变成一条看似实时、实则冻结的假读数。
+  const isLive = live !== null;
   const peak = live ? live.peakDbfs : (display?.peakDbfs ?? null);
   const rms = live ? live.rmsDbfs : (display?.rmsDbfs ?? null);
 
@@ -67,13 +70,13 @@ export function MetricsPanel({
         <LevelMeter
           peakDbfs={peak}
           rmsDbfs={rms}
-          peakPerChannel={display?.peakPerChannel ?? []}
+          peakPerChannel={isLive ? [] : (display?.peakPerChannel ?? [])}
           minDb={minDb}
           maxDb={maxDb}
-          overFullScale={display?.overFullScaleSamples ?? 0}
-          clippingRegions={display?.clippingRegions ?? 0}
+          overFullScale={isLive ? null : (display?.overFullScaleSamples ?? null)}
+          clippingRegions={isLive ? null : (display?.clippingRegions ?? null)}
         />
-        {display && display.peakPerChannel.length > 1 && (
+        {!isLive && display && display.peakPerChannel.length > 1 && (
           <div className="metrics-sub">
             {display.peakPerChannel.map((p, i) => (
               <DataRow
@@ -110,17 +113,25 @@ export function MetricsPanel({
         <h3 className="metrics-title">数据质量</h3>
         <DataRow
           label="超量程样本"
-          value={(display?.overFullScaleSamples ?? 0).toLocaleString("en-US")}
+          value={
+            display
+              ? display.overFullScaleSamples.toLocaleString("en-US")
+              : "—"
+          }
           title="|x| > 1.0 的样本数"
         />
         <DataRow
           label="平顶片段"
-          value={(display?.clippingRegions ?? 0).toLocaleString("en-US")}
+          value={
+            display ? display.clippingRegions.toLocaleString("en-US") : "—"
+          }
           title="启发式计数，不是模拟削波的证据"
         />
         <DataRow
           label="清理样本"
-          value={(display?.sanitizedSamples ?? 0).toLocaleString("en-US")}
+          value={
+            display ? display.sanitizedSamples.toLocaleString("en-US") : "—"
+          }
           title="NaN / Inf 被替换为 0 的数量"
         />
         <DataRow
@@ -146,6 +157,11 @@ export function MetricsPanel({
         {display?.truncated && (
           <p className="note warn-note metrics-note">
             只分析了文件里实际存在的那一部分。重新获取完整文件可得到覆盖全长的结果。
+          </p>
+        )}
+        {display === null && (
+          <p className="note metrics-note">
+            实时输入只统计电平；文件级数据质量要打开一个文件后才有。
           </p>
         )}
       </section>

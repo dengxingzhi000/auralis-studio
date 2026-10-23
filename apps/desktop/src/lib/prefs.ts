@@ -41,6 +41,18 @@ export const DB_RANGES = [
 const DB_RANGE_MIN = 0;
 const DB_RANGE_MAX = DB_RANGES.length - 1;
 
+/**
+ * 校验 dB 量程索引：必须是**整数**且落在预设范围内。
+ *
+ * 只做范围检查会放过 `1.5`：`DB_RANGES[1.5]` 是 `undefined`，下拉框
+ * 匹配不到任何选项，电平表则静默回落到全量程 —— 用户的选择「消失」了，
+ * 却不会有任何报错。索引必须是预设数组下标的整数。
+ */
+function asDbRangeIndex(value: unknown): number | null {
+  const n = asNumberInRange(value, DB_RANGE_MIN, DB_RANGE_MAX);
+  return n != null && Number.isInteger(n) ? n : null;
+}
+
 /** 波形包络点数的候选值。 */
 export const ENVELOPE_POINTS: readonly number[] = [512, 1024, 2048, 4096];
 
@@ -101,7 +113,7 @@ export function parsePrefs(value: unknown): Prefs | null {
     rec.spectrumMode === "line" || rec.spectrumMode === "area"
       ? rec.spectrumMode
       : null;
-  const dbRange = asNumberInRange(rec.dbRange, DB_RANGE_MIN, DB_RANGE_MAX);
+  const dbRange = asDbRangeIndex(rec.dbRange);
   const channelLayout =
     rec.channelLayout === "lanes" || rec.channelLayout === "overlay"
       ? rec.channelLayout
@@ -149,7 +161,7 @@ function parseLegacyDisplay(value: unknown): LegacyDisplay | null {
   if (typeof value !== "object" || value === null) return null;
   const rec = value as Record<string, unknown>;
   const mode = rec.mode === "line" || rec.mode === "area" ? rec.mode : null;
-  const dbRange = asNumberInRange(rec.dbRange, DB_RANGE_MIN, DB_RANGE_MAX);
+  const dbRange = asDbRangeIndex(rec.dbRange);
   const channelLayout =
     rec.channelLayout === "lanes" || rec.channelLayout === "overlay"
       ? rec.channelLayout
@@ -227,10 +239,16 @@ function removeStoredKey(key: string): void {
  * 重置显示与分析偏好。
  *
  * 只删偏好相关的键；会话记录与面板宽度各归各的，有各自的清除入口。
+ *
+ * **必须把两个迁移来源一起删掉**：迁移刻意不删旧键（不可逆），所以
+ * 旧版本用户的 `LEGACY_VISIBILITY_KEY` 会一直留在存储里。只删新键的话，
+ * 紧接着的 `readPrefs()` 又会从旧键迁移一次并写回新键 —— 表现为
+ * 「重置了但设置还在」，而且刚删掉的键又出现了。
  */
 export function clearPrefs(): void {
   removeStoredKey(PREFS_KEY);
   removeStoredKey(LEGACY_DISPLAY_KEY);
+  removeStoredKey(LEGACY_VISIBILITY_KEY);
 }
 
 /** 重置面板布局（侧栏可见性与宽度）。 */
