@@ -9,18 +9,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { matchItems, type SearchableItem } from "@/lib/search";
+
 import { IconSearch } from "./icons";
 import { Modal } from "./primitives";
 
-export interface PaletteItem {
+export interface PaletteItem extends SearchableItem {
   id: string;
-  /** 分组标题，例如「文件」「当前峰值」「操作」 */
-  group: string;
-  label: string;
-  /** 右侧说明或数值 */
-  hint?: string;
-  /** 额外的可搜索文本（不显示） */
-  keywords?: string;
   run: () => void;
 }
 
@@ -51,17 +46,10 @@ export function SearchPalette({
     return () => window.cancelAnimationFrame(id);
   }, [open]);
 
-  const filtered = useMemo(() => {
-    const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const matched = terms.length
-      ? items.filter((item) => {
-          const haystack =
-            `${item.group} ${item.label} ${item.hint ?? ""} ${item.keywords ?? ""}`.toLowerCase();
-          return terms.every((term) => haystack.includes(term));
-        })
-      : items;
-    return matched.slice(0, 60);
-  }, [items, query]);
+  const filtered = useMemo(
+    () => matchItems(items, query),
+    [items, query],
+  );
 
   // 结果变短时钳住选中项，避免 Enter 落到越界位置。
   useEffect(() => {

@@ -54,6 +54,7 @@ import {
   readStoredJson,
   writeStoredJson,
 } from "@/lib/persist";
+import { SearchPalette, type PaletteItem } from "@/components/ui/SearchPalette";
 import {
   Button,
   Checkbox,
@@ -250,6 +251,8 @@ export default function App() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   /** 实时采集是否正在运行（用于导航项上的状态标记） */
   const [liveRunning, setLiveRunning] = useState(false);
+  /** 全局搜索面板是否打开 */
+  const [searchOpen, setSearchOpen] = useState(false);
 
   useEffect(() => {
     writeStoredJson(VISIBILITY_KEY, { left: showLeft, right: showRight });
@@ -534,12 +537,40 @@ export default function App() {
     }
   }, [selected]);
 
-  // ---- 键盘：Ctrl/Cmd+O 打开，Esc 取消，Ctrl/Cmd+R 重试 ----
+  /**
+   * 把频率视口对准某个检测到的峰值。
+   *
+   * 半宽取 `max(250 Hz, 6 × 声谱图 bin 宽)`：用绝对 Hz 而不是「几个
+   * bin」，因为 bin 宽随采样率与 bin 数变化。6 个 bin 保证放大后声谱图
+   * 里仍有若干行可看 —— 只剩一两行的话，那条带子说明不了任何问题。
+   *
+   * 这里只做**坐标换算**（Hz ↔ 视口），不做任何音频计算。
+   */
+  const focusPeak = useCallback(
+    (p: PeakInfo) => {
+      const nyq = (display?.sampleRate ?? req.sampleRate) / 2;
+      const binHz = nyq / Math.max(1, display?.spectrogramBins ?? 512);
+      const half = Math.max(250, 6 * binHz);
+      const center = p.binFrequencyHz > 0 ? p.binFrequencyHz : p.frequencyHz;
+      const lo = Math.max(0, center - half);
+      const hi = Math.min(nyq, center + half);
+      if (hi - lo < 1) return;
+      setViewRange([lo, hi]);
+      setCursorHz(p.frequencyHz);
+      scrollToPane("pane-spectrum");
+    },
+    [display, req.sampleRate],
+  );
+
+  // ---- 键盘：Ctrl/Cmd+O 打开，Esc 取消，Ctrl/Cmd+R 重试，Ctrl/Cmd+K 搜索 ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
-      if (mod && key === "o") {
+      if (mod && (key === "k" || key === "f")) {
+        e.preventDefault();
+        setSearchOpen(true);
+      } else if (mod && key === "o") {
         e.preventDefault();
         void onOpenFile();
       } else if (e.key === "Escape" && activeTask) {
@@ -653,6 +684,95 @@ export default function App() {
       setBusy(false);
     }
   }, [req]);
+
+  /**
+   * 搜索面板的条目。
+   *
+   * 三组：文件（重新分析）、峰值（把频率视口对准它）、操作。
+   * 全部是**已算好的东西**或纯界面动作，不触发新的音频计算。
+   */
+  const paletteItems = useMemo<PaletteItem[]>(() => {
+    const items: PaletteItem[] = [];
+
+    for (const f of files) {
+      items.push({
+        id: `file:${f.path}`,
+        group: "文件",
+        label: f.fileName,
+        hint: `${f.containerName} · ${f.sampleRate.toLocaleString("en-US")} Hz`,
+        keywords: f.path,
+        run: () => void analyzePath(f.path),
+      });
+    }
+
+    for (const [i, p] of (display?.peaks ?? []).entries()) {
+      items.push({
+        id: `peak:${i}`,
+        group: "峰值",
+        label: `${fmtHz(p.frequencyHz)} Hz`,
+        hint: `${p.amplitudeDbfs.toFixed(2)} dBFS${p.estimated ? "（估算）" : ""}`,
+        keywords: "peak 峰值 频率 frequency",
+        run: () => focusPeak(p),
+      });
+    }
+
+    items.push(
+      {
+        id: "action:open",
+        group: "操作",
+        label: "打开文件…",
+        hint: "Ctrl+O",
+        keywords: "open 打开 文件",
+        run: () => void onOpenFile(),
+      },
+      {
+        id: "action:export",
+        group: "操作",
+        label: "导出分析结果…",
+        hint: "CSV / JSON",
+        keywords: "export 导出 保存",
+        run: () => void onExport(),
+      },
+      {
+        id: "action:synthetic",
+        group: "操作",
+        label: "生成并分析合成信号",
+        keywords: "synthetic 合成 正弦",
+        run: () => void run(),
+      },
+      {
+        id: "action:reset-zoom",
+        group: "操作",
+        label: "复位频率缩放",
+        hint: "全带宽",
+        keywords: "reset zoom 复位 缩放",
+        run: () => setViewRange(null),
+      },
+      {
+        id: "action:toggle-left",
+        group: "操作",
+        label: "显示 / 隐藏资源栏",
+        keywords: "toggle 资源栏 侧栏 panel",
+        run: () => setShowLeft((v) => !v),
+      },
+      {
+        id: "action:toggle-right",
+        group: "操作",
+        label: "显示 / 隐藏检查器",
+        keywords: "toggle 检查器 侧栏 panel",
+        run: () => setShowRight((v) => !v),
+      },
+    );
+
+    return items;
+  }, [
+    files,
+    display?.peaks,
+    focusPeak,
+    onOpenFile,
+    onExport,
+    run,
+  ]);
 
   /**
    * 当前用于画频率轴的采样率。
@@ -861,6 +981,7 @@ export default function App() {
             }}
             liveRunning={liveRunning}
             onLiveStatusChange={setLiveRunning}
+            onSearch={() => setSearchOpen(true)}
             tasks={tasks}
             history={history}
             onCancelTask={onCancelQueueTask}
@@ -1213,6 +1334,13 @@ export default function App() {
           )
         )}
       </footer>
+
+      {/* ---- 全局搜索 ---- */}
+      <SearchPalette
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        items={paletteItems}
+      />
     </div>
   );
 }
@@ -1234,6 +1362,7 @@ function ResourcePanel({
   onCancelTask: onCancelQueueTask,
   liveRunning,
   onLiveStatusChange,
+  onSearch,
 }: {
   files: FileInfo[];
   selected: FileInfo | null;
@@ -1258,6 +1387,8 @@ function ResourcePanel({
   liveRunning: boolean;
   /** 实时采集状态变化回调 */
   onLiveStatusChange: (running: boolean) => void;
+  /** 打开全局搜索 */
+  onSearch: () => void;
 }) {
   return (
     <>
@@ -1393,7 +1524,11 @@ function ResourcePanel({
 
       <div className="sidebar-foot">
         <ul className="nav">
-          <NavItem icon={<IconSearch />} disabled tag="M5">
+          <NavItem
+            icon={<IconSearch />}
+            onClick={onSearch}
+            title="搜索文件、峰值或操作（Ctrl+K）"
+          >
             搜索
           </NavItem>
           <NavItem icon={<IconHelp />} disabled>
