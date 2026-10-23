@@ -951,3 +951,52 @@ Steinberg ASIO SDK**（通过 `CPAL_ASIO_DIR` 指定），SDK 不随本仓库分
 - 合成信号路径未改：它本来就是纯正弦，单帧即可。
 - 顺带修正：峰值改为从合并后的谱检出，此前界面上的峰值标记
   与曲线可能对不上。
+
+## ADR-023：FLAC 用真实样本验证，纳入「已验证」容器
+
+状态：Accepted（2026-10-23）。
+
+### 背景
+
+用户问「为什么 FLAC 标着未验证」。
+
+机制：`auralis_codec::verified_containers()` 是 UI 的**硬约束**——
+只有列在里面的容器才允许在界面上宣称支持，界面上的黄角标就是这个列表的
+镜像。它此前只有 `Wav`。
+
+这不是「FLAC 解不了」：symphonia 的 default features 含 flac，
+用户的 FLAC 一直能正常解码分析。缺的是 `TEST_PLAN.md` §3 要求的
+**真实样本测试**——仓库里没有 FLAC 样本，就没有依据宣称支持。
+
+### 决策
+
+给 FLAC 补上真实样本验证，纳入 `verified_containers()`。
+
+1. **样本入库**：`crates/auralis-codec/tests/fixtures/tone-1k-mono.flac`
+   与 `tone-stereo.flac`。由 `flacenc`（**仅 dev-dependency**，不进产物）
+   生成，生成器是一条 `--ignored` 的测试，样本需要更新时手动跑一次并提交。
+2. **五条测试**：探测（容器/采样率/声道/时长）、解码重建（数值与 WAV
+   样本逐点一致，FLAC 是无损的）、立体声通道隔离、样本与生成器一致、
+   垃圾/空文件不 panic。
+3. `verified_containers()` 改为 `[Wav, Flac]`；crate 文档、用户手册、
+   实施计划、PRD 的格式矩阵同步。
+
+### 顺带修掉的解码器 bug
+
+写样本时发现：**44,100 帧的文件解出 45,056 帧**。
+
+原因是 FLAC 的 STREAMINFO 声明的总帧数才是权威值，而有些编码器把最后一帧
+**补零**到整个块大小（flacenc 的固定块编码就是如此）。解码器照单全收，
+多出来的几百个静音样本会让 RMS 与峰值算错。
+
+现在按声明值截断（`BlockDecoder` 记录 `declared_frames`）。
+
+**这个 bug 正好说明了为什么要真实样本测试**：没有对照的样本时，
+这种偏差根本不会有人发现——文件能打开、曲线能画出来，只是数值悄悄错了。
+
+### 后果
+
+- 用户的 FLAC 不再显示「未验证」角标，界面按已验证格式对待。
+- 仓库多了一份 dev-dependency（`flacenc`，MIT/Apache）。它不进产物，
+  因此也不进随包分发的许可证清单（该清单只收 normal 依赖，与既有约定一致）。
+- MP3 / AIFF / OGG 仍是「未验证」：同样缺样本，同样不宣称。

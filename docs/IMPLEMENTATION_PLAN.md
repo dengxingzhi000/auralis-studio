@@ -76,12 +76,12 @@
 | 容器 | 编译进产物 | **已用真实样本验证** |
 |---|---|---|
 | WAV  | 是 | **是**（13 项集成测试） |
-| FLAC | 是 | 否 |
+| FLAC | 是 | **是**（5 项集成测试，样本在 `crates/auralis-codec/tests/fixtures/`） |
 | MP3  | 是（显式开 feature） | 否 |
 | AIFF | 是（显式开 feature） | 否 |
 
 `auralis_codec::verified_containers()` 是 UI 的硬约束：
-只有 WAV 会被标记为「已验证」，其余格式在界面上显示「未验证」角标。
+只有 WAV 与 FLAC 会被标记为「已验证」，其余格式在界面上显示「未验证」角标。
 依据 `TEST_PLAN.md` §3「不支持的格式必须明确报错，不得崩溃」与
 `AGENTS.md`「不宣称未经验证的格式」。
 
