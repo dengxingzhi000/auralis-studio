@@ -248,6 +248,8 @@ export default function App() {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   /** 最近完成的文件分析；Rust 侧任务结束即注销，结局只有发起方知道 */
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  /** 实时采集是否正在运行（用于导航项上的状态标记） */
+  const [liveRunning, setLiveRunning] = useState(false);
 
   useEffect(() => {
     writeStoredJson(VISIBILITY_KEY, { left: showLeft, right: showRight });
@@ -857,6 +859,8 @@ export default function App() {
               setLivePeak(snap ? snap.peakDbfs : null);
               setLiveRms(snap ? snap.rmsDbfs : null);
             }}
+            liveRunning={liveRunning}
+            onLiveStatusChange={setLiveRunning}
             tasks={tasks}
             history={history}
             onCancelTask={onCancelQueueTask}
@@ -1228,6 +1232,8 @@ function ResourcePanel({
   tasks,
   history,
   onCancelTask: onCancelQueueTask,
+  liveRunning,
+  onLiveStatusChange,
 }: {
   files: FileInfo[];
   selected: FileInfo | null;
@@ -1248,6 +1254,10 @@ function ResourcePanel({
   history: HistoryEntry[];
   /** 取消一个运行中的任务 */
   onCancelTask: (taskId: number) => void;
+  /** 实时采集是否在运行 */
+  liveRunning: boolean;
+  /** 实时采集状态变化回调 */
+  onLiveStatusChange: (running: boolean) => void;
 }) {
   return (
     <>
@@ -1335,7 +1345,12 @@ function ResourcePanel({
           >
             后台任务队列
           </NavItem>
-          <NavItem icon={<IconDevice />} disabled tag="M4">
+          <NavItem
+            icon={<IconDevice />}
+            onClick={() => scrollToPane("realtime-panel")}
+            title="枚举输入设备并启动实时采集"
+            tag={liveRunning ? "采集中" : undefined}
+          >
             实时输入
           </NavItem>
         </NavGroup>
@@ -1343,7 +1358,10 @@ function ResourcePanel({
         {/* M4：实时采集。放在导航之外，因为它是一个真正的控制面板，
             不是切换视图的入口。 */}
         <div className="nav-divider" />
-        <RealtimePanel onSnapshot={onLiveSnapshot} />
+        <RealtimePanel
+          onSnapshot={onLiveSnapshot}
+          onStatusChange={onLiveStatusChange}
+        />
         {livePeak !== null && (
           <LevelMeter
             peakDbfs={livePeak}

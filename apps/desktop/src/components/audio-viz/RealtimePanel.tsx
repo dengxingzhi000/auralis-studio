@@ -38,12 +38,19 @@ export interface RealtimePanelProps {
    * 传整个对象而不是 5 个位置参数：少一次改签名就多一处漏改。
    */
   onSnapshot?: (snap: RealtimeSnapshot | null) => void;
+  /**
+   * 采集状态变化回调；`true` = 采集中。
+   *
+   * 导航项上的「采集中」标记靠它。**不能**用「有没有快照」来代替：
+   * 采集中但输入静音时快照是空的，那样标记会一闪一闪地消失。
+   */
+  onStatusChange?: (running: boolean) => void;
 }
 
 /** 轮询周期。30 Hz 与显示器刷新和高频通道的占位目标一致。 */
 const POLL_MS = 33;
 
-export function RealtimePanel({ onSnapshot }: RealtimePanelProps) {
+export function RealtimePanel({ onSnapshot, onStatusChange }: RealtimePanelProps) {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [selected, setSelected] = useState("");
@@ -58,6 +65,18 @@ export function RealtimePanel({ onSnapshot }: RealtimePanelProps) {
   useEffect(() => {
     snapshotRef.current = onSnapshot;
   }, [onSnapshot]);
+
+  const statusRef = useRef(onStatusChange);
+  useEffect(() => {
+    statusRef.current = onStatusChange;
+  }, [onStatusChange]);
+
+  // 采集状态对外播报。只在「运行中与否」变化时触发，避免每 33 ms
+  // 的轮询都把父组件叫醒一次。
+  const running = status?.running === true;
+  useEffect(() => {
+    statusRef.current?.(running);
+  }, [running]);
 
   // 挂载：枚举设备，并接手可能已经在跑的会话（侧栏隐藏再显示不该中断采集）。
   useEffect(() => {
@@ -83,8 +102,6 @@ export function RealtimePanel({ onSnapshot }: RealtimePanelProps) {
       alive = false;
     };
   }, []);
-
-  const running = status?.running === true;
 
   // 只在采集中轮询。依赖里只有 `running`，定时器不会因为重渲染而重建。
   useEffect(() => {
