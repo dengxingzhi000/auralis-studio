@@ -381,6 +381,80 @@
   overflow: auto;
 }
 
+/* ---- 后台任务队列 ---- */
+
+.task-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0 2px;
+}
+
+.task-section-label {
+  font-size: var(--text-xs);
+  color: var(--text-disabled);
+  letter-spacing: 0.04em;
+  padding: 2px 2px 0;
+}
+
+.task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  background: var(--bg-note);
+}
+
+.task-kind {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 16px;
+}
+
+.task-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.task-elapsed {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+/* 结果徽标：颜色 + 文字，不靠颜色单独表达状态 */
+.task-outcome {
+  font-size: var(--text-xs);
+  line-height: 16px;
+}
+.task-outcome.ok {
+  color: var(--signal-positive);
+}
+.task-outcome.warn {
+  color: var(--signal-warning);
+}
+.task-outcome.bad {
+  color: var(--signal-critical);
+}
+
 /* ---- 指标视图 ---- */
 
 .metrics-grid {

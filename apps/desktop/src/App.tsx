@@ -25,6 +25,7 @@ import {
   exportAnalysis,
   fetchAppInfo,
   fetchSpectrogramView,
+  fetchTaskQueue,
   isAudioPath,
   pickAudioFile,
   pickExportDestination,
@@ -36,13 +37,16 @@ import type {
   PeakInfo,
   RealtimeSnapshot,
   SyntheticRequest,
+  TaskInfo,
 } from "@/lib/contracts";
 import type { DisplayData } from "@/lib/display";
+import { pushHistory, type HistoryEntry } from "@/lib/task-history";
 import { LevelMeter } from "@/components/audio-viz/LevelMeter";
 import { MetricsPanel } from "@/components/audio-viz/MetricsPanel";
 import { RealtimePanel } from "@/components/audio-viz/RealtimePanel";
 import { SpectrumView } from "@/components/audio-viz/SpectrumView";
 import { SpectrogramView } from "@/components/audio-viz/SpectrogramView";
+import { TaskQueuePanel } from "@/components/audio-viz/TaskQueuePanel";
 import { WaveformView } from "@/components/audio-viz/WaveformView";
 import {
   asBoolean,
@@ -239,6 +243,12 @@ export default function App() {
   const [liveStepHz, setLiveStepHz] = useState(1);
   const [liveSampleRate, setLiveSampleRate] = useState<number | null>(null);
 
+  // ---- 后台任务队列（M3）----
+  /** 运行中的任务；来自 Rust 的任务注册表 */
+  const [tasks, setTasks] = useState<TaskInfo[]>([]);
+  /** 最近完成的文件分析；Rust 侧任务结束即注销，结局只有发起方知道 */
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+
   useEffect(() => {
     writeStoredJson(VISIBILITY_KEY, { left: showLeft, right: showRight });
   }, [showLeft, showRight]);
@@ -257,11 +267,67 @@ export default function App() {
       .catch((e) => setError(describeError(e, "无法连接 Rust 后端")));
   }, []);
 
+  /**
+   * 轮询后台任务队列。
+   *
+   * `task_queue` 是**快命令**：在 RPC 读取线程里就地执行，只读一张
+   * 哈希表，不会排在耗时的文件分析后面。500 ms 一次，开销可忽略。
+   *
+   * 失败时静默忽略：拿不到队列不代表分析失败，不该因此弹错误条。
+   */
+  useEffect(() => {
+    let alive = true;
+    const tick = () => {
+      fetchTaskQueue()
+        .then((t) => {
+          if (alive) setTasks(t);
+        })
+        .catch(() => undefined);
+    };
+    tick();
+    const id = window.setInterval(tick, 500);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
   /** 取下一个任务号。毫秒时间戳 ×1000 + 序号，避开后端 0..N 的分配区间。 */
   const nextTaskId = (): number => {
     taskSeq.current += 1;
     return Date.now() * 1000 + taskSeq.current;
   };
+
+  /**
+   * 把一次文件分析的结局记进「最近完成」。
+   *
+   * Rust 侧的任务注册表只暴露**运行中**的任务（结束即注销），所以
+   * 「完成 / 已取消 / 失败」这个结局只有发起方知道 —— 这里就是那个
+   * 发起方。
+   *
+   * 只收文件分析：声谱图视口请求在自动平移时会连发，进历史会把
+   * 用户真正关心的分析挤掉。
+   */
+  const recordAnalysis = useCallback(
+    (
+      taskId: number,
+      label: string,
+      outcome: "succeeded" | "cancelled" | "failed",
+      elapsedMs: number,
+    ) => {
+      setHistory((h) =>
+        pushHistory(h, {
+          id: `analyze:${taskId}`,
+          kind: "analyze",
+          label,
+          outcome,
+          elapsedMs,
+          endedAt: Date.now(),
+        }),
+      );
+    },
+    [],
+  );
 
   /**
    * 分析一个已知路径。文件选择器与拖放都走这里，保证两条入口行为一致。
@@ -283,9 +349,19 @@ export default function App() {
 
       // 取消不是失败：保留上一次的数据，只在状态栏说明
       if (a.outcome === "cancelled") {
+        recordAnalysis(id, fi.fileName, "cancelled", a.elapsedMs);
         setNotice(`已取消分析：${fi.fileName}`);
         return;
       }
+
+      recordAnalysis(
+        id,
+        fi.fileName,
+        // Rust 的 outcome 还有 "panicked"（任务级 panic 隔离），
+        // 对用户来说同样是「没成功」。
+        a.outcome === "succeeded" ? "succeeded" : "failed",
+        a.__elapsedMeasuredMs,
+      );
 
       setDisplay({
         db: a.spectrumBins > 0 ? a.spectrumDb : null,
@@ -343,12 +419,13 @@ export default function App() {
         setNotice(`已恢复上次打开的文件：${fi.fileName}`);
       }
     } catch (e) {
+      recordAnalysis(id, fileNameOf(path), "failed", 0);
       setError(describeError(e, "打开文件失败"));
     } finally {
       setActiveTask(null);
       setBusy(false);
     }
-  }, []);
+  }, [recordAnalysis]);
 
   /**
    * 启动入口：
@@ -406,6 +483,22 @@ export default function App() {
     const path = lastPathRef.current;
     if (path) void analyzePath(path);
   }, [analyzePath]);
+
+  /**
+   * 取消任务队列里的一个任务。
+   *
+   * 「已请求取消」不等于「已取消」：真正的结局要等那个任务的 promise
+   * 结算。所以这里只说明请求已发出，状态由「最近完成」里的记录给出。
+   */
+  const onCancelQueueTask = useCallback(async (taskId: number) => {
+    setError(null);
+    try {
+      const found = await cancelTask(taskId);
+      setNotice(found ? "已请求取消任务" : "任务已经结束");
+    } catch (e) {
+      setError(describeError(e, "取消失败"));
+    }
+  }, []);
 
   /**
    * 导出当前文件的分析结果。
@@ -764,6 +857,9 @@ export default function App() {
               setLivePeak(snap ? snap.peakDbfs : null);
               setLiveRms(snap ? snap.rmsDbfs : null);
             }}
+            tasks={tasks}
+            history={history}
+            onCancelTask={onCancelQueueTask}
           />
         }
         center={
@@ -1129,6 +1225,9 @@ function ResourcePanel({
   livePeak,
   liveRms,
   onLiveSnapshot,
+  tasks,
+  history,
+  onCancelTask: onCancelQueueTask,
 }: {
   files: FileInfo[];
   selected: FileInfo | null;
@@ -1143,6 +1242,12 @@ function ResourcePanel({
   liveRms: number | null;
   /** 实时快照回调（频谱 / 电平） */
   onLiveSnapshot: (snap: RealtimeSnapshot | null) => void;
+  /** 运行中的后台任务 */
+  tasks: TaskInfo[];
+  /** 最近完成的文件分析 */
+  history: HistoryEntry[];
+  /** 取消一个运行中的任务 */
+  onCancelTask: (taskId: number) => void;
 }) {
   return (
     <>
@@ -1194,13 +1299,25 @@ function ResourcePanel({
         </NavGroup>
 
         <NavGroup label="分析视图">
-          <NavItem icon={<IconWaveform />} active>
+          <NavItem
+            icon={<IconWaveform />}
+            active
+            onClick={() => scrollToPane("pane-waveform")}
+          >
             波形
           </NavItem>
-          <NavItem icon={<IconSpectrum />} active>
+          <NavItem
+            icon={<IconSpectrum />}
+            active
+            onClick={() => scrollToPane("pane-spectrum")}
+          >
             频谱
           </NavItem>
-          <NavItem icon={<IconSpectrogram />} disabled tag="M3">
+          <NavItem
+            icon={<IconSpectrogram />}
+            onClick={() => scrollToPane("pane-spectrogram")}
+            title="声谱图：Shift + 滚轮缩放频率，Shift + 拖拽框选频段"
+          >
             声谱图缩放
           </NavItem>
           <NavItem
@@ -1210,7 +1327,12 @@ function ResourcePanel({
           >
             电平表 / 指标
           </NavItem>
-          <NavItem icon={<IconTasks />} disabled tag="M3">
+          <NavItem
+            icon={<IconTasks />}
+            onClick={() => scrollToPane("task-queue-panel")}
+            title="运行中的任务与最近完成的分析"
+            tag={tasks.length > 0 ? String(tasks.length) : undefined}
+          >
             后台任务队列
           </NavItem>
           <NavItem icon={<IconDevice />} disabled tag="M4">
@@ -1233,6 +1355,16 @@ function ResourcePanel({
             clippingRegions={0}
           />
         )}
+
+        {/* M3：后台任务队列。与实时面板一样是控制面板，不是视图入口。 */}
+        <div className="nav-divider" />
+        <div id="task-queue-panel">
+          <TaskQueuePanel
+            running={tasks}
+            history={history}
+            onCancel={onCancelQueueTask}
+          />
+        </div>
 
         <NavGroup label="工程">
           <NavItem icon={<IconSettings />} disabled tag="M5">
@@ -1582,6 +1714,16 @@ function FftSizeField({
 }
 
 /* ---------------------------------------------------------------- 工具 */
+
+/**
+ * 取路径的文件名部分；没有分隔符时原样返回。
+ *
+ * 只用于显示标签，不是解析路径 —— 真正的路径处理由 Rust 侧负责。
+ */
+function fileNameOf(path: string): string {
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return cut >= 0 ? path.slice(cut + 1) : path;
+}
 
 /** 频率显示：12000 -> "12.0k" */
 function fmtHz(hz: number): string {
