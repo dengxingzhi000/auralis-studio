@@ -267,6 +267,45 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Fixed
 
+- **The realtime recycle pool could reallocate on every callback on
+  multi-channel devices.** The pool was preheated with `frames * 4` samples,
+  which quietly assumes at most four channels. A six- or eight-channel
+  interface delivers more samples than that, so `extend_from_slice` had to
+  grow the buffer — inside the audio callback, which `AGENTS.md` forbids.
+  The capacity now follows the resolved channel count, and `resolve_format`'s
+  fallback (which can turn a 2-channel request into an 8-channel stream)
+  no longer turns a steady state into a per-callback allocation.
+- **The ring buffer's capacity was counted in items but named in frames.**
+  `SampleRing::new` took a `capacity_frames` argument that was really the
+  number of *items* the queue holds. With 256 frames per callback buffer,
+  "4096 frames" actually buffered 1 048 576 frames — 21.8 s at 48 kHz, not
+  85 ms. Anyone sizing the ring from the name would have been off by three
+  orders of magnitude. The parameter is now `capacity_items`, and
+  `capacity_frames()` returns the real frame capacity.
+- **The ring buffer's fill ratio was inverted.** It was computed as
+  *frames consumed* over capacity, so the more the consumer drained the
+  buffer, the fuller it looked — and after a couple of seconds of normal
+  operation the reading sat at 1.0 permanently. It now reports actual
+  occupancy (pushed − popped − evicted) over the real capacity, and the
+  capacity can no longer be passed in wrong, because the ring knows it.
+- **The default peak-picking config silently filtered frame-level peaks.**
+  `PeakPickConfig`'s documentation said the default "keeps the old
+  behaviour (no prominence / dynamic-range filtering)", but the default
+  `dynamic_range_db` was 120 — which *is* a filter: any peak more than
+  120 dB below the loudest one was dropped. `detect_peaks` is the entry
+  point for the frame-level paths (STFT, live capture, synthetic analysis),
+  so their peak lists quietly changed. The default is now "no gate"
+  (infinity), which is what the documentation always claimed; callers that
+  want a gate have to pass one explicitly, as the file-spectrum panel does.
+- **The frontend architecture guard was a blacklist that `Math.log` walked
+  straight through.** `scripts/check-boundaries.ps1` rejected
+  `Math.log10` and `Math.log2` — but a dB conversion only needs
+  `Math.log`, which was allowed, so the guard gave false assurance about
+  the rule it exists to enforce. It is now a whitelist: the shipped renderer
+  and the Electron main process may only use plain geometry and rounding
+  (`abs`, `ceil`, `floor`, `max`, `min`, `round`, `sign`, `PI`). The guard
+  also self-tests, so a rule that stops matching fails loudly instead of
+  silently passing everything.
 - **The realtime ring buffer's `popped_frames` counter could wrap to
   `u64::MAX`.** The `DropOldest` policy decremented a counter that had never
   been incremented for the evicted item. Evictions are now counted separately

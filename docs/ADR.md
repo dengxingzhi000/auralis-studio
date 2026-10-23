@@ -123,16 +123,40 @@ UI、设备 API、文件系统或数据库。这类约束靠自觉必然衰减�
 
 命中即退出码 1。该脚本同时接入 CI 的 `check` job。
 
+### 前端一侧：白名单，不是黑名单（2026-10-23 修正）
+
+同一脚本还守住 ADR-018 规则 1「React 不得参与音频计算」。早先的实现是
+**关键词黑名单**（`Math.log10`、`Math.log2`、`fft(` …），能挡住已知的坏味道，
+却挡不住换一个拼写 —— dB 换算只要把 `Math.log10` 写成 `Math.log` 就绕过去了。
+
+现在改为**白名单**：前端只允许使用纯几何/取整类的 `Math` 方法
+（`abs`、`ceil`、`floor`、`max`、`min`、`round`、`sign`、`PI`），其余一律拒绝。
+`Math.log` 尤其重要：dB = 20·log₁₀(x) 就差这一步，而它恰恰是黑名单漏掉的那一个。
+
+扫描范围是**出货代码**：`apps/desktop/src`（渲染进程）与
+`apps/desktop/electron`（主进程）。`apps/desktop/dev` **不扫** ——
+那里放的是渲染自检页，它按设计必须在 Rust 后端还没接上时也能把三块画布画满
+（换容器时做 A/B 对照用），而且它不进生产构建（Vite 只构建 `index.html`）。
+这个例外是显式的，不是遗漏。
+
 ### 验证
 
-已做正反测试：注入 `fn boundary_canary() -> egui::Color32`，以及在
-`auralis-dsp/Cargo.toml` 增加 `egui = { workspace = true }`，两次均被捕获并返回 1；
-撤销后返回 0。
+守卫本身也要能验证。脚本内含一段**自测**：用几段合成代码正反各测一次
+（`Math.log` / `Math.pow` / `Math.sqrt` / `Math.sin` / `new Float64Array` / `fft(`
+必须被拦下；`Math.max` / `Math.round` / `Math.abs` / `Math.PI` /
+带 `://` 的 URL 必须放行）。自测不过，脚本直接退出 1。
+
+理由：一个「永远通过」的守卫比没有守卫更危险——规则改坏了没人会发现。
+
+脚本之外还做过端到端反向验证：在临时工作区里分别注入前端 `Math.log`、
+主进程 `Math.pow`、`auralis-dsp` 里的 `std::fs`、`auralis-core` 声明 `cpal`，
+四次均被捕获并返回 1；注释里的 `Math.log` 与字符串里的 `://` 不误报。
 
 ### 后果
 
 边界从「约定」变成「可执行断言」。代价是脚本本身需要维护，且新增纯 crate 时
-需要把名字加进 `$pureCrates`。
+需要把名字加进 `$pureCrates`；前端新增一个 `Math` 方法也要往白名单里加，
+这是一次**有意识的**决定，而不是随手放行。
 
 ## ADR-009：release profile 刻意不使用 `panic = "abort"`
 
