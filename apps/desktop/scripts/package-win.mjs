@@ -85,6 +85,9 @@ run(process.execPath, [path.join(appDir, "scripts", "build-electron.mjs")]);
 
 // 6) electron-builder（不会自动签名）
 //    - Electron 运行时直接使用 node_modules/electron/dist，不再重复下载；
+//    - `--publish never`：本脚本只产出安装包，绝不推送 GitHub Release。
+//      不加这个参数时 electron-builder 会按 package.json 的 repository
+//      推断 provider，并在 tag 构建或 CI 上真的尝试上传。
 //    - NSIS / winCodeSign 等工具默认从 GitHub 下载，在本项目的网络环境下
 //      不可靠，默认走 npmmirror；可用环境变量覆盖。
 const builderCli = requireFile(
@@ -98,6 +101,8 @@ run(
     "--win",
     "nsis",
     "--x64",
+    "--publish",
+    "never",
     `--config.directories.output=${outputDir}`,
   ],
   {

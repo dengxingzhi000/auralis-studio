@@ -70,6 +70,16 @@ cargo test -p auralis-desktop ipc --locked -- --nocapture
 cd apps/desktop && npm run typecheck
 ```
 
+> [!IMPORTANT]
+> **Adding a dependency that ships an install script will fail `npm ci`.**
+> `apps/desktop/.npmrc` sets `strict-allow-scripts=true`, so an unreviewed
+> `preinstall` / `install` / `postinstall` is a hard error rather than a warning.
+> Run `npm install-scripts ls`, read the script, then
+> `npm install-scripts approve <pkg>` to record the decision in
+> `package.json#allowScripts`. Entries are pinned to exact versions, so a
+> dependency bump requires re-approval. See
+> [docs/DEV_ENVIRONMENT.md §10](./docs/DEV_ENVIRONMENT.md#10-npm-依赖的-install-脚本allowscripts).
+
 > [!NOTE]
 > **`check-oracle.ps1` needs a release build first.** It shells out to
 > `target\release\auralis-studio.exe --dump-reference`. Run

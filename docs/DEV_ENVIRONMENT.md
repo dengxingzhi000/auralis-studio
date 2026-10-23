@@ -287,3 +287,71 @@ Write-Output $p.ExitCode    # 空！尽管程序本身 exit 0
 2. 运行一次 `cargo build`，rustup 会自动装新工具链；
 3. 重跑全部测试 —— LLVM 版本变化可能引起浮点结果末位差异；
 4. 更新 `docs/DEV_ENVIRONMENT.md` 的版本记录与 `docs/ADR.md`（若涉及）。
+
+## 10. npm 依赖的 install 脚本（allowScripts）
+
+### 10.1 npm 11 的真实行为：只警告，不拦截
+
+npm 11.19.1 对「未审阅的 install 脚本」默认**只输出 `npm warn`，脚本照常执行**。
+实测（2026-10-23，一个本地 `file:` 依赖带 `install` 脚本）：
+
+| 命令 | 结果 |
+|---|---|
+| `npm install`（无 allowScripts） | 警告一行，**脚本执行**（标记文件被写出） |
+| `npm ci`（无 allowScripts） | 同上，**脚本执行** |
+| `npm ci --strict-allow-scripts` | `ESTRICTALLOWSCRIPTS`，exit 1，**脚本未执行** |
+
+因此「默认拦截」是不成立的：仅靠警告，一个新传入的 `postinstall`
+可以在无人察觉时执行。本项目用下面的组合把它变成硬约束：
+
+- `apps/desktop/.npmrc`：`strict-allow-scripts=true`
+- `apps/desktop/package.json` 的 `allowScripts`：审阅通过的依赖清单
+
+### 10.2 新增依赖时怎么办
+
+```powershell
+cd apps/desktop
+npm install-scripts ls            # 列出尚未审阅、且确实带 install 脚本的依赖
+# 打开 node_modules/<pkg>/package.json 看 scripts 到底做什么
+npm install-scripts approve <pkg> # 写入 allowScripts（默认按版本钉住，如 esbuild@0.28.2）
+```
+
+清单里的条目是**精确版本**：依赖升级后旧钉子不再匹配，`npm ci` 会失败并提示
+重新审阅。这是刻意的——升级等于换了要执行的代码，必须再看一眼。
+
+当前清单与理由：
+
+| 条目 | 脚本 | 为什么允许 |
+|---|---|---|
+| `esbuild@0.28.2` | `postinstall: node install.js` | 校验并按平台准备二进制；构建链必需 |
+| `electron-winstaller@5.4.0` | `install: node ./script/select-7z-arch.js` | 从 `vendor/7z-<arch>.*` 复制出 `7z.exe`；electron-builder 的相关目标依赖它 |
+| `fsevents@2.3.3` | `install: node-gyp rebuild` | 仅 macOS 安装（`os: darwin`、optional）；Windows/Linux 上 npm 标记为 inert，不进审阅列表 |
+
+`fsevents` 是为 macOS 开发者预留的：该平台上它会真的编译，
+不加这一条会在 macOS 上把严格模式撞成失败。
+
+### 10.3 Electron 二进制不会再自动下载（electron 45 的行为变化）
+
+electron@45.0.0 的 package.json **没有 `postinstall`**，只提供 `install-electron`
+这个 bin。实测：`npm ci` 会清掉 `node_modules/electron/dist` 且不重新生成，结果是
+
+- `npm run electron:dev` 报 "Electron failed to install correctly"；
+- electron-builder 的 `electronDist: node_modules/electron/dist` 不存在，
+  `npm run package:win` 直接失败。
+
+因此 `apps/desktop/package.json` 加了
+
+```json
+"postinstall": "node scripts/ensure-electron.mjs"
+```
+
+`scripts/ensure-electron.mjs` 的行为：
+
+- `ELECTRON_SKIP_BINARY_DOWNLOAD=1` → 直接跳过（CI 只做类型检查/构建，
+  不启动 Electron；避免每个 job 下载约 100 MB）；
+- 否则调用 electron 自带的 `install.js`（内含 `isInstalled()` 快路径，
+  已装好时几乎零开销）；
+- 未设置 `ELECTRON_MIRROR` 时默认用 npmmirror，可用环境变量覆盖
+  （本网络下官方地址实测 `fetch failed`）。
+
+想强制重装二进制：删掉 `node_modules/electron/dist` 再跑 `npm run postinstall`。

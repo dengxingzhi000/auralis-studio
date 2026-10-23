@@ -1,6 +1,6 @@
 //! `auralis-codec` 的集成测试：真实文件 -> 真实解码。
 //!
-//! 这些测试是「WAV / FLAC 已验证」这一声明的**唯一依据**。
+//! 这些测试是「WAV / FLAC / AIFF 已验证」这一声明的**唯一依据**。
 //! 若它们失败，crate 文档里的格式支持矩阵必须同步改回去。
 
 use std::path::PathBuf;
@@ -192,7 +192,7 @@ fn complete_wav_is_not_reported_as_truncated() {
 }
 
 /* ============================================================
- * FLAC：真实样本验证
+ * FLAC：签入样本验证
  *
  * 「已验证」是 UI 的硬约束（见 crate 文档的格式支持矩阵）。
  * 要把 FLAC 列进 `verified_containers()`，仓库里必须有一份可复现的
@@ -228,8 +228,9 @@ fn require_fixture(name: &str) -> std::path::PathBuf {
     let path = crate::fixture_path(name);
     assert!(
         path.exists(),
-        "缺少 FLAC 样本 {name}；生成命令：\n  \
-         cargo test -p auralis-codec -- --ignored regenerate_flac_fixtures"
+        "缺少测试样本 {name}；生成命令：\n  \
+         cargo test -p auralis-codec -- --ignored regenerate_flac_fixtures\n  \
+         cargo test -p auralis-codec -- --ignored regenerate_aiff_fixtures"
     );
     path
 }
@@ -251,7 +252,7 @@ fn probes_a_real_flac_file() {
     );
     assert!(
         info.is_verified(),
-        "FLAC 已有真实样本验证，必须标记为已验证"
+        "FLAC 已有签入样本验证，必须标记为已验证"
     );
 }
 
@@ -347,6 +348,152 @@ fn flac_fixture_matches_the_generator() {
     for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
         assert!((x - y).abs() < 1e-6, "第 {i} 个样本不一致：{x} vs {y}");
     }
+
+    std::fs::remove_file(&regenerated).ok();
+}
+
+/* ============================================================
+ * AIFF：签入样本验证
+ *
+ * 与 FLAC 一样，「已验证」是 UI 的硬约束。区别在于样本来源：
+ * 本机没有 ffmpeg / sox，AIFF 样本由 `aiff_writer`（手写）生成，
+ * 不是第三方工具导出的文件。验证价值在于 writer 与 symphonia 的
+ * AIFF 读取器是两份独立实现，但**不等于**拿到了现实世界的文件——
+ * 文档里的措辞必须保持这个区分。
+ * ============================================================ */
+
+/// 重新生成仓库里的 AIFF 样本。
+///
+/// ```text
+/// cargo test -p auralis-codec -- --ignored regenerate_aiff_fixtures
+/// ```
+#[test]
+#[ignore = "样本生成器：改动后手动跑一次并提交"]
+fn regenerate_aiff_fixtures() {
+    let dir = crate::fixture_path("");
+    std::fs::create_dir_all(&dir).expect("create fixtures dir");
+
+    // 与 FLAC 样本同一信号、同一采样率，便于三者交叉比对
+    let mono = sine_i16(1_000.0, 0.5, 44_100, 44_100);
+    crate::aiff_writer::write_aiff_s16(&crate::fixture_path("tone-1k-mono.aiff"), 44_100, 1, &mono);
+
+    let stereo = stereo_tone_i16(44_100, 44_100);
+    crate::aiff_writer::write_aiff_s16(
+        &crate::fixture_path("tone-stereo.aiff"),
+        44_100,
+        2,
+        &stereo,
+    );
+}
+
+#[test]
+fn probes_a_real_aiff_file() {
+    let path = require_fixture("tone-1k-mono.aiff");
+
+    let info = probe(&path).expect("probe should succeed on AIFF");
+
+    assert_eq!(info.container, ContainerKind::Aiff);
+    assert_eq!(info.format.sample_rate.get(), 44_100);
+    assert_eq!(info.format.channels.get(), 1);
+    assert_eq!(
+        info.total_frames,
+        Some(44_100),
+        "COMM 块声明了 numSampleFrames，探针应据此给出总帧数"
+    );
+    assert!(
+        (info.duration_seconds - 1.0).abs() < 1e-9,
+        "1 秒音频的时长应为 1.0，实得 {}",
+        info.duration_seconds
+    );
+    assert!(
+        info.is_verified(),
+        "AIFF 已签入样本并通过解码核对，必须标记为已验证"
+    );
+}
+
+#[test]
+fn decodes_a_real_aiff_file_and_reconstructs_the_signal() {
+    let path = require_fixture("tone-1k-mono.aiff");
+
+    let mut decoder = BlockDecoder::open(&path).expect("decoder should open");
+    assert_eq!(decoder.format().sample_rate.get(), 44_100);
+    assert_eq!(decoder.format().channels.get(), 1);
+
+    let mut collected = Vec::new();
+    let mut expected_first_frame = 0u64;
+    while let Some(block) = decoder.next_block().expect("decode should not fail") {
+        assert_eq!(
+            block.first_frame, expected_first_frame,
+            "帧偏移必须连续，不能跳变"
+        );
+        expected_first_frame += block.pcm.frame_count() as u64;
+        collected.extend_from_slice(&block.pcm.samples);
+    }
+
+    assert!(decoder.is_finished());
+    assert_eq!(collected.len(), 44_100, "应解码出全部样本");
+    assert_eq!(expected_first_frame, 44_100);
+
+    // AIFF 与 WAV / FLAC 都是无损 PCM，数值应与其它样本完全一致
+    let stats = analyze_channel(&collected, ClippingConfig::default());
+    let peak_db = stats.peak.dbfs().clamped(-140.0);
+    assert!(
+        (peak_db - -6.020_6).abs() < 0.1,
+        "解码后峰值应接近 -6.02 dBFS，实得 {peak_db}"
+    );
+    let rms_db = stats.rms.dbfs().clamped(-140.0);
+    assert!(
+        (rms_db - -9.030_9).abs() < 0.1,
+        "解码后 RMS 应接近 -9.03 dBFS，实得 {rms_db}"
+    );
+}
+
+#[test]
+fn decodes_stereo_aiff_with_channel_isolation() {
+    let path = require_fixture("tone-stereo.aiff");
+
+    let info = probe(&path).expect("probe stereo aiff");
+    assert_eq!(info.format.channels.get(), 2);
+    assert_eq!(info.channel_layout, auralis_core::ChannelLayout::Stereo);
+
+    let mut decoder = BlockDecoder::open(&path).expect("open stereo aiff");
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    while let Some(block) = decoder.next_block().expect("decode") {
+        left.extend(block.pcm.channel_view(0));
+        right.extend(block.pcm.channel_view(1));
+    }
+
+    // 左右声道顺序写反是最容易犯的错（AIFF 是大端 + 交错）；
+    // 幅度不同，因此声道互换会立刻被这条断言抓住。
+    let l = analyze_channel(&left, ClippingConfig::default());
+    let r = analyze_channel(&right, ClippingConfig::default());
+    assert!(
+        (l.peak.amplitude - 0.5).abs() < 0.01,
+        "左声道应为 0.5 幅度（1 kHz），实得 {}",
+        l.peak.amplitude
+    );
+    assert!(
+        (r.peak.amplitude - 0.15).abs() < 0.01,
+        "右声道应为 0.15 幅度（1.5 kHz），实得 {}",
+        r.peak.amplitude
+    );
+}
+
+#[test]
+fn aiff_fixture_matches_the_generator() {
+    // 签入的样本必须与生成器当前产出逐字节一致，
+    // 否则「样本」和「代码」会各说各话。
+    let checked_in = require_fixture("tone-1k-mono.aiff");
+
+    let dir = scratch("aiff-regen");
+    let regenerated = dir.join("tone-1k-mono.aiff");
+    let samples = sine_i16(1_000.0, 0.5, 44_100, 44_100);
+    crate::aiff_writer::write_aiff_s16(&regenerated, 44_100, 1, &samples);
+
+    let a = std::fs::read(&checked_in).expect("read checked-in fixture");
+    let b = std::fs::read(&regenerated).expect("read regenerated fixture");
+    assert_eq!(a, b, "签入的 AIFF 样本与生成器输出应逐字节一致");
 
     std::fs::remove_file(&regenerated).ok();
 }

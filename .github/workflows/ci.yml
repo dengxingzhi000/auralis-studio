@@ -179,6 +179,10 @@ jobs:
     needs: [check]
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: windows-latest
+    env:
+      # 本任务只上传引擎 exe，不启动 Electron；跳过 postinstall 里
+      # 约 100 MB 的运行时下载（apps/desktop/scripts/ensure-electron.mjs）。
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

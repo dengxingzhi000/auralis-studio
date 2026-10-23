@@ -50,7 +50,7 @@ const LIMITS = [
   "不把数字满刻度推断为模拟削波：超量程只说明数值越界。",
   "不以普通 RMS 代替 LUFS：计权需要完整的算法规范与验证。",
   "不提供 SNR / THD / THD+N：这些指标需要参考信号与已知前提。",
-  "仅 WAV 已用真实样本验证；其余容器虽然可以解码，但界面会标注「未验证」。",
+  "WAV / FLAC / AIFF 已用签入样本验证；其余容器虽然可以解码，但界面会标注「未验证」。",
 ];
 
 export function HelpDialog({ open, onClose }: HelpDialogProps) {
