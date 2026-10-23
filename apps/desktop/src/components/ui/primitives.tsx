@@ -351,6 +351,36 @@ export function ErrorBar({
   );
 }
 
+/* -------------------------------------------------------------- MetricRow */
+
+export interface MetricRowProps {
+  label: React.ReactNode;
+  /** 数值；`null` / `undefined` 表示真 `-inf` 或未定义 */
+  value: number | null | undefined;
+  /** 单位，等宽小字显示在数值后 */
+  unit: string;
+}
+
+/**
+ * 一行「标签 + 数值 + 单位」。
+ *
+ * `null` 显示成「—」而不是 0：0 会被读成「有信号但极小」，
+ * 而 `null` 是真的静音（`-inf`）或未定义。把两者混同就是在编造读数。
+ */
+export function MetricRow({ label, value, unit }: MetricRowProps) {
+  return (
+    <DataRow
+      label={label}
+      value={
+        <>
+          {value == null ? "—" : value.toFixed(4)}
+          {value != null && <span className="muted"> {unit}</span>}
+        </>
+      }
+    />
+  );
+}
+
 /* -------------------------------------------------------------- NavItem */
 
 export interface NavItemProps {

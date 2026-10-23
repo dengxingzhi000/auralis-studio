@@ -37,7 +37,9 @@ import type {
   RealtimeSnapshot,
   SyntheticRequest,
 } from "@/lib/contracts";
+import type { DisplayData } from "@/lib/display";
 import { LevelMeter } from "@/components/audio-viz/LevelMeter";
+import { MetricsPanel } from "@/components/audio-viz/MetricsPanel";
 import { RealtimePanel } from "@/components/audio-viz/RealtimePanel";
 import { SpectrumView } from "@/components/audio-viz/SpectrumView";
 import { SpectrogramView } from "@/components/audio-viz/SpectrogramView";
@@ -56,6 +58,7 @@ import {
   ErrorBar,
   FormField,
   IconButton,
+  MetricRow,
   NavGroup,
   NavItem,
   Select,
@@ -90,6 +93,23 @@ const NO_PEAKS: PeakInfo[] = [];
 /** 面板可见性的持久化键。 */
 const VISIBILITY_KEY = "auralis.workspace.visibility.v1";
 
+/**
+ * 把某张卡片滚进视野。
+ *
+ * 中央画布是可纵向滚动的（窗口变矮时图表不会被压成条带），
+ * 侧栏的导航项需要能把对应的卡片带进来。
+ *
+ * 用 `requestAnimationFrame` 是因为导航项点击时卡片可能还没布局完
+ * （例如刚打开文件，正在切换内容）。
+ */
+function scrollToPane(id: string): void {
+  window.requestAnimationFrame(() => {
+    document
+      .getElementById(id)
+      ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+}
+
 /** 校验存下来的可见性；任何字段损坏都整条丢弃，回到默认值。 */
 function readVisibility(v: unknown): { left: boolean; right: boolean } | null {
   if (typeof v !== "object" || v === null) return null;
@@ -110,39 +130,6 @@ const DEFAULTS: SyntheticRequest = {
 
 /** 声谱图一屏的默认时长（秒），与 Rust 侧 `SPECTRUM_WINDOW_SECONDS` 一致。 */
 const SPECTROGRAM_WINDOW_SECONDS = 30;
-
-/** 真实文件分析结果的显示形状（供 Canvas 组件消费）。 */
-interface DisplayData {
-  db: Float32Array | null;
-  startHz: number;
-  stepHz: number;
-  env: Float32Array | null;
-  sampleRate: number;
-  peakDbfs: number | null;
-  rmsDbfs: number | null;
-  crestDb: number | null;
-  dc: number;
-  outcome: string;
-  elapsedMs: number;
-  bytes: number;
-  peaks: PeakInfo[];
-  fftSize: number;
-  window: string;
-  spectrogram: Float32Array | null;
-  spectrogramFrames: number;
-  spectrogramBins: number;
-  spectrogramHopMs: number;
-  /** 声谱图矩阵的绝对起点（秒） */
-  spectrogramStartSeconds: number;
-  /** 每声道峰值 dBFS；空数组表示未提供（合成信号没有声道概念） */
-  peakPerChannel: (number | null)[];
-  /** 超过满刻度的样本数（|x| > 1）。> 0 时电平表显示削波警示 */
-  overFullScaleSamples: number;
-  /** 削波平顶片段数（启发式，不是模拟削波的证据） */
-  clippingRegions: number;
-  /** 被清理的非有限样本数（NaN / Inf） */
-  sanitizedSamples: number;
-}
 
 /** 频谱显示模式：填充（面积）或仅曲线。 */
 type SpectrumMode = "area" | "line";
@@ -328,6 +315,9 @@ export default function App() {
         overFullScaleSamples: a.overFullScaleSamples,
         clippingRegions: a.clippingRegions,
         sanitizedSamples: a.sanitizedSamples,
+        truncated: a.truncated,
+        declaredDurationSeconds: a.declaredDurationSeconds,
+        decodedDurationSeconds: a.decodedDurationSeconds,
       });
       setSpectroStart(a.spectrogramStartSeconds);
       // 新文件的频率轴可能与旧的视口不匹配（比如 48 kHz 文件缩到
@@ -555,6 +545,10 @@ export default function App() {
         overFullScaleSamples: r.metrics.overFullScaleSamples,
         clippingRegions: r.metrics.clippingRegions,
         sanitizedSamples: r.metrics.sanitizedSamples,
+        // 合成信号没有文件头，不存在「声明时长」这回事。
+        truncated: false,
+        declaredDurationSeconds: 0,
+        decodedDurationSeconds: 0,
       });
       setSpectroStart(0);
       setViewRange(null);
@@ -1007,6 +1001,37 @@ export default function App() {
                 />
               </div>
             </section>
+
+            <div className="splitter splitter-h" />
+
+            <section className="pane pane-metrics" id="pane-metrics">
+              <div className="pane-head">
+                <span className="pane-title">电平 / 指标</span>
+                <span className="pane-meta">
+                  {liveDb ? "实时采集" : display ? "已分析" : "等待数据"}
+                  {display && (
+                    <>
+                      <span className="sep">·</span>
+                      <span className="num">
+                        {display.elapsedMs.toFixed(1)} ms
+                      </span>
+                    </>
+                  )}
+                </span>
+              </div>
+              <div className="pane-body pane-scroll">
+                <MetricsPanel
+                  display={display}
+                  live={
+                    liveDb
+                      ? { peakDbfs: livePeak, rmsDbfs: liveRms }
+                      : null
+                  }
+                  minDb={minDb}
+                  maxDb={maxDb}
+                />
+              </div>
+            </section>
           </div>
         }
         right={
@@ -1178,7 +1203,11 @@ function ResourcePanel({
           <NavItem icon={<IconSpectrogram />} disabled tag="M3">
             声谱图缩放
           </NavItem>
-          <NavItem icon={<IconGauge />} disabled tag="M2">
+          <NavItem
+            icon={<IconGauge />}
+            onClick={() => scrollToPane("pane-metrics")}
+            title="电平、信号指标与数据质量"
+          >
             电平表 / 指标
           </NavItem>
           <NavItem icon={<IconTasks />} disabled tag="M3">
@@ -1582,29 +1611,6 @@ function fmtClock(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = sec - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, "0")}`;
-}
-
-function MetricRow({
-  label,
-  value,
-  unit,
-}: {
-  label: string;
-  value: number | null | undefined;
-  unit: string;
-}) {
-  return (
-    <DataRow
-      label={label}
-      value={
-        <>
-          {/* null 表示真 -inf / 未定义，不是被钳过的数字 */}
-          {value == null ? "—" : value.toFixed(4)}
-          {value != null && <span className="muted"> {unit}</span>}
-        </>
-      }
-    />
-  );
 }
 
 /* -------------------------------------------------------------- 错误文案 */

@@ -346,6 +346,10 @@
   padding: 8px;
   gap: 0;
   min-height: 0;
+  /* 窗口变矮时让用户滚动，而不是把图表压成条带。
+     图表卡片带 min-height，总高超出时这里才出现滚动条。 */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* 卡片：表面提亮 + 细描边 + 微阴影 */
@@ -358,6 +362,76 @@
   box-shadow: var(--shadow-sm);
   overflow: hidden;
   min-height: 0;
+}
+
+/* 三张图表卡片：窗口再矮也要保住可读的绘图高度 */
+#pane-spectrum,
+#pane-spectrogram,
+#pane-waveform {
+  min-height: 190px;
+}
+
+/* 指标卡片：高度按内容自适应，不参与拉伸 */
+.pane-metrics {
+  flex: 0 0 auto;
+}
+
+/* 卡片内可滚动的正文（指标表在窄窗口下会换行变高） */
+.pane-scroll {
+  overflow: auto;
+}
+
+/* ---- 指标视图 ---- */
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) minmax(170px, 1fr) minmax(210px, 1.25fr);
+  gap: 14px;
+  padding: 10px;
+  align-items: start;
+}
+
+.metrics-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.metrics-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.metrics-sub {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--grid-minor);
+}
+
+.metrics-note {
+  margin: 6px 0 0;
+}
+
+.metrics-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 16px;
+  text-align: center;
+}
+
+@media (max-width: 980px) {
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .pane-head {
