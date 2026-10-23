@@ -11,6 +11,41 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Added
 
+- **All previously disabled UI entries are now live.** Eight sidebar/footer
+  entries were still greyed out with a milestone tag even though the underlying
+  capability existed. They now do real work:
+  - **Spectrogram frequency zoom** (`Shift` + wheel, `Shift` + drag to select a
+    band). The zoom *crops* the visible bins and scales them to the plot area
+    instead of stretching the whole matrix — stretching would break the
+    frequency↔bin correspondence and make every reading wrong. The frequency
+    viewport is shared with the spectrum view, so focusing one focuses both.
+  - **Electrical level / metrics view** as a fourth card in the central canvas:
+    level meters, signal metrics and data-quality diagnostics (over-full-scale
+    samples, flat-top regions, sanitised samples, file integrity).
+  - **Background task queue** in the sidebar: running tasks (cancellable) plus
+    the analyses that just finished. Rust already exposed `task_queue`; the
+    outcome of a finished task is only known to whoever started it, so the
+    history is kept on the frontend.
+  - **Live-input navigation entry** with a "capturing" indicator.
+  - **Preferences dialog** (`Ctrl+,`) unifying the previously scattered
+    preferences behind one storage key, with migration from the old keys.
+  - **Global search** (`Ctrl+K` / `Ctrl+F`) over files, detected peaks and
+    commands.
+  - **Help** (`F1`) and **About** dialogs.
+- **Frontend unit-test baseline.** vitest (devDependency only) with `npm test`
+  wired into the CI frontend job. The new pure logic — preference validation
+  and migration, viewport↔bin conversion, task history, search matching — is
+  extracted into DOM-free modules so it can be covered directly.
+- **Fixed a wrong frequency axis on the spectrogram.** It drew the *file's*
+  matrix but labelled the axis with the *capture device's* sample rate, so the
+  axis was globally offset while live capture was running and the picture looked
+  perfectly normal.
+- **Fixed rapid wheel zooming applying only once.** Consecutive wheel events
+  read a stale prop because React had not re-rendered between them, so four
+  notches of the wheel moved the viewport one notch.
+
+### Added
+
 - **Viewport-chunked spectrogram.** The spectrogram no longer stops at the first
   30 seconds with no way to see the rest. A new `spectrogram_view` command takes
   `startSeconds` and `windowSeconds`, seeks in the container (sample-accurate
