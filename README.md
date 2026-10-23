@@ -233,6 +233,13 @@ The first few callbacks allocate while the pool fills. After that the steady
 state is zero allocations, and the pool is bounded, so it cannot grow without
 limit.
 
+"Capacity is already sufficient" only holds if the pool is preheated for the
+*resolved* channel count: one interleaved callback delivers `frames × channels`
+samples. Preheating for a fixed four channels — as the code used to — makes
+every callback reallocate on a six- or eight-channel interface, and
+`resolve_format`'s fallback can turn a 2-channel request into an 8-channel
+stream. The capacity is now derived from the format the device actually got.
+
 This is also why `SampleRing::push` returns `Result<(), T>` rather than `bool`:
 on overflow the buffer has to come back to the caller, or recycling is
 impossible.
