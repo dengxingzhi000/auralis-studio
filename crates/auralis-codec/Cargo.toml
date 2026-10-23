@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "auralis-codec"
 description = "音频文件探测与分块解码"
 version.workspace = true

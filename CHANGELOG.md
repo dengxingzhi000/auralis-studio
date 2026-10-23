@@ -179,6 +179,24 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Changed
 
+- **Toolchain moved to the latest released versions.** TypeScript was already
+  on the newest stable (7.0.2; 7.1 is still beta). Vite went 8.3.4 → 8.3.5 and
+  vitest 3.2.7 → 5.0.5 — a two-major jump that needed **no code changes**:
+  all 77 frontend tests pass as they are. Two consequences worth knowing:
+
+  - vitest 5 requires `node >= 22.12`, so the CI node-20 job now typechecks
+    and builds but does not run the unit tests; the tests run on node 22 and
+    24. The node-20 job stays because branch protection requires that check
+    name, and "the renderer still builds on an older Node" is a signal worth
+    keeping.
+  - `base64` went 0.22 → 0.23 with no API change for our use.
+
+  `flacenc` deliberately stays at **0.4**: the 0.5 encoder produces FLAC that
+  symphonia 0.6.1 (the latest) cannot decode — it reports "unexpected end of
+  file" and all four FLAC integration tests fail. There is no newer symphonia
+  to pair it with, so the upgrade waits for an upstream fix. The reason is
+  recorded next to the dependency.
+
 - **External links are restricted to http(s).** The Electron main process
   handed every URL the renderer asked to open to `shell.openExternal`, which
   launches whatever program the URL's scheme names — a `file://` or a custom

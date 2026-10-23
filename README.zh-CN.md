@@ -64,7 +64,7 @@ Auralis Studio 反过来做。界面上每一个数字都来自一个有确定�
 |---|---|---|
 | **Rust** | 1.99.0 | 由 `rust-toolchain.toml` 固定 |
 | **MSVC 生成工具** | — | 启用 `+crt-static`，产物是真正独立的单文件 exe（ADR-013） |
-| **Node.js** | 22.12+ 或 24 | Electron 45 要求。CI 还会用 Node 20 做渲染层构建（仅构建；分支保护保留了这个检查名） |
+| **Node.js** | 22.12+ 或 24 | Electron 45 要求；vitest 5 也要求（单元测试需要 `node >= 22.12`）。CI 还会用 Node 20 做渲染层构建（仅类型检查与构建；分支保护保留了这个检查名） |
 | **Python** | 3.12 | 仅用于 numpy oracle 交叉验证 |
 
 本机安装方式、镜像配置与路径约定见

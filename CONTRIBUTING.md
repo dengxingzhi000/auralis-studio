@@ -26,7 +26,7 @@ reports honest limitations is more useful than one that quietly overstates.
 |---|---|---|
 | Rust | 1.99.0 | Pinned by `rust-toolchain.toml`; do not bump it in a PR |
 | MSVC build tools | — | `+crt-static` is enabled, see ADR-013 |
-| Node.js | 22.12+ or 24 | Required by Electron 45. CI also builds the renderer on Node 20 (build-only) |
+| Node.js | 22.12+ or 24 | Required by Electron 45 and by vitest 5 (the unit tests need `node >= 22.12`). CI also builds the renderer on Node 20 (typecheck + build only) |
 | Python | 3.12 | Only for the numpy oracle cross-check |
 
 Full local setup, including mirror configuration and the on-disk paths this

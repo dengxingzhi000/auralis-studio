@@ -74,7 +74,7 @@ The result is an analyzer that is deliberately boring about its claims.
 |---|---|---|
 | **Rust** | 1.99.0 | Pinned by `rust-toolchain.toml` |
 | **MSVC build tools** | — | `+crt-static` is enabled so the exe is genuinely standalone (ADR-013) |
-| **Node.js** | 22.12+ or 24 | Required by Electron 45. CI also builds the renderer on Node 20 (build-only; branch protection keeps that check name) |
+| **Node.js** | 22.12+ or 24 | Required by Electron 45, and by vitest 5 (the unit tests need `node >= 22.12`). CI also builds the renderer on Node 20 (typecheck + build only; branch protection keeps that check name) |
 | **Python** | 3.12 | Only for the numpy oracle cross-check |
 
 Local installation paths and mirror configuration are in
