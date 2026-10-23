@@ -46,6 +46,33 @@ pub type CallbackBuffer = Vec<f32>;
 /// 回收池容量。取 64：足够覆盖一个缓冲从回调到消费者再回来的往返。
 const RECYCLE_SLOTS: usize = 64;
 
+/// 一次回调缓冲需要的容量（样本数）。
+///
+/// 交错 f32 的一次回调送来 `frames × channels` 个样本，回收池里的每个
+/// 缓冲必须**一次装得下**，否则 `extend_from_slice` 会在实时回调里重新
+/// 分配——那正是 `AGENTS.md` 禁止的「回调内无界分配」。
+///
+/// 早期版本按 `frames * 4` 预热，隐含「最多 4 声道」的假设。4 声道以内
+/// 恰好够用，看起来没问题；6/8 声道的设备上**每次回调都会重分配**，
+/// 而这条路径不可达性还取决于 `resolve_format` 的回退：设备只支持
+/// 8 声道时，请求 2 声道会被改写成 8 声道，于是重分配变成常态。
+#[must_use]
+pub fn callback_buffer_capacity(frames_per_buffer: usize, channels: u16) -> usize {
+    frames_per_buffer * usize::from(channels.max(1))
+}
+
+/// 建立回收池并预热。
+///
+/// 预热的缓冲容量由 [`callback_buffer_capacity`] 决定，保证稳态下
+/// 回调里只做「取 → clear → extend」而不再分配。
+fn build_recycle_pool(slots: usize, capacity: usize) -> Arc<ArrayQueue<CallbackBuffer>> {
+    let recycle: Arc<ArrayQueue<CallbackBuffer>> = Arc::new(ArrayQueue::new(slots));
+    for _ in 0..slots {
+        let _ = recycle.push(Vec::with_capacity(capacity));
+    }
+    recycle
+}
+
 /// 正在运行的采集会话。
 ///
 /// `_stream` 必须持有：一旦释放，cpal 会停止回调。
@@ -302,15 +329,14 @@ pub fn start_capture(
         frames_per_buffer,
         DropPolicy::DropNewest,
     ));
-    let recycle: Arc<ArrayQueue<CallbackBuffer>> = Arc::new(ArrayQueue::new(RECYCLE_SLOTS));
 
     let ring_cb = ring.clone();
+    let recycle = build_recycle_pool(
+        RECYCLE_SLOTS,
+        callback_buffer_capacity(frames_per_buffer, resolved.channels),
+    );
+    // 回调闭包要独占一份；会话本身留一份给 `recycler()` 用。
     let recycle_cb = recycle.clone();
-
-    // 预热：先放一批空缓冲，前若干次回调就不分配
-    for _ in 0..RECYCLE_SLOTS {
-        let _ = recycle_cb.push(Vec::with_capacity(frames_per_buffer * 4));
-    }
 
     // cpal 0.18：StreamConfig 是公有字段的结构体
     let stream_config = cpal::StreamConfig {
@@ -458,6 +484,43 @@ mod tests {
         buf.extend_from_slice(&big);
         assert_eq!(buf.capacity(), cap_before, "clear+extend 不应改变容量");
         assert!(buf.capacity() >= 4096);
+    }
+
+    /// 回归测试：回收池预热容量必须按**实际声道数**算。
+    ///
+    /// 早先按 `frames * 4` 预热，隐含「最多 4 声道」的假设。6/8 声道的
+    /// 设备上 `extend_from_slice` 会每次回调都重新分配——直接违反
+    /// AGENTS.md「回调内不得无界分配」。而 `resolve_format` 的回退会把
+    /// 请求的声道数改写成设备支持的更大值，所以这条路径是可达的。
+    #[test]
+    fn recycle_capacity_fits_a_callback_for_any_channel_count() {
+        const FRAMES: usize = 256;
+        for channels in [1u16, 2, 4, 6, 8, 32] {
+            let capacity = callback_buffer_capacity(FRAMES, channels);
+            let samples = FRAMES * usize::from(channels);
+            assert!(
+                capacity >= samples,
+                "{channels} 声道时容量 {capacity} 装不下 {samples} 个样本"
+            );
+
+            // 预热出来的缓冲装下整帧后，容量不能变——变了就是重分配了。
+            let pool = build_recycle_pool(2, capacity);
+            let mut buf = pool.pop().expect("one buffer");
+            let data = vec![0.25_f32; samples];
+            buf.clear();
+            buf.extend_from_slice(&data);
+            assert_eq!(
+                buf.capacity(),
+                capacity,
+                "{channels} 声道时 extend_from_slice 触发了重分配"
+            );
+        }
+    }
+
+    /// 零声道要按 1 处理，不能算出 0 容量。
+    #[test]
+    fn zero_channels_is_treated_as_mono() {
+        assert_eq!(callback_buffer_capacity(256, 0), 256);
     }
 
     #[test]

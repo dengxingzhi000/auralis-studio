@@ -242,6 +242,23 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Fixed
 
+- **The realtime recycle pool could reallocate on every callback on
+  multi-channel devices.** The pool was preheated with `frames * 4` samples,
+  which quietly assumes at most four channels. A six- or eight-channel
+  interface delivers more samples than that, so `extend_from_slice` had to
+  grow the buffer — inside the audio callback, which `AGENTS.md` forbids.
+  The capacity now follows the resolved channel count, and `resolve_format`'s
+  fallback (which can turn a 2-channel request into an 8-channel stream)
+  no longer turns a steady state into a per-callback allocation.
+- **The frontend architecture guard was a blacklist that `Math.log` walked
+  straight through.** `scripts/check-boundaries.ps1` rejected
+  `Math.log10` and `Math.log2` — but a dB conversion only needs
+  `Math.log`, which was allowed, so the guard gave false assurance about
+  the rule it exists to enforce. It is now a whitelist: the shipped renderer
+  and the Electron main process may only use plain geometry and rounding
+  (`abs`, `ceil`, `floor`, `max`, `min`, `round`, `sign`, `PI`). The guard
+  also self-tests, so a rule that stops matching fails loudly instead of
+  silently passing everything.
 - **The realtime ring buffer's `popped_frames` counter could wrap to
   `u64::MAX`.** The `DropOldest` policy decremented a counter that had never
   been incremented for the evicted item. Evictions are now counted separately
