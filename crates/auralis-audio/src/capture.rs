@@ -254,12 +254,16 @@ pub fn resolve_format(
 
 /// 打开设备输入流并开始采集。
 ///
+/// `ring_capacity_items` 是环形缓冲能容纳的**项**数；每项是一次回调的
+/// 缓冲。实际缓存深度是 `项数 × 每项帧数`：默认 4096 项 × 256 帧
+/// ≈ 21.8 秒 @48 kHz，足够覆盖 30 Hz 的界面轮询与 FFT 窗口。
+///
 /// # Errors
 /// 设备不存在、格式不被支持、流无法建立或无法启动。
 pub fn start_capture(
     device_id: &str,
     config: CaptureConfig,
-    ring_capacity_frames: usize,
+    ring_capacity_items: usize,
 ) -> Result<CaptureSession, DeviceError> {
     let host = cpal::default_host();
     // 不单独探测 is_available()：cpal 0.18 里它是无 self 的关联函数，
@@ -298,7 +302,7 @@ pub fn start_capture(
 
     let frames_per_buffer = config.buffer_frames.max(1);
     let ring = Arc::new(SampleRing::new(
-        ring_capacity_frames.max(1),
+        ring_capacity_items.max(1),
         frames_per_buffer,
         DropPolicy::DropNewest,
     ));

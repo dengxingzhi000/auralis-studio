@@ -242,6 +242,19 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Fixed
 
+- **The ring buffer's capacity was counted in items but named in frames.**
+  `SampleRing::new` took a `capacity_frames` argument that was really the
+  number of *items* the queue holds. With 256 frames per callback buffer,
+  "4096 frames" actually buffered 1 048 576 frames — 21.8 s at 48 kHz, not
+  85 ms. Anyone sizing the ring from the name would have been off by three
+  orders of magnitude. The parameter is now `capacity_items`, and
+  `capacity_frames()` returns the real frame capacity.
+- **The ring buffer's fill ratio was inverted.** It was computed as
+  *frames consumed* over capacity, so the more the consumer drained the
+  buffer, the fuller it looked — and after a couple of seconds of normal
+  operation the reading sat at 1.0 permanently. It now reports actual
+  occupancy (pushed − popped − evicted) over the real capacity, and the
+  capacity can no longer be passed in wrong, because the ring knows it.
 - **The realtime ring buffer's `popped_frames` counter could wrap to
   `u64::MAX`.** The `DropOldest` policy decremented a counter that had never
   been incremented for the evicted item. Evictions are now counted separately

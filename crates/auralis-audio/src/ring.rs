@@ -5,7 +5,7 @@
 //! | 操作 | 复杂度 | 是否可能阻塞 | 是否分配 |
 //! |---|---|---|---|
 //! | [`SampleRing::push`] | O(1) | 否（无锁 CAS） | **否**（预分配 `Vec`） |
-//! | [`SampleRing::pop`] | O(1) | 否 | 否（复用调用方缓冲） |
+//! | [`SampleRing::pop_chunk`] | O(1) | 否 | 否（复用调用方缓冲） |
 //! | [`SampleRing::stats`] | O(1) | 否 | 否 |
 //!
 //! 设计上的三个保证：
@@ -79,14 +79,15 @@ impl RingStats {
         }
     }
 
-    /// 缓冲占用比例（0.0–1.0）。
+    /// 当前环内**残留**的帧数。
+    ///
+    /// `pushed_frames` 记的是进过环的帧，`popped_frames` / `evicted_frames`
+    /// 记的是离开环的帧，三者相减才是当前占用。
     #[must_use]
-    pub fn fill_ratio(&self, capacity_frames: usize) -> f64 {
-        if capacity_frames == 0 {
-            0.0
-        } else {
-            (self.popped_frames.min(self.pushed_frames) as f64 / capacity_frames as f64).min(1.0)
-        }
+    pub fn occupancy_frames(&self) -> u64 {
+        self.pushed_frames
+            .saturating_sub(self.popped_frames)
+            .saturating_sub(self.evicted_frames)
     }
 }
 
@@ -100,7 +101,7 @@ impl RingStats {
 /// 消费者（分析工作线程）调 [`Self::pop_chunk`]。
 pub struct SampleRing<T> {
     queue: Arc<ArrayQueue<T>>,
-    capacity_frames: usize,
+    capacity_items: usize,
     frames_per_item: usize,
     policy: DropPolicy,
     pushed: AtomicU64,
@@ -113,16 +114,19 @@ pub struct SampleRing<T> {
 impl<T> SampleRing<T> {
     /// 创建环形缓冲。
     ///
+    /// `capacity_items` 是队列能容纳的**项**数，每项 `frames_per_item` 帧。
+    /// 实际能缓存的帧数是两者之积 —— 见 [`Self::capacity_frames`]。
+    ///
     /// # Panics
-    /// `capacity_frames == 0` 或 `frames_per_item == 0`。
+    /// `capacity_items == 0` 或 `frames_per_item == 0`。
     ///
     /// 这两个值在运行期由配置决定，属编程错误而非输入错误。
-    pub fn new(capacity_frames: usize, frames_per_item: usize, policy: DropPolicy) -> Self {
-        assert!(capacity_frames > 0, "capacity must be positive");
+    pub fn new(capacity_items: usize, frames_per_item: usize, policy: DropPolicy) -> Self {
+        assert!(capacity_items > 0, "capacity must be positive");
         assert!(frames_per_item > 0, "frames_per_item must be positive");
         Self {
-            queue: Arc::new(ArrayQueue::new(capacity_frames)),
-            capacity_frames,
+            queue: Arc::new(ArrayQueue::new(capacity_items)),
+            capacity_items,
             frames_per_item,
             policy,
             pushed: AtomicU64::new(0),
@@ -133,16 +137,50 @@ impl<T> SampleRing<T> {
         }
     }
 
-    /// 容量（帧）。
+    /// 队列能容纳的**项**数。
+    ///
+    /// 早先这个参数叫 `capacity_frames`，实际却是项数 —— 一个 4096「帧」的
+    /// 环在 256 帧/项时其实能装 1 048 576 帧。名字说帧、实为项，读代码的人
+    /// 会把缓冲深度算错一个数量级。
+    #[must_use]
+    pub const fn capacity_items(&self) -> usize {
+        self.capacity_items
+    }
+
+    /// 实际能缓存的**帧**数（`项数 × 每项帧数`）。
     #[must_use]
     pub const fn capacity_frames(&self) -> usize {
-        self.capacity_frames
+        self.capacity_items * self.frames_per_item
     }
 
     /// 每项含多少帧。
     #[must_use]
     pub const fn frames_per_item(&self) -> usize {
         self.frames_per_item
+    }
+
+    /// 当前环内**残留**的帧数。
+    ///
+    /// `pushed` 记的是进过环的帧，`popped` / `evicted` 记的是离开环的帧，
+    /// 三者相减才是当前占用。
+    #[must_use]
+    pub fn occupancy_frames(&self) -> u64 {
+        self.stats().occupancy_frames()
+    }
+
+    /// 缓冲占用比例（0.0–1.0）。
+    ///
+    /// 早先这个指标挂在 [`RingStats`] 上、要调用方自己传容量，于是两处都
+    /// 错了：分子用的是**累计已消费**（消费得越多读数越满），分母传的又
+    /// 是**项数**而不是帧数。现在容量由环自己知道，公式也只有一处。
+    #[must_use]
+    pub fn fill_ratio(&self) -> f64 {
+        let capacity = self.capacity_frames();
+        if capacity == 0 {
+            0.0
+        } else {
+            (self.occupancy_frames() as f64 / capacity as f64).min(1.0)
+        }
     }
 
     /// 当前统计。
@@ -373,8 +411,21 @@ mod tests {
         let _ = r.push(0);
         let _ = r.push(1);
         assert_eq!(r.stats().pushed_frames, 128, "应按帧计数而非按项计数");
-        assert_eq!(r.capacity_frames(), 8);
+        assert_eq!(r.capacity_items(), 8, "容量是项数");
+        assert_eq!(r.capacity_frames(), 8 * 64, "帧容量 = 项数 × 每项帧数");
         assert_eq!(r.frames_per_item(), 64);
+    }
+
+    /// 回归测试：容量参数的名字说「帧」，实际是「项」。
+    ///
+    /// 早先 `capacity_frames` 传的是项数，256 帧/项时能装 1 048 576 帧，
+    /// 而读代码的人会当成 4096 帧 —— 缓冲深度算错一个数量级。
+    #[test]
+    fn capacity_units_are_explicit() {
+        let r: SampleRing<u32> = SampleRing::new(4096, 256, DropPolicy::DropNewest);
+        assert_eq!(r.capacity_items(), 4096);
+        assert_eq!(r.capacity_frames(), 4096 * 256);
+        assert_eq!(r.frames_per_item(), 256);
     }
 
     #[test]
@@ -479,12 +530,56 @@ mod tests {
         let _: SampleRing<u32> = SampleRing::new(0, 1, DropPolicy::DropNewest);
     }
 
+    /// 回归测试：占用比例必须反映**当前占用**，不是累计已消费。
+    ///
+    /// 早先的公式是 `popped / capacity` —— 消费得越多读数越满，方向是反的，
+    /// 而且几乎恒为 1.0。消费掉之后环是空的，占用必须回到 0。
+    #[test]
+    fn fill_ratio_reflects_current_occupancy() {
+        let r: SampleRing<u32> = SampleRing::new(4, 1, DropPolicy::DropNewest);
+        assert_eq!(r.fill_ratio(), 0.0, "空环占用为 0");
+
+        let _ = r.push(1);
+        let _ = r.push(2);
+        assert!(
+            (r.fill_ratio() - 0.5).abs() < 1e-9,
+            "2/4 项 → 0.5，实得 {}",
+            r.fill_ratio()
+        );
+        assert_eq!(r.occupancy_frames(), 2);
+
+        // 消费掉一半：占用降到 0.25，而不是因为「消费过」而保持满。
+        let mut out = Vec::new();
+        let _ = r.pop_chunk(&mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(r.occupancy_frames(), 0, "取走后环内不应有残留");
+        assert_eq!(r.fill_ratio(), 0.0, "消费后占用必须回落");
+    }
+
+    /// 占用比例永远在 0..1 之间。
     #[test]
     fn fill_ratio_is_bounded() {
         let r: SampleRing<u32> = SampleRing::new(4, 1, DropPolicy::DropNewest);
-        let _ = r.push(1);
-        let f = r.stats().fill_ratio(r.capacity_frames());
+        for i in 0..100 {
+            let _ = r.push(i);
+        }
+        let f = r.fill_ratio();
         assert!((0.0..=1.0).contains(&f), "占用比例必须在 0..1，实得 {f}");
+    }
+
+    /// 帧容量下界：项数 × 每项帧数，分子分母单位一致。
+    #[test]
+    fn fill_ratio_uses_frames_on_both_sides() {
+        // 4 项 × 64 帧 = 256 帧容量。写满 2 项 = 128 帧 → 0.5。
+        let r: SampleRing<u32> = SampleRing::new(4, 64, DropPolicy::DropNewest);
+        let _ = r.push(0);
+        let _ = r.push(1);
+        assert_eq!(r.occupancy_frames(), 128);
+        assert!(
+            (r.fill_ratio() - 0.5).abs() < 1e-9,
+            "实得 {}",
+            r.fill_ratio()
+        );
     }
 
     #[test]
