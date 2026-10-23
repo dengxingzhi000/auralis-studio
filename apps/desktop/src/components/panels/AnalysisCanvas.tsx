@@ -42,6 +42,10 @@ export interface AnalysisCanvasProps {
   liveStepHz: number;
   livePeak: number | null;
   liveRms: number | null;
+  /** 实时逐声道峰值；反相立体声时 mid-sum 会抵消，但这里仍是满刻度 */
+  livePeakPerChannel: (number | null)[];
+  /** 实时逐声道 RMS */
+  liveRmsPerChannel: (number | null)[];
   display: DisplayData | null;
   selected: FileInfo | null;
 
@@ -79,6 +83,8 @@ export function AnalysisCanvas({
   liveStepHz,
   livePeak,
   liveRms,
+  livePeakPerChannel,
+  liveRmsPerChannel,
   display,
   selected,
   sampleRate,
@@ -324,7 +330,7 @@ export function AnalysisCanvas({
           <span className="pane-meta">
             min/max 包络
             <span className="sep">·</span>
-            {display?.env?.length ?? 0} 点
+            {display?.envPoints ?? 0} 点/声道
             {/* 标题跟着**显示数据的来源**走：合成信号不能顶着文件名，
                 否则看起来就是一个挂着文件名的默认页。 */}
             {display?.source === "synthetic" ? (
@@ -346,6 +352,7 @@ export function AnalysisCanvas({
           {/* 合成信号是单声道：别拿已打开文件的声道数去切它的包络。 */}
           <WaveformView
             envelope={display?.env ?? null}
+            envelopeMin={display?.envMin ?? null}
             sampleRate={sampleRate}
             channels={
               display?.source === "synthetic" ? 1 : (selected?.channels ?? 1)
@@ -383,7 +390,14 @@ export function AnalysisCanvas({
           <MetricsPanel
             display={display}
             live={
-              liveDb ? { peakDbfs: livePeak, rmsDbfs: liveRms } : null
+              liveDb
+                ? {
+                    peakDbfs: livePeak,
+                    rmsDbfs: liveRms,
+                    peakPerChannel: livePeakPerChannel,
+                    rmsPerChannel: liveRmsPerChannel,
+                  }
+                : null
             }
             minDb={minDb}
             maxDb={maxDb}

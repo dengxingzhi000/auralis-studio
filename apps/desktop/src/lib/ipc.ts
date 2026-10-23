@@ -68,9 +68,13 @@ export async function analyzeSynthetic(
 ): Promise<TimedAnalysis> {
   const t0 = performance.now();
   const raw = await invoke<
-    Omit<SyntheticAnalysis, "spectrumDb" | "waveformEnvelope"> & {
+    Omit<
+      SyntheticAnalysis,
+      "spectrumDb" | "waveformEnvelope" | "waveformMin"
+    > & {
       spectrumDb: RawBytes;
       waveformEnvelope: RawBytes;
+      waveformMin: RawBytes;
     }
   >("analyze_synthetic_signal", {
     frequencyHz: req.frequencyHz,
@@ -86,6 +90,7 @@ export async function analyzeSynthetic(
     ...raw,
     spectrumDb: decodeF32(raw.spectrumDb),
     waveformEnvelope: decodeF32(raw.waveformEnvelope),
+    waveformMin: decodeF32(raw.waveformMin),
     roundTripMicros: (t1 - t0) * 1000,
   };
 }
@@ -155,8 +160,12 @@ export async function analyzeFile(
 ): Promise<TimedFileAnalysis> {
   const t0 = performance.now();
   const raw = await invoke<
-    Omit<FileAnalysis, "waveformEnvelope" | "spectrumDb" | "spectrogramDb"> & {
+    Omit<
+      FileAnalysis,
+      "waveformEnvelope" | "waveformMin" | "spectrumDb" | "spectrogramDb"
+    > & {
       waveformEnvelope: RawBytes;
+      waveformMin: RawBytes;
       spectrumDb: RawBytes;
       spectrogramDb: RawBytes;
     }
@@ -168,6 +177,7 @@ export async function analyzeFile(
   return {
     ...raw,
     waveformEnvelope: decodeF32(raw.waveformEnvelope),
+    waveformMin: decodeF32(raw.waveformMin),
     spectrumDb: decodeF32(raw.spectrumDb),
     spectrogramDb: decodeF32(raw.spectrogramDb),
     __elapsedMeasuredMs: performance.now() - t0,

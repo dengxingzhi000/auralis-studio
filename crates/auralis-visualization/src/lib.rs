@@ -28,6 +28,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod envelope;
 pub mod pyramid;
 
+pub use envelope::StreamingEnvelope;
 pub use pyramid::{EnvelopeLevel, MinMax, WaveformPyramid};

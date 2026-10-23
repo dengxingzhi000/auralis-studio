@@ -196,6 +196,7 @@ export function ResourcePanel({
             peakDbfs={livePeak}
             rmsDbfs={liveRms}
             peakPerChannel={[]}
+            rmsPerChannel={[]}
             minDb={MIN_DB}
             maxDb={MAX_DB}
             overFullScale={0}

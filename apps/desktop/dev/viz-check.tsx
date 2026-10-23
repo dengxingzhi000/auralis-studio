@@ -225,6 +225,7 @@ function VizCheck() {
           <Pane title="波形包络">
             <WaveformView
               envelope={envelope}
+              envelopeMin={envelope}
               sampleRate={SAMPLE_RATE}
               channels={1}
               durationSeconds={1.6}

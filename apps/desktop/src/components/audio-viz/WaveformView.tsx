@@ -18,8 +18,13 @@ import { useEffect, useRef } from "react";
 import { fitCanvas } from "./canvas-fit";
 
 export interface WaveformViewProps {
-  /** 包络值，值域 [-1, 1]；null = 尚无数据 */
+  /** 每桶最大值，值域 [-1, 1]；null = 尚无数据 */
   envelope: Float32Array | null;
+  /**
+   * 每桶最小值，布局与 `envelope` 一致。与 `envelope` 配对才能画出
+   * 真实的 min/max 带；只给最大值会丢掉负半波。
+   */
+  envelopeMin: Float32Array | null;
   /** 采样率，用于时间轴刻度 */
   sampleRate: number;
   /** 声道数 */
@@ -40,6 +45,7 @@ const PAD = { left: 50, right: 12, top: 10, bottom: 24 };
 
 export function WaveformView({
   envelope,
+  envelopeMin,
   sampleRate,
   channels,
   durationSeconds = null,
@@ -49,12 +55,20 @@ export function WaveformView({
   const wrapRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef({
     envelope,
+    envelopeMin,
     sampleRate,
     channels,
     durationSeconds,
     layout,
   });
-  stateRef.current = { envelope, sampleRate, channels, durationSeconds, layout };
+  stateRef.current = {
+    envelope,
+    envelopeMin,
+    sampleRate,
+    channels,
+    durationSeconds,
+    layout,
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -155,16 +169,23 @@ export function WaveformView({
       ctx.lineTo(plotX + plotW, plotY + plotH + 0.5);
       ctx.stroke();
 
-      if (s.envelope && s.envelope.length > 1) {
-        const n = s.envelope.length;
+      // 包络是**每声道**一份，max/min 两个数组布局相同。
+      // 旧实现把同一份通道 0 数据画在所有 lane 上，立体声会看起来完全一样。
+      const maxLen = s.envelope?.length ?? 0;
+      const minLen = s.envelopeMin?.length ?? 0;
+      // 旧数据/取消结果可能没有 min：此时退回只用 max 画细线，而不是整块空白。
+      const n = Math.floor((minLen > 0 ? Math.min(maxLen, minLen) : maxLen) / chCount);
+
+      if (n > 1) {
+        const maxArr = s.envelope!;
+        const minArr = minLen > 0 ? s.envelopeMin! : maxArr;
 
         // ---- 包络 ----
         // 采样点与像素是两种密度，必须分开处理：
         //   · 每像素 ≥4 个样本 -> 按列聚合 min/max，画出竖线带
-        //   · 否则（合成信号这种短片段）-> 直接连线，避免出现摩尔纹
-        // M1 版只做逐点连线：2000 点在宽画布上看着还行，但在噪声上会糊成
-        // 一片，而且丢掉极值；反过来一味按列聚合又会让低频信号变成梳齿。
+        //   · 否则 -> 逐点画 min/max 竖线 + 中点连线，避免摩尔纹
         for (let ch = 0; ch < chCount; ch++) {
+          const base = ch * n;
           const baseY = laneCenter(ch);
           const half = (laneH / 2) * 0.92;
           const color = token(`--channel-${ch % 6}`);
@@ -184,25 +205,45 @@ export function WaveformView({
               let lo = Infinity;
               let hi = -Infinity;
               for (let i = i0; i < i1; i++) {
-                const v = s.envelope[i]!;
-                if (v < lo) lo = v;
-                if (v > hi) hi = v;
+                const vMin = minArr[base + i]!;
+                const vMax = maxArr[base + i]!;
+                if (vMin < lo) lo = vMin;
+                if (vMax > hi) hi = vMax;
               }
               if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
               const x = Math.round(plotX + c) + 0.5;
-              ctx.moveTo(x, baseY - Math.min(1, hi) * half);
-              ctx.lineTo(x, baseY - Math.max(-1, lo) * half);
+              ctx.moveTo(x, baseY - Math.max(-1, Math.min(1, hi)) * half);
+              ctx.lineTo(x, baseY - Math.max(-1, Math.min(1, lo)) * half);
             }
             ctx.stroke();
             ctx.globalAlpha = 1;
           } else {
-            // 稀疏：逐点连线。单声道时额外加一层渐变填充，
-            // 与频谱曲线的视觉语言保持一致。
+            // 稀疏：先画每点的 min/max 竖线（真实极值），再画中点连线。
+            // 只画中点会把波形变细，也看不出两侧极值。
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = 0.35;
+            ctx.lineWidth = 1;
             ctx.beginPath();
             for (let i = 0; i < n; i++) {
-              const v = s.envelope[i]!;
               const x = plotX + (i / (n - 1)) * plotW;
-              const y = baseY - Math.max(-1, Math.min(1, v)) * half;
+              const top = baseY - Math.max(-1, Math.min(1, maxArr[base + i]!)) * half;
+              const bottom =
+                baseY - Math.max(-1, Math.min(1, minArr[base + i]!)) * half;
+              ctx.moveTo(x, top);
+              ctx.lineTo(x, bottom);
+            }
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+
+            const mid = (i: number) =>
+              (Math.max(-1, Math.min(1, maxArr[base + i]!)) +
+                Math.max(-1, Math.min(1, minArr[base + i]!))) *
+              0.5;
+
+            ctx.beginPath();
+            for (let i = 0; i < n; i++) {
+              const x = plotX + (i / (n - 1)) * plotW;
+              const y = baseY - mid(i) * half;
               if (i === 0) ctx.moveTo(x, y);
               else ctx.lineTo(x, y);
             }
@@ -225,9 +266,8 @@ export function WaveformView({
               // 重画描边：fill 之后路径已被 closePath 污染
               ctx.beginPath();
               for (let i = 0; i < n; i++) {
-                const v = s.envelope[i]!;
                 const x = plotX + (i / (n - 1)) * plotW;
-                const y = baseY - Math.max(-1, Math.min(1, v)) * half;
+                const y = baseY - mid(i) * half;
                 if (i === 0) ctx.moveTo(x, y);
                 else ctx.lineTo(x, y);
               }
@@ -241,9 +281,9 @@ export function WaveformView({
         }
 
         // ---- 时间刻度 ----
-        // 总时长优先用 Rust 给的 durationSeconds；没给才回退到
-        // 「包络点数 / 采样率」（这是显示回退，不是数值计算）。
-        const totalSec = s.durationSeconds ?? n / s.sampleRate;
+        // 总时长只信 Rust 给的 durationSeconds；不要再拿包络点数
+        // 除以采样率去猜（包络是显示点，不是样本数）。
+        const totalSec = s.durationSeconds ?? 0;
         ctx.fillStyle = token("--axis-label");
         ctx.font = `10px ${monoFont}`;
         ctx.textAlign = "center";

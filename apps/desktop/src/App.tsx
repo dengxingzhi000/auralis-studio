@@ -178,6 +178,10 @@ export default function App() {
   // ---- 实时采集（M4）----
   const [livePeak, setLivePeak] = useState<number | null>(null);
   const [liveRms, setLiveRms] = useState<number | null>(null);
+  const [livePeaks, setLivePeaks] = useState<(number | null)[]>([]);
+  const [liveRmsPerChannel, setLiveRmsPerChannel] = useState<
+    (number | null)[]
+  >([]);
   const [liveDb, setLiveDb] = useState<Float32Array | null>(null);
   const [liveStepHz, setLiveStepHz] = useState(1);
   const [liveSampleRate, setLiveSampleRate] = useState<number | null>(null);
@@ -411,6 +415,8 @@ export default function App() {
         startHz: 0,
         stepHz: a.spectrumStepHz,
         env: a.waveformEnvelope,
+        envMin: a.waveformMin,
+        envPoints: a.waveformPoints,
         sampleRate: a.info.sampleRate,
         durationSeconds: a.decodedDurationSeconds,
         peakDbfs: a.peakDbfs,
@@ -419,7 +425,10 @@ export default function App() {
         dc: a.dc,
         outcome: a.outcome,
         elapsedMs: a.__elapsedMeasuredMs,
-        bytes: a.waveformEnvelope.byteLength + a.spectrumDb.byteLength,
+        bytes:
+          a.waveformEnvelope.byteLength +
+          a.waveformMin.byteLength +
+          a.spectrumDb.byteLength,
         peaks: a.peaks,
         fftSize: a.fftSize,
         window: a.window,
@@ -747,6 +756,8 @@ export default function App() {
         startHz: r.spectrumStartHz,
         stepHz: r.spectrumStepHz,
         env: r.waveformEnvelope,
+        envMin: r.waveformMin,
+        envPoints: r.waveformPoints,
         sampleRate: r.metrics.sampleRate,
         durationSeconds: r.metrics.sampleCount / r.metrics.sampleRate,
         peakDbfs: r.metrics.peakDbfs,
@@ -1142,6 +1153,8 @@ export default function App() {
               setLiveSampleRate(snap ? snap.sampleRate : null);
               setLivePeak(snap ? snap.peakDbfs : null);
               setLiveRms(snap ? snap.rmsDbfs : null);
+              setLivePeaks(snap ? snap.peakDbfsPerChannel : []);
+              setLiveRmsPerChannel(snap ? snap.rmsDbfsPerChannel : []);
             }}
             liveRunning={liveRunning}
             onLiveStatusChange={(running) => {
@@ -1171,6 +1184,8 @@ export default function App() {
             liveStepHz={liveStepHz}
             livePeak={livePeak}
             liveRms={liveRms}
+            livePeakPerChannel={livePeaks}
+            liveRmsPerChannel={liveRmsPerChannel}
             display={display}
             selected={selected}
             sampleRate={sampleRate}

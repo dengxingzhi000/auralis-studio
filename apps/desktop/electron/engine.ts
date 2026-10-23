@@ -19,7 +19,12 @@ import readline from "node:readline";
 import { app } from "electron";
 
 /** 引擎响应里承载二进制数据的字段名（Rust 侧以 base64 字符串发送）。 */
-const BINARY_FIELDS = new Set(["spectrumDb", "waveformEnvelope", "spectrogramDb"]);
+const BINARY_FIELDS = new Set([
+  "spectrumDb",
+  "waveformEnvelope",
+  "waveformMin",
+  "spectrogramDb",
+]);
 
 /** 一次请求的待决回调。 */
 interface Pending {

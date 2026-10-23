@@ -127,10 +127,17 @@ pub struct FileAnalysisDto {
     pub decoded_duration_seconds: f64,
     /// 处理耗时，毫秒。
     pub elapsed_ms: u64,
-    /// 波形包络，`Float32Array`，值域 [-1, 1]。
+    /// 波形包络的**每桶最大值**，`Float32Array`，值域 [-1, 1]。
+    ///
+    /// 多声道时按声道分组（`[ch0 的 points 个值, ch1 的 points 个值, …]`）。
+    /// 与 [`Self::waveform_min`] 配对才能画出真实的 min/max 竖线带；
+    /// 单独使用会丢掉负半波。
     #[serde(serialize_with = "crate::b64::encode")]
     pub waveform_envelope: Vec<u8>,
-    /// 包络点数。
+    /// 波形包络的**每桶最小值**，布局与 `waveform_envelope` 完全一致。
+    #[serde(serialize_with = "crate::b64::encode")]
+    pub waveform_min: Vec<u8>,
+    /// 每声道的包络点数。
     pub waveform_points: usize,
     /// 频谱 dB，`Float32Array`，已按画布宽度降采样（M2）。
     #[serde(serialize_with = "crate::b64::encode")]
@@ -630,7 +637,11 @@ pub fn export_analysis(
     }
 
     let spectrum = f32s_from_le_bytes(&dto.spectrum_db);
-    let waveform = f32s_from_le_bytes(&dto.waveform_envelope);
+    let waveform_all = f32s_from_le_bytes(&dto.waveform_envelope);
+    // 导出 schema 目前只带通道 0 的峰值包络；多声道分析结果在 UI 里
+    // 仍然按声道显示。slice 保证 `waveform_points` 是**每声道**点数，
+    // 不会因为立体声变成两倍。
+    let waveform = &waveform_all[..dto.waveform_points.min(waveform_all.len())];
     let peaks: Vec<ExportPeak> = dto
         .peaks
         .iter()
@@ -671,7 +682,7 @@ pub fn export_analysis(
                 spectrogram_bins: dto.spectrogram_bins,
                 spectrogram_hop_ms: dto.spectrogram_hop_ms,
                 waveform_points: waveform.len(),
-                waveform_source: "channel 0, per-bucket maximum",
+                waveform_source: "channel 0, per-bucket maximum (peak envelope)",
             },
         },
         metrics: ExportMetrics {
@@ -685,7 +696,7 @@ pub fn export_analysis(
             sanitized_samples: dto.sanitized_samples,
         },
         spectrum_db: &spectrum,
-        waveform_envelope: &waveform,
+        waveform_envelope: waveform,
         peaks: &peaks,
     };
 
@@ -768,9 +779,17 @@ fn run_analysis(
     let mut over_fs = 0_usize;
     let mut sanitized = 0_usize;
 
-    // 波形包络：按块累积 min/max，最后重采样
-    let mut envelope = Vec::<f32>::new();
+    // 波形包络：流式累积每声道 min/max。内存只与目标点数有关，
+    // 并覆盖整条时间轴（不能像旧实现那样只保留最后一段）。
+    let n_ch = channels as usize;
+    let mut envelope = auralis_visualization::StreamingEnvelope::new(n_ch, envelope_points);
     let mut frames_seen = 0_u64;
+
+    // 削波平顶：连续段可能跨解码块，状态必须跨块保留。
+    let mut clipping_tracker = auralis_dsp::StreamingFlatTop::new(
+        channels as usize,
+        auralis_dsp::ClippingConfig::default(),
+    );
 
     // 频谱/声谱图的取样缓冲：只留开头 SPECTRUM_WINDOW_SECONDS 秒，
     // 内存占用恒定，与文件长度无关。
@@ -792,7 +811,6 @@ fn run_analysis(
             None => break,
             Some(block) => {
                 let samples = &block.pcm.samples;
-                let n_ch = channels as usize;
 
                 for (i, &raw) in samples.iter().enumerate() {
                     let x = if raw.is_finite() {
@@ -813,10 +831,11 @@ fn run_analysis(
                     }
                 }
 
-                // 包络：把本块整体降采样到目标比例
+                // 包络与削波都按**原始块**喂入；非有限样本由它们自己清理。
                 let block_frames = block.pcm.frame_count();
                 frames_seen += block_frames as u64;
-                collect_envelope(samples, n_ch, &mut envelope, frames_seen, envelope_points);
+                envelope.push_interleaved(samples);
+                clipping_tracker.push_interleaved(samples);
 
                 // 频谱取样：只留开头 SPECTRUM_WINDOW_SECONDS 秒的通道 0
                 if spectrum_capture.len() < capture_frames {
@@ -869,8 +888,8 @@ fn run_analysis(
     let rms = (all_sq / total_samples).sqrt() as f32;
     let dc = (sum.iter().sum::<f64>() / total_samples) as f32;
 
-    // 削波检测用逐声道视图
-    let clipping_regions = detect_clipping_regions(total_frames, channels);
+    // 平顶片段（启发式）：流式检测，跨块连续段只计一次。
+    let clipping_regions = clipping_tracker.finish().regions;
 
     // --- 频谱：取开头 SPECTRUM_WINDOW_SECONDS 秒，逐 bin 取各帧最大值 ---
     //
@@ -923,6 +942,20 @@ fn run_analysis(
     let spectrogram_bins = matrix.first().map_or(0, Vec::len);
     let flat: Vec<f32> = matrix.into_iter().flatten().collect();
 
+    // 包络按声道分组：`[ch0 的 points 个值, ch1 的 points 个值, …]`。
+    // 前端按同样的布局切分，每个声道画自己的 min/max 带。
+    let envelope = envelope.finish();
+    let mut waveform_max = Vec::with_capacity(envelope_points * n_ch);
+    let mut waveform_min = Vec::with_capacity(envelope_points * n_ch);
+    for channel in &envelope {
+        for bucket in channel {
+            waveform_max.push(bucket.max);
+            waveform_min.push(bucket.min);
+        }
+    }
+    debug_assert_eq!(waveform_max.len(), envelope_points * n_ch);
+    debug_assert_eq!(waveform_min.len(), waveform_max.len());
+
     Ok(FileAnalysisDto {
         info: dto_of(info, sample_rate, channels, total_frames),
         peak_dbfs: peak_dbfs_per_channel
@@ -952,7 +985,8 @@ fn run_analysis(
         declared_duration_seconds,
         decoded_duration_seconds: total_frames as f64 / f64::from(sample_rate),
         elapsed_ms: 0,
-        waveform_envelope: f32s_to_le_bytes(&resample_envelope(&envelope, envelope_points)),
+        waveform_envelope: f32s_to_le_bytes(&waveform_max),
+        waveform_min: f32s_to_le_bytes(&waveform_min),
         waveform_points: envelope_points,
         spectrum_db,
         spectrum_bins,
@@ -1044,6 +1078,7 @@ fn finish_cancelled(
         decoded_duration_seconds: 0.0,
         elapsed_ms: 0,
         waveform_envelope: Vec::new(),
+        waveform_min: Vec::new(),
         waveform_points: points,
         spectrum_db: Vec::new(),
         spectrum_bins: 0,
@@ -1059,59 +1094,6 @@ fn finish_cancelled(
         task_id: 0,
         outcome: "cancelled".to_string(),
     }
-}
-
-/// 按块累积包络。
-///
-/// 不一次性把整个文件收进内存——只保留 `frames_seen / points` 个格子的累计值。
-fn collect_envelope(
-    samples: &[f32],
-    channels: usize,
-    acc: &mut Vec<f32>,
-    frames_seen: u64,
-    points: usize,
-) {
-    let frames_here = samples.len() / channels.max(1);
-    let _ = frames_here;
-    // 简化策略：按固定步长取样，够 M1 用；M2 换多级金字塔
-    let step = (frames_seen as usize).max(1) / points.max(1);
-    if step == 0 {
-        return;
-    }
-    let start = (frames_seen as usize) % step;
-    for &v in samples.iter().skip(start).step_by(step * channels.max(1)) {
-        if v.is_finite() {
-            acc.push(v);
-        }
-    }
-    // 控制上限，避免长文件撑爆内存
-    let cap = points * 2;
-    if acc.len() > cap {
-        acc.drain(..acc.len() - points);
-    }
-}
-
-/// 把累积的包络重采样到目标点数。
-fn resample_envelope(src: &[f32], points: usize) -> Vec<f32> {
-    if src.is_empty() {
-        return vec![0.0; points];
-    }
-    (0..points)
-        .map(|i| {
-            let lo = i * src.len() / points;
-            let hi = (((i + 1) * src.len() / points).max(lo + 1)).min(src.len());
-            src[lo..hi].iter().copied().fold(0.0_f32, f32::max)
-        })
-        .collect()
-}
-
-/// 削波片段数。
-///
-/// M1 先返回 0：完整实现需要在解码时保留逐样本轨迹，
-/// 与「分块、内存有界」的约束冲突。M2 会随波形金字塔一起实现。
-/// **这里返回 0 而不是猜一个数**，避免 UI 显示虚假信息。
-fn detect_clipping_regions(_frames: u64, _channels: u32) -> u32 {
-    0
 }
 
 /// 对已解码的信号做一次频谱分析（M2）。
@@ -1148,19 +1130,29 @@ fn compute_spectrum(
 
     // 峰值必须从**合并后**的谱里检出：合并前的单帧峰值只是那一瞬间的，
     // 与界面上画出来的峰值频谱对不上（实测文件的峰值曾与曲线相差几十 dB）。
-    let peaks = auralis_dsp::detect_peaks(&merged, tmp.bin_hz, 8)
-        .iter()
-        .take(8)
-        .map(|p| PeakDto {
-            frequency_hz: p.frequency_hz,
-            amplitude_dbfs: p.amplitude_dbfs,
-            interpolated_dbfs: p.interpolated_dbfs,
-            bin_frequency_hz: p.bin_frequency_hz,
-            bin_offset: p.bin_offset,
-            scalloping_db: p.scalloping_db(),
-            estimated: p.is_estimated(),
-        })
-        .collect();
+    // 过滤旁瓣/噪声起伏：prominence ≥ 6 dB、间距 ≥ 2 bin、动态范围 80 dB。
+    // 只做局部极大判定时，窗函数旁瓣和噪声会在谱里制造大量假峰。
+    let peaks = auralis_dsp::detect_peaks_with(
+        &merged,
+        tmp.bin_hz,
+        &auralis_dsp::PeakPickConfig {
+            max_peaks: 8,
+            min_prominence_db: 6.0,
+            min_distance_bins: 2.0,
+            dynamic_range_db: 80.0,
+        },
+    )
+    .into_iter()
+    .map(|p| PeakDto {
+        frequency_hz: p.frequency_hz,
+        amplitude_dbfs: p.amplitude_dbfs,
+        interpolated_dbfs: p.interpolated_dbfs,
+        bin_frequency_hz: p.bin_frequency_hz,
+        bin_offset: p.bin_offset,
+        scalloping_db: p.scalloping_db(),
+        estimated: p.is_estimated(),
+    })
+    .collect();
 
     Ok((f32s_to_le_bytes(&db), db.len(), step, peaks))
 }
@@ -1220,9 +1212,18 @@ mod tests {
         let rms = d.rms_dbfs.expect("非静音");
         assert!((rms - -9.030_9).abs() < 0.1, "rms={rms}");
 
-        // 包络长度与字节长度必须匹配
+        // 包络长度与字节长度必须匹配（max/min 各一份）
         assert_eq!(d.waveform_envelope.len(), 1024 * 4);
+        assert_eq!(d.waveform_min.len(), 1024 * 4);
         assert_eq!(d.waveform_points, 1024);
+
+        let max = f32s_from_le_bytes(&d.waveform_envelope);
+        let min = f32s_from_le_bytes(&d.waveform_min);
+        assert!(max.iter().any(|v| *v > 0.4), "应保留正峰值");
+        assert!(
+            min.iter().any(|v| *v < -0.4),
+            "应保留负峰值；只有 max 的包络会把波形画成半波"
+        );
 
         std::fs::remove_file(&path).ok();
     }
@@ -1382,21 +1383,52 @@ mod tests {
     }
 
     #[test]
-    fn envelope_length_matches_request() {
-        let src = vec![0.1_f32, -0.2, 0.3, 0.4, -0.5, 0.6];
-        let out = resample_envelope(&src, 3);
-        assert_eq!(out.len(), 3);
-        // 每组取最大值
-        assert_eq!(out[0], 0.1);
-        assert_eq!(out[1], 0.4);
-        assert_eq!(out[2], 0.6);
+    fn waveform_envelope_is_per_channel_min_max() {
+        let dir = scratch("stereo-env");
+        let path = dir.join("st.wav");
+        write_wav_s16(&path, 48_000, 2, &stereo_tone_i16(48_000, 24_000));
+
+        let d = run_analysis(&path, &CancelToken::new(), 256).expect("analysis");
+        let max = f32s_from_le_bytes(&d.waveform_envelope);
+        let min = f32s_from_le_bytes(&d.waveform_min);
+        assert_eq!(max.len(), 256 * 2, "每个声道一份包络");
+        assert_eq!(min.len(), max.len());
+
+        let peak = |slice: &[f32]| slice.iter().fold(0.0_f32, |a, v| a.max(v.abs()));
+        let left = peak(&max[..256]);
+        let right = peak(&max[256..]);
+        assert!((left - 0.5).abs() < 0.02, "左声道峰值应约 0.5，实得 {left}");
+        assert!(
+            (right - 0.15).abs() < 0.02,
+            "右声道峰值应约 0.15，实得 {right}"
+        );
+        // 两个声道不能是同一份数据的复制
+        assert!((left - right).abs() > 0.2);
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn envelope_of_empty_input_is_zeros_not_panic() {
-        let out = resample_envelope(&[], 8);
-        assert_eq!(out.len(), 8);
-        assert!(out.iter().all(|v| *v == 0.0));
+    fn clipping_regions_are_counted_across_decode_blocks() {
+        let dir = scratch("clipping");
+        let path = dir.join("clip.wav");
+        // 低频方波式平顶：50 Hz 正弦 clamp 到 ±1.0，平顶跨多个采样点。
+        let frames = 48_000;
+        let mut samples = Vec::with_capacity(frames);
+        for i in 0..frames {
+            let phase = std::f64::consts::TAU * 50.0 * i as f64 / 48_000.0;
+            let v = (phase.sin() * 1.2).clamp(-1.0, 1.0);
+            samples.push((v * f64::from(i16::MAX)).round() as i16);
+        }
+        write_wav_s16(&path, 48_000, 1, &samples);
+
+        let d = run_analysis(&path, &CancelToken::new(), 128).expect("analysis");
+        assert!(
+            d.clipping_regions > 0,
+            "平顶片段必须被计数，实际为 0（占位实现没有接上流式检测）"
+        );
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

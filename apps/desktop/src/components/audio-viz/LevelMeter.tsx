@@ -24,6 +24,8 @@ export interface LevelMeterProps {
   rmsDbfs: number | null;
   /** 逐声道峰值 dBFS；空数组时只显示一条总体电平 */
   peakPerChannel: (number | null)[];
+  /** 逐声道 RMS dBFS；空数组表示未提供（离线分析暂未计算逐声道 RMS） */
+  rmsPerChannel: (number | null)[];
   /** 量程下限 dB */
   minDb: number;
   /** 量程上限 dB */
@@ -50,6 +52,7 @@ export function LevelMeter({
   peakDbfs,
   rmsDbfs,
   peakPerChannel,
+  rmsPerChannel,
   minDb,
   maxDb,
   overFullScale,
@@ -60,8 +63,9 @@ export function LevelMeter({
       ? peakPerChannel.map((p, i) => ({
           label: `CH${i + 1}`,
           peak: p,
-          // 逐声道的 RMS 没有单独计算，这里不假装有：只标整体 RMS
-          rms: peakPerChannel.length === 1 ? rmsDbfs : null,
+          // 实时输入有逐声道 RMS；离线分析目前只给逐声道峰值，
+          // 缺 RMS 时不要拿整体 RMS 冒充某一声道的值。
+          rms: rmsPerChannel[i] ?? (peakPerChannel.length === 1 ? rmsDbfs : null),
         }))
       : [{ label: "MIX", peak: peakDbfs, rms: rmsDbfs }];
 

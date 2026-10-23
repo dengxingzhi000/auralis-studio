@@ -29,7 +29,14 @@ export interface MetricsPanelProps {
   /** 文件分析结果；null = 还没打开文件 */
   display: DisplayData | null;
   /** 实时读数；null = 未在采集 */
-  live: { peakDbfs: number | null; rmsDbfs: number | null } | null;
+  live: {
+    peakDbfs: number | null;
+    rmsDbfs: number | null;
+    /** 逐声道峰值；mid-sum 抵消时这里仍能显示真实电平 */
+    peakPerChannel: (number | null)[];
+    /** 逐声道 RMS */
+    rmsPerChannel: (number | null)[];
+  } | null;
   /** 电平表量程下限 dB */
   minDb: number;
   /** 电平表量程上限 dB */
@@ -58,6 +65,9 @@ export function MetricsPanel({
   const isLive = live !== null;
   const peak = live ? live.peakDbfs : (display?.peakDbfs ?? null);
   const rms = live ? live.rmsDbfs : (display?.rmsDbfs ?? null);
+  const perChannel = live
+    ? live.peakPerChannel
+    : (display?.peakPerChannel ?? []);
 
   return (
     <div className="metrics-grid">
@@ -70,15 +80,16 @@ export function MetricsPanel({
         <LevelMeter
           peakDbfs={peak}
           rmsDbfs={rms}
-          peakPerChannel={isLive ? [] : (display?.peakPerChannel ?? [])}
+          peakPerChannel={perChannel}
+          rmsPerChannel={live ? live.rmsPerChannel : []}
           minDb={minDb}
           maxDb={maxDb}
           overFullScale={isLive ? null : (display?.overFullScaleSamples ?? null)}
           clippingRegions={isLive ? null : (display?.clippingRegions ?? null)}
         />
-        {!isLive && display && display.peakPerChannel.length > 1 && (
+        {perChannel.length > 1 && (
           <div className="metrics-sub">
-            {display.peakPerChannel.map((p, i) => (
+            {perChannel.map((p, i) => (
               <DataRow
                 key={i}
                 label={`CH${i + 1} Peak`}
@@ -137,8 +148,8 @@ export function MetricsPanel({
         <DataRow
           label="包络点数"
           value={
-            display?.env?.length != null
-              ? display.env.length.toLocaleString("en-US")
+            display?.envPoints != null && display.envPoints > 0
+              ? `${display.envPoints.toLocaleString("en-US")} / 声道`
               : "—"
           }
         />

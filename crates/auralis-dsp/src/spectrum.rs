@@ -441,18 +441,58 @@ impl SpectrumAnalyzer {
     }
 }
 
+/// 谱峰挑选参数。
+///
+/// 默认值保持旧行为（不按 prominence / 动态范围过滤），只有显式配置时
+/// 才启用更严格的挑选。这样帧级调用者（STFT / 实时）不会被意外改变。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PeakPickConfig {
+    /// 最多返回多少个峰。
+    pub max_peaks: usize,
+    /// 最小 prominence，dB。低于它的局部极大视为噪声/旁瓣。
+    pub min_prominence_db: f32,
+    /// 两个峰之间至少相隔多少个 bin。
+    pub min_distance_bins: f32,
+    /// 动态范围门限：低于「最强峰 − 该值」的峰被丢弃。
+    pub dynamic_range_db: f32,
+}
+
+impl Default for PeakPickConfig {
+    fn default() -> Self {
+        Self {
+            max_peaks: 8,
+            min_prominence_db: 0.0,
+            min_distance_bins: 1.0,
+            dynamic_range_db: 120.0,
+        }
+    }
+}
+
 /// 检测谱峰。
 ///
 /// 步骤（`design.md` §5.5）：
 /// 1. 局部极大判定 `m[k] > m[k-1] && m[k] >= m[k+1]`
 /// 2. 对三点的**对数幅值**做抛物线插值
-/// 3. 按最小间隔去重
+/// 3. 按配置做 prominence / 动态范围 / 最小间隔过滤
 /// 4. 按幅值降序取前 `max_peaks` 个
 ///
 /// 每个峰同时保留**未插值**的 bin 频率，便于验证。
 #[must_use]
 pub fn detect_peaks(amplitudes: &[f32], bin_hz: f64, max_peaks: usize) -> Vec<Peak> {
-    if amplitudes.len() < 3 || max_peaks == 0 {
+    detect_peaks_with(
+        amplitudes,
+        bin_hz,
+        &PeakPickConfig {
+            max_peaks,
+            ..PeakPickConfig::default()
+        },
+    )
+}
+
+/// 带过滤条件的谱峰检测。语义见 [`detect_peaks`] 与 [`PeakPickConfig`]。
+#[must_use]
+pub fn detect_peaks_with(amplitudes: &[f32], bin_hz: f64, config: &PeakPickConfig) -> Vec<Peak> {
+    if amplitudes.len() < 3 || config.max_peaks == 0 {
         return Vec::new();
     }
     let n = amplitudes.len();
@@ -534,13 +574,78 @@ pub fn detect_peaks(amplitudes: &[f32], bin_hz: f64, max_peaks: usize) -> Vec<Pe
         });
     }
 
+    // 动态范围门限：先丢掉明显低于最强峰的旁瓣/底噪。
+    let loudest = peaks
+        .iter()
+        .map(|p| p.amplitude_dbfs)
+        .fold(f32::NEG_INFINITY, f32::max);
+    if loudest.is_finite() && config.dynamic_range_db.is_finite() {
+        peaks.retain(|p| p.amplitude_dbfs >= loudest - config.dynamic_range_db);
+    }
+
+    // Prominence：峰高减去两侧较浅的那个「鞍点」。
+    // 只看局部极大不够——窗函数旁瓣、噪声起伏都会产生局部极大。
+    if config.min_prominence_db > 0.0 {
+        peaks.retain(|p| prominence_db(amplitudes, p.bin_index) >= config.min_prominence_db);
+    }
+
+    // 先按幅值降序，再按最小间隔贪心挑选：强峰优先保留，
+    // 弱峰若离已选峰太近就丢弃（而不是让两者挤在一起）。
     peaks.sort_by(|p, q| {
         q.amplitude_dbfs
             .partial_cmp(&p.amplitude_dbfs)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    peaks.truncate(max_peaks);
-    peaks
+
+    let mut selected: Vec<Peak> = Vec::with_capacity(config.max_peaks);
+    for peak in peaks {
+        let pos = peak.bin_index as f32 + peak.bin_offset;
+        let far_enough = selected.iter().all(|kept| {
+            let kpos = kept.bin_index as f32 + kept.bin_offset;
+            (pos - kpos).abs() >= config.min_distance_bins
+        });
+        if far_enough {
+            selected.push(peak);
+            if selected.len() == config.max_peaks {
+                break;
+            }
+        }
+    }
+    selected
+}
+
+/// 局部极大的 prominence，dB。
+///
+/// 从峰向两侧扫描，遇到更高的峰就停；两侧各自的最低点里，取**较高**的
+/// 那个作为基准（较浅的鞍点决定了这个峰「突出」多少）。这是 prominence
+/// 的标准定义，也是 librosa / SciPy 峰值挑选的语义。
+fn prominence_db(amplitudes: &[f32], k: usize) -> f32 {
+    let peak = f64::from(amplitudes[k].max(1e-30));
+    let mut left_min = f64::INFINITY;
+    let mut i = k;
+    while i > 0 {
+        i -= 1;
+        let v = f64::from(amplitudes[i].max(1e-30));
+        if v > peak {
+            break;
+        }
+        left_min = left_min.min(v);
+    }
+    let mut right_min = f64::INFINITY;
+    let mut i = k;
+    while i + 1 < amplitudes.len() {
+        i += 1;
+        let v = f64::from(amplitudes[i].max(1e-30));
+        if v > peak {
+            break;
+        }
+        right_min = right_min.min(v);
+    }
+    let base = left_min.max(right_min);
+    if !base.is_finite() || base <= 0.0 {
+        return 0.0;
+    }
+    (20.0 * (peak / base).log10()) as f32
 }
 
 #[cfg(test)]
@@ -1185,5 +1290,135 @@ mod tests {
         let f = a.analyze(&vec![0.0_f32; n], FS).unwrap()[0].clone();
         assert!(f.amplitudes.iter().all(|x| x.is_finite()));
         assert_eq!(f.amplitudes.len(), n / 2 + 1);
+    }
+
+    /// 平顶窗把最坏扇贝损失从 Hann 的约 1.42 dB 压到约 0.01 dB。
+    ///
+    /// 这是「幅值测量」与「频率分辨率」之间的权衡：flat-top 的 ENBW 是
+    /// Hann 的 2.5 倍，但读数不随频率偏离 bin 中心而大幅下降。
+    #[test]
+    fn flat_top_reduces_scalloping_loss_for_non_coherent_tone() {
+        let n = 4096;
+        // 85.5 bin：正好落在两个 bin 中间，是扇贝损失的最坏情况。
+        let freq = 85.5 * f64::from(FS) / n as f64;
+        let signal = sine(freq, 1.0, n);
+
+        let hann = SpectrumAnalyzer::new(SpectrumConfig {
+            fft_size: n,
+            hop_size: n,
+            window: WindowFunction::Hann,
+            remove_dc: false,
+        })
+        .unwrap();
+        let flat = SpectrumAnalyzer::new(SpectrumConfig {
+            fft_size: n,
+            hop_size: n,
+            window: WindowFunction::FlatTop,
+            remove_dc: false,
+        })
+        .unwrap();
+
+        let hann_db = hann.analyze(&signal, FS).unwrap()[0].peaks[0].amplitude_dbfs;
+        let flat_db = flat.analyze(&signal, FS).unwrap()[0].peaks[0].amplitude_dbfs;
+
+        // 未插值的 bin 读数：Hann 最坏约 -1.42 dB，flat-top 约 -0.01 dB。
+        assert!(
+            (hann_db - (-1.42)).abs() < 0.05,
+            "Hann 扇贝损失应约 1.42 dB，实得 {hann_db}"
+        );
+        assert!(
+            flat_db.abs() < 0.05,
+            "flat-top 扇贝损失应小于 0.05 dB，实得 {flat_db}"
+        );
+        assert!(
+            flat_db > hann_db + 1.0,
+            "flat-top 应明显优于 Hann: flat={flat_db} hann={hann_db}"
+        );
+    }
+
+    #[test]
+    fn prominence_filter_rejects_ripple_on_a_peak_skirt() {
+        // 主峰在 bin 20，右侧是一段下降的裙边；bin 30 上有一个只有
+        // 0.4 dB 的局部起伏。局部极大判定会把它当成峰，prominence
+        // 过滤必须认出它只是裙边上的噪声。
+        let mut a = vec![0.001_f32; 64];
+        a[19] = 0.001;
+        a[20] = 1.0;
+        for (i, v) in [0.8, 0.7, 0.6, 0.5, 0.45, 0.43, 0.41, 0.40, 0.40]
+            .iter()
+            .enumerate()
+        {
+            a[21 + i] = *v;
+        }
+        a[30] = 0.42; // 裙边上的小起伏
+        a[31] = 0.40;
+
+        let picked = detect_peaks_with(
+            &a,
+            1.0,
+            &PeakPickConfig {
+                max_peaks: 8,
+                min_prominence_db: 3.0,
+                min_distance_bins: 1.0,
+                dynamic_range_db: 120.0,
+            },
+        );
+        assert_eq!(picked.len(), 1, "只应保留主峰: {picked:?}");
+        assert_eq!(picked[0].bin_index, 20);
+
+        // 关掉 prominence 后同一个起伏会被检出，证明确实是过滤在起作用。
+        let unfiltered = detect_peaks_with(
+            &a,
+            1.0,
+            &PeakPickConfig {
+                max_peaks: 8,
+                min_prominence_db: 0.0,
+                min_distance_bins: 1.0,
+                dynamic_range_db: 120.0,
+            },
+        );
+        assert!(unfiltered.iter().any(|p| p.bin_index == 30));
+    }
+
+    #[test]
+    fn minimum_distance_keeps_the_stronger_of_two_close_peaks() {
+        let mut a = vec![1e-4_f32; 32];
+        a[9] = 1e-4;
+        a[10] = 1.0;
+        a[11] = 0.6;
+        a[12] = 0.9;
+        a[13] = 1e-4;
+
+        let picked = detect_peaks_with(
+            &a,
+            1.0,
+            &PeakPickConfig {
+                max_peaks: 8,
+                min_prominence_db: 0.0,
+                min_distance_bins: 3.0,
+                dynamic_range_db: 120.0,
+            },
+        );
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].bin_index, 10, "强峰优先保留");
+    }
+
+    #[test]
+    fn dynamic_range_gate_drops_floor_peaks() {
+        let mut a = vec![1e-7_f32; 64];
+        a[20] = 1.0;
+        a[40] = 1e-5; // -100 dBFS，低于 -80 dB 动态范围
+        let picked = detect_peaks_with(
+            &a,
+            1.0,
+            &PeakPickConfig {
+                max_peaks: 8,
+                min_prominence_db: 0.0,
+                min_distance_bins: 1.0,
+                dynamic_range_db: 80.0,
+            },
+        );
+        assert!(picked.iter().all(|p| p.bin_index != 40));
+        assert!(picked.iter().any(|p| p.bin_index == 20));
     }
 }

@@ -17,10 +17,11 @@ pub mod stft;
 pub mod window;
 
 pub use spectrum::{
-    ConfigError, Peak, SpectrumAnalyzer, SpectrumConfig, SpectrumFrame, detect_peaks,
-    power_spectral_density, single_sided_amplitude, single_sided_power,
+    ConfigError, Peak, PeakPickConfig, SpectrumAnalyzer, SpectrumConfig, SpectrumFrame,
+    detect_peaks, detect_peaks_with, power_spectral_density, single_sided_amplitude,
+    single_sided_power,
 };
 pub use stats::{ClippingConfig, ClippingFeatures, DcOffset, PeakLevel, Rms, SignalStats};
-pub use stats::{analyze_channel, detect_flat_top};
+pub use stats::{StreamingFlatTop, analyze_channel, detect_flat_top};
 pub use stft::{MIN_DB as STFT_MIN_DB, Stft, StftConfig, StftFrame};
 pub use window::WindowFunction;

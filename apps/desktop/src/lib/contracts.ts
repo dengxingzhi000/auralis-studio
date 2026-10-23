@@ -36,8 +36,8 @@ export interface SyntheticMetrics {
 /**
  * 合成信号分析结果。
  *
- * `spectrumDb` 与 `waveformEnvelope` 在 Rust 侧序列化为**小端 f32 字节流**，
- * 在 JS 侧还原为 Float32Array。
+ * `spectrumDb`、`waveformEnvelope` 与 `waveformMin` 在 Rust 侧序列化为
+ * **小端 f32 字节流**，在 JS 侧还原为 Float32Array。
  *
  * 这是 ADR-018 规则 2「二进制优先」的落点：线路上的 base64 字符串由
  * Electron 主进程还原为 `Uint8Array`，渲染进程不接触 JSON 数字数组。
@@ -51,8 +51,10 @@ export interface SyntheticAnalysis {
   spectrumStartHz: number;
   spectrumStepHz: number;
   spectrumBins: number;
-  /** Float32Array，值域 [-1, 1]，长度 = waveformPoints */
+  /** Float32Array，每桶最大值，值域 [-1, 1]，长度 = waveformPoints */
   waveformEnvelope: Float32Array;
+  /** Float32Array，每桶最小值，布局与 waveformEnvelope 一致 */
+  waveformMin: Float32Array;
   waveformPoints: number;
   /** Rust 侧分析 + 编码耗时，微秒 */
   computeMicros: number;
@@ -177,8 +179,17 @@ export interface FileAnalysis {
   /** duration actually decoded, seconds */
   decodedDurationSeconds: number;
   elapsedMs: number;
-  /** Float32Array in [-1, 1] */
+  /**
+   * Float32Array of per-bucket maxima in [-1, 1].
+   *
+   * Multi-channel data is channel-major: `[ch0 …points, ch1 …points]`.
+   * Always use together with `waveformMin`; using the max alone draws only
+   * the upper half of the waveform.
+   */
   waveformEnvelope: Float32Array;
+  /** Per-bucket minima, same layout as `waveformEnvelope`. */
+  waveformMin: Float32Array;
+  /** Points **per channel**. */
   waveformPoints: number;
   /** Float32Array of dB values, already downsampled to canvas width (ADR-018) */
   spectrumDb: Float32Array;
@@ -302,6 +313,14 @@ export interface RealtimeSnapshot {
   /** null = silence (true -inf, not a clamped number) */
   peakDbfs: number | null;
   rmsDbfs: number | null;
+  /**
+   * Per-channel peak dBFS. Antiphase stereo has full-scale values here even
+   * when the mid-sum spectrum cancels to silence — electric level meters
+   * must use this array, not the mono downmix.
+   */
+  peakDbfsPerChannel: (number | null)[];
+  /** Per-channel RMS dBFS. */
+  rmsDbfsPerChannel: (number | null)[];
   processedFrames: number;
   droppedFrames: number;
   snapshotOverwrites: number;

@@ -72,9 +72,12 @@ pub struct SyntheticAnalysis {
     pub spectrum_step_hz: f32,
     /// 频谱点数。
     pub spectrum_bins: usize,
-    /// 波形包络，`Float32Array`，通道内交织，值域 [-1, 1]。
+    /// 波形包络的每桶最大值，`Float32Array`，值域 [-1, 1]。
     #[serde(serialize_with = "crate::b64::encode")]
     pub waveform_envelope: Vec<u8>,
+    /// 波形包络的每桶最小值，`Float32Array`，布局与 `waveform_envelope` 一致。
+    #[serde(serialize_with = "crate::b64::encode")]
+    pub waveform_min: Vec<u8>,
     /// 包络点数（每声道）。
     pub waveform_points: usize,
     /// Rust 侧完成分析 + 编码所用的微秒数。
@@ -183,10 +186,14 @@ pub fn analyze_synthetic_signal(
     }
 
     // --- 波形包络：min/max 降采样到目标点数 ---
+    //
+    // 合成信号是单声道，直接按桶取真实极值；`waveform_envelope` 存 max，
+    // `waveform_min` 存 min。前端据此画 min/max 带，而不是只画上半波。
     let points = envelope_points.clamp(1, fft_size);
-    let mut env = vec![0.0_f32; points];
+    let mut env_max = vec![0.0_f32; points];
+    let mut env_min = vec![0.0_f32; points];
     let per = fft_size / points;
-    for (i, slot) in env.iter_mut().enumerate() {
+    for i in 0..points {
         let lo = i * per;
         let hi = ((i + 1) * per).min(fft_size);
         if lo >= hi {
@@ -198,13 +205,14 @@ pub fn analyze_synthetic_signal(
             mx = mx.max(*v);
             mn = mn.min(*v);
         }
-        // 单声道时画幅值；双声道由后续 M2 的 PcmBlock 支持
-        *slot = (mx + mn) * 0.5;
+        env_max[i] = mx;
+        env_min[i] = mn;
     }
 
     // --- 编码为二进制（前端收到 Uint8Array 而非 JSON 数组）---
     let spectrum_bytes = f32_slice_to_le_bytes(&db);
-    let envelope_bytes = f32_slice_to_le_bytes(&env);
+    let envelope_bytes = f32_slice_to_le_bytes(&env_max);
+    let envelope_min_bytes = f32_slice_to_le_bytes(&env_min);
     let compute_micros = start.elapsed().as_micros() as u64;
 
     Ok(SyntheticAnalysis {
@@ -238,6 +246,7 @@ pub fn analyze_synthetic_signal(
         spectrum_step_hz: (bin_hz * half as f64 / bins as f64) as f32,
         spectrum_bins: bins,
         waveform_envelope: envelope_bytes,
+        waveform_min: envelope_min_bytes,
         waveform_points: points,
         compute_micros,
     })
@@ -351,8 +360,21 @@ mod tests {
         let r = analyze_synthetic_signal(1000.0, 0.5, 48_000, 4096, 800, 1000).unwrap();
         assert_eq!(r.spectrum_db.len(), 800 * 4);
         assert_eq!(r.waveform_envelope.len(), 1000 * 4);
+        assert_eq!(r.waveform_min.len(), 1000 * 4);
         assert_eq!(r.spectrum_bins, 800);
         assert_eq!(r.waveform_points, 1000);
+    }
+
+    #[test]
+    fn synthetic_envelope_keeps_negative_half() {
+        let r = analyze_synthetic_signal(1000.0, 0.5, 48_000, 4096, 256, 256).unwrap();
+        let max = decode_f32s(&r.waveform_envelope);
+        let min = decode_f32s(&r.waveform_min);
+        assert!(max.iter().any(|v| *v > 0.4));
+        assert!(
+            min.iter().any(|v| *v < -0.4),
+            "min 必须保留负半波，否则波形只剩上半部分"
+        );
     }
 
     #[test]

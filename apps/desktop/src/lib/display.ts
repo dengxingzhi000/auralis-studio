@@ -27,7 +27,12 @@ export interface DisplayData {
   db: Float32Array | null;
   startHz: number;
   stepHz: number;
+  /** 每桶最大值；多声道按声道分组 */
   env: Float32Array | null;
+  /** 每桶最小值；布局与 `env` 一致。与 `env` 配对才能画真实 min/max 带 */
+  envMin: Float32Array | null;
+  /** 每声道包络点数 */
+  envPoints: number;
   sampleRate: number;
   /**
    * 这份数据实际覆盖的时长，秒。

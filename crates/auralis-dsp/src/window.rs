@@ -54,6 +54,21 @@ pub enum WindowFunction {
     /// 旁瓣低至 -58 dB，但主瓣宽达 6 bin，频率分辨率最差。
     /// 适合需要看微小频率成分、且可以接受分辨率下降的场景。
     Blackman,
+    /// 五项平顶窗（flat-top）。
+    ///
+    /// `w[n] = a₀ - a₁cos(θ) + a₂cos(2θ) - a₃cos(3θ) + a₄cos(4θ)`，
+    /// 系数取自 SciPy `signal.windows.flattop` 的周期型定义。
+    ///
+    /// **用途**：幅值测量。主瓣很宽（ENBW ≈ 3.77 bin），但扇贝损失
+    /// 最坏仅约 0.01 dB（Hann 约 1.42 dB）。谱线读数需要准确时用它，
+    /// 需要频率分辨率时用 Hann。
+    FlatTop,
+    /// 四项 Blackman-Harris 窗。
+    ///
+    /// `w[n] = a₀ - a₁cos(θ) + a₂cos(2θ) - a₃cos(3θ)`。
+    /// 旁瓣约 -92 dB，ENBW ≈ 2.00 bin；扇贝损失约 0.83 dB。
+    /// 适合既要低旁瓣、又不想像 flat-top 那样牺牲太多分辨率的场景。
+    BlackmanHarris,
 }
 
 impl WindowFunction {
@@ -73,6 +88,18 @@ impl WindowFunction {
                     Self::Hann => 0.5 - 0.5 * phase.cos(),
                     Self::Hamming => 0.54 - 0.46 * phase.cos(),
                     Self::Blackman => 0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos(),
+                    // 系数与 SciPy signal.windows.flattop（periodic）一致。
+                    Self::FlatTop => {
+                        0.215_578_95 - 0.416_631_58 * phase.cos()
+                            + 0.277_263_158 * (2.0 * phase).cos()
+                            - 0.083_578_947 * (3.0 * phase).cos()
+                            + 0.006_947_368 * (4.0 * phase).cos()
+                    }
+                    // 系数与 SciPy signal.windows.blackmanharris（periodic）一致。
+                    Self::BlackmanHarris => {
+                        0.358_75 - 0.488_29 * phase.cos() + 0.141_28 * (2.0 * phase).cos()
+                            - 0.011_68 * (3.0 * phase).cos()
+                    }
                 }
             })
             .collect()
@@ -88,6 +115,9 @@ impl WindowFunction {
             Self::Hann => 0.5,
             Self::Hamming => 0.54,
             Self::Blackman => 0.42,
+            // 五项余弦窗的 coherent gain 就是 a₀。
+            Self::FlatTop => 0.215_578_95,
+            Self::BlackmanHarris => 0.358_75,
         }
     }
 
@@ -108,6 +138,10 @@ impl WindowFunction {
             // Σw/N = 0.42,     Σw²/N = 0.42² + 0.5²/2 + 0.08²/2 = 0.3046
             //                                    -> 0.3046 / 0.1764
             Self::Blackman => 1.726_757_369_614_512_5,
+            // Σw²/N = a₀² + (a₁²+a₂²+a₃²+a₄²)/2，Σw/N = a₀
+            Self::FlatTop => 3.770_246_447_443_428_7,
+            // Σw²/N = a₀² + (a₁²+a₂²+a₃²)/2
+            Self::BlackmanHarris => 2.004_352_938_217_047_5,
         }
     }
 
@@ -145,6 +179,8 @@ impl WindowFunction {
             Self::Hann => "hann",
             Self::Hamming => "hamming",
             Self::Blackman => "blackman",
+            Self::FlatTop => "flat-top",
+            Self::BlackmanHarris => "blackman-harris",
         }
     }
 
@@ -156,6 +192,8 @@ impl WindowFunction {
             Self::Hann => "Hann (汉宁)",
             Self::Hamming => "Hamming (哈明)",
             Self::Blackman => "Blackman (布莱克曼)",
+            Self::FlatTop => "Flat-top (平顶，幅值测量)",
+            Self::BlackmanHarris => "Blackman-Harris (四项)",
         }
     }
 }
@@ -190,6 +228,26 @@ mod tests {
         // n = N/4 时 cos(pi/2)=0 且 cos(pi)=-1，故 0.42 - 0 + 0.08*(-1) = 0.34
         assert!((blackman[N / 4] - 0.34).abs() < 1e-12);
         assert!((blackman[N / 2] - 1.0).abs() < 1e-12);
+
+        let flat_top = WindowFunction::FlatTop.coefficients(N);
+        // 五项系数代数和 = 1：n=0 时正负交替，端点约 -4.2e-4。
+        assert!((flat_top[0] - (-0.000_421_05)).abs() < 1e-6);
+        assert!((flat_top[N / 2] - 1.0).abs() < 1e-6);
+
+        let bh = WindowFunction::BlackmanHarris.coefficients(N);
+        assert!((bh[0] - 0.000_06).abs() < 1e-6);
+        assert!((bh[N / 2] - 1.0).abs() < 1e-6);
+    }
+
+    /// 平顶窗的 ENBW 必须明显大于 Hann；这是「幅值精度换频率分辨率」的代价。
+    #[test]
+    fn flat_top_trades_resolution_for_amplitude_accuracy() {
+        let ft = WindowFunction::FlatTop;
+        assert!((ft.coherent_gain() - 0.215_578_95).abs() < 1e-12);
+        assert!((ft.enbw_bins() - 3.770_246_447).abs() < 1e-9);
+        assert!(ft.enbw_bins() > WindowFunction::Hann.enbw_bins() * 2.0);
+        assert_eq!(ft.id(), "flat-top");
+        assert!(ft.display_name().contains("幅值"));
     }
 
     /// 周期型窗是循环对称的：`w[n] = w[N-n]`，因此 `w[1] == w[N-1]`。
@@ -201,6 +259,8 @@ mod tests {
             WindowFunction::Hann,
             WindowFunction::Hamming,
             WindowFunction::Blackman,
+            WindowFunction::FlatTop,
+            WindowFunction::BlackmanHarris,
         ] {
             let c = win.coefficients(N);
             for n in 1..N / 2 {
@@ -221,6 +281,8 @@ mod tests {
             WindowFunction::Hann,
             WindowFunction::Hamming,
             WindowFunction::Blackman,
+            WindowFunction::FlatTop,
+            WindowFunction::BlackmanHarris,
         ] {
             assert!(
                 (win.measured_coherent_gain(N) - win.coherent_gain()).abs() < 1e-12,
@@ -238,6 +300,8 @@ mod tests {
             WindowFunction::Hann,
             WindowFunction::Hamming,
             WindowFunction::Blackman,
+            WindowFunction::FlatTop,
+            WindowFunction::BlackmanHarris,
         ] {
             assert!(
                 (win.measured_enbw_bins(N) - win.enbw_bins()).abs() < 1e-9,
@@ -266,6 +330,8 @@ mod tests {
             WindowFunction::Hann,
             WindowFunction::Hamming,
             WindowFunction::Blackman,
+            WindowFunction::FlatTop,
+            WindowFunction::BlackmanHarris,
         ] {
             let w: f64 = win.coefficients(N).iter().sum();
             let expected = N as f64 * win.coherent_gain();
@@ -286,6 +352,8 @@ mod tests {
             WindowFunction::Hann,
             WindowFunction::Hamming,
             WindowFunction::Blackman,
+            WindowFunction::FlatTop,
+            WindowFunction::BlackmanHarris,
         ]
         .iter()
         .map(|w| w.id())

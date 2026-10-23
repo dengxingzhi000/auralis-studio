@@ -120,6 +120,7 @@ export function InspectorPanel({
           peakDbfs={display?.peakDbfs ?? null}
           rmsDbfs={display?.rmsDbfs ?? null}
           peakPerChannel={display?.peakPerChannel ?? []}
+          rmsPerChannel={[]}
           minDb={minDb}
           maxDb={maxDb}
           overFullScale={display ? display.overFullScaleSamples : null}

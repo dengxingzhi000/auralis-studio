@@ -11,6 +11,29 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Added
 
+- **DSP correctness and accuracy pass.**
+  - **Waveform min/max, per channel, whole timeline.** The wire format now
+    carries `waveformMin` alongside `waveformEnvelope` (channel-major,
+    `waveformPoints` per channel). The old envelope was positive-only,
+    kept only the tail of the file, and every channel drew channel 0. The new
+    `StreamingEnvelope` merges buckets as it decodes, so memory is bounded
+    (~64 KB for 2048 points stereo) and independent of file length.
+  - **Real-time levels are per channel.** Peak/RMS are computed per channel and
+    aggregated energy-preservingly (peak max, RMS `sqrt(mean(rms_c²))`).
+    Antiphase stereo (`L=+1, R=-1`) no longer reads as silence; mid-sum is kept
+    only for the mono-compatible spectrum display. New
+    `peakDbfsPerChannel` / `rmsDbfsPerChannel` fields drive the meters.
+  - **Clipping detection is no longer a stub.** `StreamingFlatTop` keeps run
+    state across decode blocks, so a flat top split by a block boundary is
+    counted once. `clippingRegions` now reflects real data.
+  - **Flat-top and 4-term Blackman-Harris windows.** Flat-top cuts worst-case
+    scalloping from ≈1.42 dB (Hann) to ≈0.01 dB at ENBW 3.77 bins;
+    Blackman-Harris gives ≈-92 dB sidelobes at ENBW 2.00 bins. Both have
+    analytic CG/ENBW tests; no UI selector yet.
+  - **Peak picking filters sidelobes and noise.** `detect_peaks_with` adds
+    prominence (≥6 dB), minimum spacing (≥2 bins) and an 80 dB dynamic-range
+    gate; the file spectrum panel uses it. Frame-level callers keep the
+    permissive defaults so their behaviour is unchanged.
 - **All previously disabled UI entries are now live.** Eight sidebar/footer
   entries were still greyed out with a milestone tag even though the underlying
   capability existed. They now do real work:

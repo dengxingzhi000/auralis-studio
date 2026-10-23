@@ -97,6 +97,98 @@ pub struct ClippingFeatures {
     pub longest_region_start: usize,
 }
 
+/// 跨解码块累积的平顶检测器。
+///
+/// 离线分析是**流式**的：文件按块解码，一个平顶片段可能横跨两个块。
+/// [`detect_flat_top`] 只看一个切片，如果在每个块上分别调用，跨块的那一段
+/// 就会被切成两段，甚至因为两段都短于 `min_run` 而完全漏掉。
+///
+/// 本类型为每个声道保留「当前连续段」的状态，调用方只需按块喂入
+/// **交错**样本，最后调用 [`finish`](Self::finish)。
+#[derive(Debug, Clone)]
+pub struct StreamingFlatTop {
+    config: ClippingConfig,
+    channels: usize,
+    regions: u32,
+    total_samples: usize,
+    longest_samples: usize,
+    longest_start: usize,
+    /// 每个声道当前连续段的长度。
+    run_len: Vec<usize>,
+    /// 每个声道当前连续段的起始样本（该声道自己的样本计数）。
+    run_start: Vec<u64>,
+    /// 每个声道已经喂入的样本数。
+    seen: Vec<u64>,
+}
+
+impl StreamingFlatTop {
+    /// 新建检测器。`channels == 0` 会按 1 个声道处理。
+    #[must_use]
+    pub fn new(channels: usize, config: ClippingConfig) -> Self {
+        let channels = channels.max(1);
+        Self {
+            config,
+            channels,
+            regions: 0,
+            total_samples: 0,
+            longest_samples: 0,
+            longest_start: 0,
+            run_len: vec![0; channels],
+            run_start: vec![0; channels],
+            seen: vec![0; channels],
+        }
+    }
+
+    /// 喂入一块**交错**样本（`L0,R0,L1,R1,…`）。
+    ///
+    /// 非有限样本按 0 处理，与 [`analyze_channel`] 的清理策略一致。
+    pub fn push_interleaved(&mut self, samples: &[f32]) {
+        for (i, &raw) in samples.iter().enumerate() {
+            let ch = i % self.channels;
+            let a = if raw.is_finite() { raw.abs() } else { 0.0 };
+            if a >= self.config.threshold {
+                if self.run_len[ch] == 0 {
+                    self.run_start[ch] = self.seen[ch];
+                }
+                self.run_len[ch] += 1;
+            } else {
+                self.flush(ch);
+            }
+            self.seen[ch] += 1;
+        }
+    }
+
+    /// 结束并返回累计特征。
+    ///
+    /// 最长的片段可能位于任意声道；`longest_region_start` 是**该声道内**
+    /// 的样本下标，跨声道比较时不要把它当成全局交错下标。
+    #[must_use]
+    pub fn finish(mut self) -> ClippingFeatures {
+        for ch in 0..self.channels {
+            self.flush(ch);
+        }
+        ClippingFeatures {
+            regions: self.regions,
+            total_samples: self.total_samples,
+            longest_region_samples: self.longest_samples,
+            longest_region_start: self.longest_start,
+        }
+    }
+
+    fn flush(&mut self, ch: usize) {
+        let len = self.run_len[ch];
+        if len >= self.config.min_run {
+            self.regions += 1;
+            self.total_samples += len;
+            if len > self.longest_samples {
+                self.longest_samples = len;
+                self.longest_start = self.run_start[ch] as usize;
+            }
+        }
+        self.run_len[ch] = 0;
+    }
+}
+
 impl ClippingFeatures {
     /// 是否检测到疑似平顶。
     #[must_use]
@@ -444,6 +536,46 @@ mod tests {
         assert_eq!(s.over_full_scale_samples, 0);
         assert!(!s.peak.over_full_scale);
         assert!(s.clipping.describe().contains("启发式"));
+    }
+
+    #[test]
+    fn streaming_flat_top_counts_a_run_split_across_blocks_once() {
+        // 一个 12 样本的平顶，被块边界切成 3 段。逐块调用 detect_flat_top
+        // 会得到 0 段（每段都短于 min_run=4）；流式检测器必须仍然看到 1 段。
+        let mut x: Vec<f32> = Vec::new();
+        x.extend((0..10).map(|i| -1.0 + 0.2 * i as f32));
+        x.extend(std::iter::repeat_n(0.999_f32, 12));
+        x.extend((0..10).rev().map(|i| 0.8 - 0.18 * i as f32));
+
+        let expected = detect_flat_top(&x, ClippingConfig::default());
+        assert_eq!(expected.regions, 1);
+
+        let mut streaming = StreamingFlatTop::new(1, ClippingConfig::default());
+        for block in x.chunks(5) {
+            streaming.push_interleaved(block);
+        }
+        let got = streaming.finish();
+        assert_eq!(got.regions, expected.regions, "跨块平顶只能计一次");
+        assert_eq!(got.total_samples, expected.total_samples);
+        assert_eq!(got.longest_region_samples, expected.longest_region_samples);
+        assert_eq!(got.longest_region_start, expected.longest_region_start);
+    }
+
+    #[test]
+    fn streaming_flat_top_keeps_channels_separate() {
+        // L 平顶、R 干净的立体声：只能报 1 段，不能把 R 的样本也并进来。
+        let mut interleaved = Vec::new();
+        for i in 0..20 {
+            let l = if (6..14).contains(&i) { 0.999 } else { 0.0 };
+            interleaved.push(l);
+            interleaved.push(0.0);
+        }
+        let mut tracker = StreamingFlatTop::new(2, ClippingConfig::default());
+        tracker.push_interleaved(&interleaved);
+        let got = tracker.finish();
+        assert_eq!(got.regions, 1);
+        assert_eq!(got.total_samples, 8);
+        assert_eq!(got.longest_region_start, 6, "起始下标是 L 声道内的下标");
     }
 
     #[test]

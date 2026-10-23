@@ -81,10 +81,17 @@ pub struct RealtimeSnapshot {
     pub bin_hz: f64,
     /// 采样率。
     pub sample_rate: u32,
-    /// 峰值 dBFS；`None` = 静音。
+    /// 峰值 dBFS（各声道峰值取最大）；`None` = 静音。
     pub peak_dbfs: Option<f32>,
-    /// RMS dBFS；`None` = 静音。
+    /// RMS dBFS（各声道均方的平均）；`None` = 静音。
     pub rms_dbfs: Option<f32>,
+    /// 每声道峰值 dBFS。`None` = 该声道静音。
+    ///
+    /// 与 `peak_dbfs` 的区别：反相立体声（L=+1、R=−1）这里两路都是
+    /// 0 dBFS，而 mid-sum 频谱会抵消。电平表必须用这一组。
+    pub peak_dbfs_per_channel: Vec<Option<f32>>,
+    /// 每声道 RMS dBFS。
+    pub rms_dbfs_per_channel: Vec<Option<f32>>,
     /// 环形缓冲丢弃的帧数。
     pub dropped_frames: u64,
     /// 快照被覆盖的次数（UI 跟不上）。
@@ -143,13 +150,19 @@ impl RealtimeWorker {
             .name("auralis-realtime".to_string())
             .spawn(move || {
                 let mut chunk: Vec<CallbackBuffer> = Vec::with_capacity(64);
-                // 滚动窗口：**只保留最新的 fft_size 个单声道样本**。
+                // 滚动窗口：**每声道只保留最新的 fft_size 个样本**。
                 //
-                // 不保留整段 chunk：环形缓冲积压时一次可能取到上万样本，
-                // 而一次刷新只画一条曲线，攒下来的中间样本既没人看，
-                // 又会把内存推到与缓冲深度成正比。
-                let mut tail: Vec<f32> = Vec::with_capacity(config.fft_size * 2);
+                // 电平必须按声道计算：先把 L/R 平均会抵消反相内容
+                // （L=+1、R=−1 会读成静音），这与离线分析按声道平方和
+                // 计算 RMS 的口径不一致，也不是 EBU R128/BS.1770 的做法。
+                //
+                // mid-sum 仍然保留，但**只用于频谱/声谱图显示**：它是单声道
+                // 兼容性视图，不代表节目素材的电平。
                 let channels = (config.channels as usize).max(1);
+                let mut tails: Vec<Vec<f32>> = (0..channels)
+                    .map(|_| Vec::with_capacity(config.fft_size * 2))
+                    .collect();
+                let mut mono: Vec<f32> = Vec::with_capacity(config.fft_size);
                 let mut processed: u64 = 0;
 
                 while !stop_c.load(Ordering::Relaxed) {
@@ -159,37 +172,41 @@ impl RealtimeWorker {
                         continue;
                     }
 
-                    // 采集回调给的是**交错**多声道数据，这里混成单声道。
-                    // 取各声道平均而非只取通道 0：立体声左右内容不同时，
-                    // 只取一个声道会漏掉一半信息。
+                    // 采集回调给的是**交错**多声道数据。按声道拆开保存，
+                    // 频谱再用 mid-sum（只用于显示），电平绝不在 downmix 之后算。
                     let consumed: u64 = chunk.iter().map(|b| (b.len() / channels) as u64).sum();
                     processed += consumed;
 
                     for buf in &chunk {
-                        if channels == 1 {
-                            tail.extend_from_slice(buf);
-                        } else {
-                            let frames = buf.len() / channels;
-                            for f in 0..frames {
-                                let base = f * channels;
-                                let mut acc = 0.0_f32;
-                                for c in 0..channels {
-                                    acc += buf[base + c];
-                                }
-                                tail.push(acc / channels as f32);
+                        let frames = buf.len() / channels;
+                        for f in 0..frames {
+                            let base = f * channels;
+                            for (c, tail) in tails.iter_mut().enumerate() {
+                                tail.push(buf[base + c]);
                             }
                         }
                     }
 
-                    // 丢掉过旧的样本，保持窗口正好是 fft_size
-                    if tail.len() > config.fft_size {
-                        let excess = tail.len() - config.fft_size;
-                        tail.drain(0..excess);
+                    // 丢掉过旧的样本，保持每个声道的窗口正好是 fft_size
+                    for tail in &mut tails {
+                        if tail.len() > config.fft_size {
+                            let excess = tail.len() - config.fft_size;
+                            tail.drain(0..excess);
+                        }
                     }
 
-                    if tail.len() >= config.fft_size {
-                        let frame = tail.as_slice();
-                        let (db, step) = match analyzer.analyze(frame, sample_rate) {
+                    if tails.iter().all(|t| t.len() >= config.fft_size) {
+                        // 单声道兼容性视图：仅用于频谱/声谱图，不参与电平统计。
+                        mono.clear();
+                        for i in 0..config.fft_size {
+                            let mut acc = 0.0_f32;
+                            for tail in &tails {
+                                acc += tail[i];
+                            }
+                            mono.push(acc / channels as f32);
+                        }
+
+                        let (db, step) = match analyzer.analyze(&mono, sample_rate) {
                             Ok(frames) => match frames.last() {
                                 Some(f) => f.downsample_db(config.target_bins),
                                 None => (Vec::new(), 1.0),
@@ -197,13 +214,52 @@ impl RealtimeWorker {
                             Err(_) => (Vec::new(), 1.0),
                         };
 
-                        let stats = analyze_channel(frame, auralis_dsp::ClippingConfig::default());
+                        // 电平：每声道独立计算，再按 EBU R128/BS.1770 的
+                        // 方式聚合（峰值取最大，RMS 取各声道均方的平均）。
+                        let per_channel: Vec<_> = tails
+                            .iter()
+                            .map(|t| {
+                                analyze_channel(
+                                    &t[t.len() - config.fft_size..],
+                                    auralis_dsp::ClippingConfig::default(),
+                                )
+                            })
+                            .collect();
+                        let peak_dbfs_per_channel: Vec<Option<f32>> = per_channel
+                            .iter()
+                            .map(|s| dbfs_opt(s.peak.dbfs()))
+                            .collect();
+                        let rms_dbfs_per_channel: Vec<Option<f32>> =
+                            per_channel.iter().map(|s| dbfs_opt(s.rms.dbfs())).collect();
+                        let peak_linear = per_channel
+                            .iter()
+                            .map(|s| s.peak.amplitude)
+                            .fold(0.0_f32, f32::max);
+                        let mean_square = per_channel
+                            .iter()
+                            .map(|s| f64::from(s.rms.value).powi(2))
+                            .sum::<f64>()
+                            / channels as f64;
+                        let rms_linear = mean_square.sqrt();
+                        let peak_dbfs = if peak_linear > 0.0 {
+                            Some(20.0 * peak_linear.log10())
+                        } else {
+                            None
+                        };
+                        let rms_dbfs = if rms_linear > 0.0 {
+                            Some(20.0 * (rms_linear.log10() as f32))
+                        } else {
+                            None
+                        };
+
                         let next = RealtimeSnapshot {
                             spectrum_db: db,
                             bin_hz: step,
                             sample_rate,
-                            peak_dbfs: dbfs_opt(stats.peak.dbfs()),
-                            rms_dbfs: dbfs_opt(stats.rms.dbfs()),
+                            peak_dbfs,
+                            rms_dbfs,
+                            peak_dbfs_per_channel,
+                            rms_dbfs_per_channel,
                             dropped_frames: ring.stats().dropped_frames,
                             snapshot_overwrites: overwrites_c.load(Ordering::Relaxed),
                             processed_frames: processed,
@@ -420,9 +476,10 @@ mod tests {
     }
 
     #[test]
-    fn stereo_input_is_downmixed_to_mono_before_analysis() {
-        // 左 +1.0 / 右 −1.0 的完全反相立体声混成单声道后应当抵消为静音。
-        // 这条断言能抓住「只取通道 0」或「交错数据当成单声道」两类错误。
+    fn stereo_antiphase_keeps_per_channel_levels() {
+        // 左 +1.0 / 右 −1.0：mid-sum 频谱会抵消，但**电平**不能读成静音。
+        // 这是离线分析（按声道平方和）与实时电平必须一致的地方，
+        // 也是 EBU R128 / BS.1770 按声道求和的要求。
         let ring = ring_of(16);
         let cfg = RealtimeConfig {
             fft_size: 128,
@@ -449,10 +506,55 @@ mod tests {
         }
 
         assert_eq!(snap.processed_frames, 128, "交错数据应按帧计数");
+        assert_eq!(snap.peak_dbfs, Some(0.0), "满刻度反相信号峰值仍是 0 dBFS");
+        assert_eq!(snap.rms_dbfs, Some(0.0), "两路满刻度方波 RMS 为 0 dBFS");
         assert_eq!(
-            snap.peak_dbfs, None,
-            "完全反相的立体声混音后是数字静音，应为 null 而不是一个假读数"
+            snap.peak_dbfs_per_channel,
+            vec![Some(0.0), Some(0.0)],
+            "每声道都必须读到满刻度，而不是 mid-sum 的静音"
         );
+        // 频谱仍然可以对消：这是单声道兼容性视图的预期行为。
+        assert!(
+            snap.spectrum_db.iter().all(|v| *v <= -139.0),
+            "mid-sum 频谱在完全反相时应贴底"
+        );
+        w.stop();
+    }
+
+    #[test]
+    fn stereo_levels_use_channel_energy_not_channel_zero() {
+        let ring = ring_of(16);
+        let cfg = RealtimeConfig {
+            fft_size: 128,
+            target_bins: 8,
+            channels: 2,
+        };
+        let mut w = RealtimeWorker::spawn(ring.clone(), recycler(), 48_000, cfg).expect("spawn");
+
+        // L = 1.0, R = 0.5：peak 取最大 = 0 dBFS；
+        // RMS = sqrt((1² + 0.5²)/2) = sqrt(0.625) ≈ -2.04 dBFS。
+        let mut interleaved = Vec::with_capacity(256);
+        for _ in 0..128 {
+            interleaved.push(1.0_f32);
+            interleaved.push(0.5_f32);
+        }
+        let _ = ring.push(interleaved);
+
+        let mut snap = w.latest();
+        for _ in 0..200 {
+            if snap.processed_frames > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            snap = w.latest();
+        }
+
+        assert_eq!(snap.peak_dbfs, Some(0.0));
+        let rms = snap.rms_dbfs.expect("非静音");
+        assert!((rms - -2.041).abs() < 0.05, "rms={rms}");
+        assert_eq!(snap.peak_dbfs_per_channel[0], Some(0.0));
+        let right = snap.peak_dbfs_per_channel[1].expect("右声道非静音");
+        assert!((right - -6.020_6).abs() < 0.01, "right={right}");
         w.stop();
     }
 }

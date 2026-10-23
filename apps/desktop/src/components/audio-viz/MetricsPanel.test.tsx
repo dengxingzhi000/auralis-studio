@@ -23,6 +23,8 @@ function makeDisplay(over: Partial<DisplayData> = {}): DisplayData {
     startHz: 0,
     stepHz: 1,
     env: null,
+    envMin: null,
+    envPoints: 0,
     sampleRate: 48000,
     durationSeconds: 2,
     peakDbfs: -3,
@@ -53,7 +55,12 @@ function makeDisplay(over: Partial<DisplayData> = {}): DisplayData {
 
 function render(
   display: DisplayData | null,
-  live: { peakDbfs: number | null; rmsDbfs: number | null } | null,
+  live: {
+    peakDbfs: number | null;
+    rmsDbfs: number | null;
+    peakPerChannel: (number | null)[];
+    rmsPerChannel: (number | null)[];
+  } | null,
 ): string {
   return renderToStaticMarkup(
     <MetricsPanel display={display} live={live} minDb={-140} maxDb={0} />,
@@ -97,7 +104,12 @@ describe("MetricsPanel", () => {
   });
 
   it("纯实时输入不把文件级数据质量显示成 0", () => {
-    const html = render(null, { peakDbfs: -20, rmsDbfs: -25 });
+    const html = render(null, {
+      peakDbfs: -20,
+      rmsDbfs: -25,
+      peakPerChannel: [-20, -25],
+      rmsPerChannel: [-24, -30],
+    });
     // 没有文件 → 三个计数都是「—」，不能声称「检查过，没发现问题」
     expect(html).toMatch(/超量程样本<\/span><span class="num">—<\/span>/);
     expect(html).toMatch(/平顶片段<\/span><span class="num">—<\/span>/);
@@ -113,7 +125,7 @@ describe("MetricsPanel", () => {
         overFullScaleSamples: 123,
         clippingRegions: 4,
       }),
-      { peakDbfs: -20, rmsDbfs: -25 },
+      { peakDbfs: -20, rmsDbfs: -25, peakPerChannel: [], rmsPerChannel: [] },
     );
     // 电平表应回落到单条实时读数，而不是文件的两个 CH
     expect(html).toContain("MIX");
