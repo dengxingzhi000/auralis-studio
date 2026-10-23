@@ -26,6 +26,7 @@ import {
   type SpectrogramViewData,
   type SyntheticAnalysis,
   type SyntheticRequest,
+  type TaskInfo,
 } from "./contracts";
 
 /**
@@ -199,6 +200,16 @@ export async function fetchSpectrogramView(
 /** Cancel a running task. Returns false when the task id is unknown. */
 export async function cancelTask(taskId: number): Promise<boolean> {
   return invoke<boolean>("cancel_task", { taskId });
+}
+
+/**
+ * 当前正在运行的后台任务。
+ *
+ * 这是快速命令：只读取任务注册表，不会排在耗时的文件分析后面。
+ * 已结束的任务不在列表里，历史由前端会话记录补充。
+ */
+export async function fetchTaskQueue(): Promise<TaskInfo[]> {
+  return invoke<TaskInfo[]>("task_queue");
 }
 
 /* ============================================================

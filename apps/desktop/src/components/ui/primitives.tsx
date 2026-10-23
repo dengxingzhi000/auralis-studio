@@ -9,9 +9,9 @@
  * 的需求，多一层 Radix Slot 只会让 props 类型变复杂。
  */
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
-import { IconAlert, IconChevronDown } from "./icons";
+import { IconAlert, IconChevronDown, IconX } from "./icons";
 
 /* ---------------------------------------------------------------- Button */
 
@@ -212,6 +212,92 @@ export function Collapsible({
         </div>
       )}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ Modal */
+
+export interface ModalProps {
+  open: boolean;
+  onClose: () => void;
+  title?: string;
+  subtitle?: React.ReactNode;
+  /** 卡片宽度，默认 520px */
+  width?: number;
+  /** 不渲染标题栏；内容自己负责标题与关闭按钮 */
+  hideHeader?: boolean;
+  className?: string;
+  footer?: React.ReactNode;
+  children: React.ReactNode;
+}
+
+/**
+ * 模态框。
+ *
+ * 用原生 `<dialog>` + `showModal()`：焦点陷阱、`Esc`、背景惰性和
+ * 顶层合成都由浏览器保证，比手写 div 覆盖层可靠。样式仍走令牌。
+ *
+ * `open` 与 DOM 的 open 状态分开维护：调用方只描述意图，
+ * 这里负责 `showModal()` / `close()`，避免直接操作布尔属性导致
+ * 背景滚动锁失效。
+ */
+export function Modal({
+  open,
+  onClose,
+  title,
+  subtitle,
+  width = 520,
+  hideHeader = false,
+  className,
+  footer,
+  children,
+}: ModalProps) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (open && !el.open) el.showModal();
+    else if (!open && el.open) el.close();
+  }, [open]);
+
+  return (
+    <dialog
+      ref={ref}
+      className={["modal", className ?? ""].filter(Boolean).join(" ")}
+      aria-labelledby={title ? titleId : undefined}
+      onCancel={(e) => {
+        // 默认行为是直接关闭 DOM；走调用方状态，避免 UI 与 DOM 脱节。
+        e.preventDefault();
+        onClose();
+      }}
+      onClose={onClose}
+      onMouseDown={(e) => {
+        // 点在背景（dialog 自身）上关闭；点卡片内容是子元素，不触发。
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="modal-card" style={{ width }}>
+        {!hideHeader && (
+          <header className="modal-head">
+            <div className="modal-head-text">
+              <h2 className="modal-title" id={title ? titleId : undefined}>
+                {title}
+              </h2>
+              {subtitle != null && (
+                <div className="modal-subtitle">{subtitle}</div>
+              )}
+            </div>
+            <IconButton label="关闭" onClick={onClose}>
+              <IconX size={15} />
+            </IconButton>
+          </header>
+        )}
+        <div className="modal-body">{children}</div>
+        {footer && <footer className="modal-foot">{footer}</footer>}
+      </div>
+    </dialog>
   );
 }
 
