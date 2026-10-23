@@ -138,6 +138,15 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Changed
 
+- **`App.tsx` split into presentational components and pure helpers.** The file
+  had grown past 2 200 lines, mixing application state, IPC and roughly 900 lines
+  of JSX. The sidebar, inspector and central canvas now live in
+  `src/components/panels/` (`ResourcePanel`, `InspectorPanel`, `AnalysisCanvas`)
+  and hold no state of their own; the label / error / format / scroll / session /
+  view helpers moved to `src/lib/`. `App.tsx` is now ~1 300 lines and owns only
+  state, effects and handlers. The extracted markup was normalized and diffed
+  against the original, then the app was re-run end-to-end; there is no intended
+  behaviour change.
 - **Desktop container replaced: Tauri 2 → Electron 45** (ADR-019). On the
   reference machine, maximizing the Tauri window deterministically produced
   screen-wide artifacts and taskbar jitter. A minimal Electron shell loading
@@ -192,6 +201,16 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Fixed
 
+- **Export no longer masquerades as analysis.** Export and analysis shared a
+  single `busy` flag, so while a CSV/JSON export was running the top bar and the
+  sidebar CTA both read 「分析中…」, and drag-and-drop or the command palette were
+  rejected with 「已有分析在进行中」. The two operations now have separate flags
+  (`analyzing` / `exporting`) and the busy/label policy lives in
+  `src/lib/operations.ts` behind unit tests. Analysis may start during an export
+  (the export re-analyses a path it captured itself, so it does not depend on the
+  current selection), whereas an export is blocked during an analysis (the
+  on-screen selection and display are being replaced). The spectrogram viewport is
+  gated by analysis alone, not by export.
 - **「分析合成信号」 looked like "the default data page".** Running the self-test
   replaced the canvas but kept the file's labels: the waveform panel still said
   `file.flac`, its time axis still spanned the file's duration, and the inspector

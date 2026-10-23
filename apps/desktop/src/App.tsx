@@ -35,19 +35,27 @@ import type {
   AppInfo,
   FileInfo,
   PeakInfo,
-  RealtimeSnapshot,
   SyntheticRequest,
   TaskInfo,
 } from "@/lib/contracts";
 import type { DisplayData } from "@/lib/display";
+import { describeError, type UiError } from "@/lib/errors";
+import { fileNameOf, fmtHz } from "@/lib/format";
+import {
+  canLoadSpectrogramWindow,
+  canStartAnalysis,
+  canStartExport,
+  exportLabel,
+  openFileLabel,
+  type OperationState,
+} from "@/lib/operations";
 import { pushHistory, type HistoryEntry } from "@/lib/task-history";
-import { LevelMeter } from "@/components/audio-viz/LevelMeter";
-import { MetricsPanel } from "@/components/audio-viz/MetricsPanel";
-import { RealtimePanel } from "@/components/audio-viz/RealtimePanel";
-import { SpectrumView } from "@/components/audio-viz/SpectrumView";
-import { SpectrogramView } from "@/components/audio-viz/SpectrogramView";
-import { TaskQueuePanel } from "@/components/audio-viz/TaskQueuePanel";
-import { WaveformView } from "@/components/audio-viz/WaveformView";
+import { scrollToPane } from "@/lib/scroll";
+import { readSession } from "@/lib/session";
+import type { ChannelLayout, SpectrumMode } from "@/lib/view";
+import { AnalysisCanvas } from "@/components/panels/AnalysisCanvas";
+import { InspectorPanel } from "@/components/panels/InspectorPanel";
+import { ResourcePanel } from "@/components/panels/ResourcePanel";
 import { readStoredJson, writeStoredJson } from "@/lib/persist";
 import {
   clearPrefs,
@@ -63,71 +71,10 @@ import { AboutDialog } from "@/components/ui/AboutDialog";
 import { HelpDialog } from "@/components/ui/HelpDialog";
 import { PreferencesDialog } from "@/components/ui/PreferencesDialog";
 import { SearchPalette, type PaletteItem } from "@/components/ui/SearchPalette";
-import {
-  Button,
-  Checkbox,
-  Collapsible,
-  DataRow,
-  ErrorBar,
-  FormField,
-  IconButton,
-  MetricRow,
-  NavGroup,
-  NavItem,
-  Select,
-} from "@/components/ui/primitives";
-import {
-  IconDevice,
-  IconFilePlus,
-  IconGauge,
-  IconHelp,
-  IconMore,
-  IconSearch,
-  IconSettings,
-  IconSpectrogram,
-  IconSpectrum,
-  IconTasks,
-  IconWaveform,
-} from "@/components/ui/icons";
-
-const MIN_DB = -140;
-const MAX_DB = 0;
-
-/**
- * 稳定的空峰值数组。
- *
- * `liveDb ? [] : (display?.peaks ?? [])` 每次渲染都会产生新引用，而
- * SpectrumView 的绘制 effect 依赖 `peaks` —— 任意一次重渲染都会重绘频谱
- * 并重建后备存储。实时态下峰值本来就该留空（频率位置对不上），
- * 用模块级常量固定引用。
- */
-const NO_PEAKS: PeakInfo[] = [];
+import { Button, Checkbox } from "@/components/ui/primitives";
 
 /** 面板可见性的持久化键。 */
 const VISIBILITY_KEY = "auralis.workspace.visibility.v1";
-
-/**
- * 把某张卡片滚进视野。
- *
- * 中央画布是可纵向滚动的（窗口变矮时图表不会被压成条带），
- * 侧栏的导航项需要能把对应的卡片带进来。
- *
- * 用**瞬时**滚动而不是平滑滚动：平滑滚动是一次动画，页面不可见时
- * （窗口最小化、被完全遮挡）没有帧来推进它，滚动就停在原地 ——
- * 导航项会变成「点了没反应」。瞬时滚动没有这个依赖。
- *
- * 立刻滚一次，下一帧再滚一次：刚打开文件时卡片可能还没布局完，
- * 只滚一次会滚不到位。
- */
-function scrollToPane(id: string): void {
-  const scroll = () => {
-    document
-      .getElementById(id)
-      ?.scrollIntoView({ behavior: "instant", block: "nearest" });
-  };
-  scroll();
-  window.requestAnimationFrame(scroll);
-}
 
 const DEFAULTS: SyntheticRequest = {
   frequencyHz: 1000,
@@ -141,12 +88,6 @@ const DEFAULTS: SyntheticRequest = {
 /** 声谱图一屏的默认时长（秒），与 Rust 侧 `SPECTRUM_WINDOW_SECONDS` 一致。 */
 const SPECTROGRAM_WINDOW_SECONDS = 30;
 
-/** 频谱显示模式：填充（面积）或仅曲线。 */
-type SpectrumMode = "area" | "line";
-
-/** 多声道波形的排布：分道 / 叠加。 */
-type ChannelLayout = "lanes" | "overlay";
-
 const DISPLAY_KEY = "auralis.display.v1";
 
 /** 正在进行、可取消的文件分析。`null` = 没有在跑的文件任务。 */
@@ -155,23 +96,20 @@ interface ActiveTask {
   label: string;
 }
 
-/** 会话恢复记录：上一次成功打开的文件路径。 */
-interface SessionRecord {
-  path: string;
-}
-
-function readSession(value: unknown): SessionRecord | null {
-  if (typeof value !== "object" || value === null) return null;
-  const rec = value as Record<string, unknown>;
-  return typeof rec.path === "string" && rec.path.length > 0
-    ? { path: rec.path }
-    : null;
-}
-
 export default function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [req, setReq] = useState<SyntheticRequest>(DEFAULTS);
-  const [busy, setBusy] = useState(false);
+  /**
+   * 分析（文件或合成信号）与导出各自独立的忙碌位。
+   *
+   * 共用一个 `busy` 时，导出期间「打开文件」会谎称「分析中…」，
+   * 拖放/搜索入口也会被「已有分析在进行中」拒绝。两者的闸门策略
+   * 集中在 `lib/operations.ts`，这里只保存事实。
+   */
+  const [analyzing, setAnalyzing] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  /** 一次渲染内的操作快照，供按钮文案与 disabled 使用。 */
+  const ops: OperationState = { analyzing, exporting };
   const [error, setError] = useState<UiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [cursorHz, setCursorHz] = useState<number | null>(null);
@@ -183,17 +121,18 @@ export default function App() {
   /** 上一个成功 probe 的路径，供「重试」使用 */
   const lastPathRef = useRef<string | null>(null);
   /**
-   * 是否已有一次文件分析在跑。
+   * 是否已有一次分析（文件或合成信号）在跑。
    *
-   * 侧栏按钮/列表会用 `busy` 禁用，但拖放与搜索面板是**第二、第三条入口**，
-   * 它们不看 busy。没有这个闸门时，第二次分析会和第一次并行，两个 promise
-   * 各自 setDisplay，先结束的那个还会把后一个的 activeTask 清掉 ——
-   * 最终屏幕上可能是「高亮的文件 A + 显示的频谱 B」。
+   * 侧栏按钮/列表会用 `analyzing` 禁用，但拖放与搜索面板是**第二、第三条
+   * 入口**，它们不看渲染状态。没有这个同步闸门时，第二次分析会与第一次
+   * 并行，两个 promise 各自 setDisplay，先结束的那个还会把后一个的
+   * activeTask 清掉 —— 最终屏幕上可能是「高亮的文件 A + 显示的频谱 B」。
+   *
+   * 导出**不**写这个 ref：导出不修改分析状态，也不应阻止新分析。
    */
   const analyzingRef = useRef(false);
-  /** `busy` 的同步镜像，供事件回调读取（state 在回调里是旧的）。 */
-  const busyRef = useRef(false);
-  busyRef.current = busy;
+  /** 导出的同步闸门，防止保存对话框返回前重复触发。 */
+  const exportingRef = useRef(false);
 
   // ---- 统一偏好（持久化）----
   //
@@ -430,15 +369,15 @@ export default function App() {
    */
   const analyzePath = useCallback(async (path: string, restore?: "clean" | "crashed") => {
     // 拖放、搜索面板、侧栏三条入口可能同时到达。只让第一次通过，
-    // 其余给出可见提示，而不是静默丢弃。
-    if (analyzingRef.current || busyRef.current) {
+    // 其余给出可见提示，而不是静默丢弃。只看分析自身：导出不阻止分析。
+    if (!canStartAnalysis({ analyzing: analyzingRef.current, exporting: false })) {
       setNotice("已有分析在进行中，请等待完成或先取消");
       return;
     }
     analyzingRef.current = true;
     setError(null);
     setNotice(null);
-    setBusy(true);
+    setAnalyzing(true);
     const id = nextTaskId();
     try {
       const fi = await probeFile(path);
@@ -535,7 +474,7 @@ export default function App() {
     } finally {
       analyzingRef.current = false;
       setActiveTask(null);
-      setBusy(false);
+      setAnalyzing(false);
     }
   }, [recordAnalysis, envelopePoints]);
 
@@ -623,6 +562,20 @@ export default function App() {
    */
   const onExport = useCallback(async () => {
     if (!selected) return;
+    // 分析进行中不导出（导出对象可能与屏幕内容对不上）；导出自身不可重入。
+    if (
+      !canStartExport({
+        analyzing: analyzingRef.current,
+        exporting: exportingRef.current,
+      })
+    ) {
+      setNotice(
+        analyzingRef.current ? "分析进行中，完成后再导出" : "正在导出，请等待完成",
+      );
+      return;
+    }
+    exportingRef.current = true;
+    setExporting(true);
     setError(null);
     setNotice(null);
     try {
@@ -635,7 +588,6 @@ export default function App() {
         ? ("json" as const)
         : ("csv" as const);
 
-      setBusy(true);
       const out = await exportAnalysis(
         selected.path,
         destination,
@@ -648,7 +600,8 @@ export default function App() {
     } catch (e) {
       setError(describeError(e, "导出失败"));
     } finally {
-      setBusy(false);
+      exportingRef.current = false;
+      setExporting(false);
     }
   }, [selected, envelopePoints]);
 
@@ -778,7 +731,13 @@ export default function App() {
   }, []);
 
   const run = useCallback(async () => {
-    setBusy(true);
+    // 合成信号也是「分析」：它与文件分析都会替换 display，不能并行。
+    if (!canStartAnalysis({ analyzing: analyzingRef.current, exporting: false })) {
+      setNotice("已有分析在进行中，请等待完成或先取消");
+      return;
+    }
+    analyzingRef.current = true;
+    setAnalyzing(true);
     setError(null);
     try {
       const r = await analyzeSynthetic(req);
@@ -831,7 +790,8 @@ export default function App() {
     } catch (e) {
       setError(describeError(e, "合成信号分析失败"));
     } finally {
-      setBusy(false);
+      analyzingRef.current = false;
+      setAnalyzing(false);
     }
   }, [req, selected]);
 
@@ -1013,7 +973,8 @@ export default function App() {
         !display ||
         display.source === "synthetic" ||
         durationSeconds <= 0 ||
-        busy
+        // 导出不修改矩阵，只有分析会替换 display。
+        !canLoadSpectrogramWindow({ analyzing, exporting })
       )
         return;
 
@@ -1064,7 +1025,7 @@ export default function App() {
         }
       }
     },
-    [selected, display, durationSeconds, spectrogramWindow, busy],
+    [selected, display, durationSeconds, spectrogramWindow, analyzing, exporting],
   );
 
   const panSpectrogram = useCallback(
@@ -1098,12 +1059,12 @@ export default function App() {
           AURALIS <span className="brand-dim">STUDIO</span>
         </span>
         <span className="toolbar-sep" />
-        <Button onClick={onOpenFile} disabled={busy} title="Ctrl+O">
-          {busy ? "分析中…" : "打开文件…"}
+        <Button onClick={onOpenFile} disabled={!canStartAnalysis(ops)} title="Ctrl+O">
+          {openFileLabel(ops)}
         </Button>
         <Button
           onClick={run}
-          disabled={busy}
+          disabled={!canStartAnalysis(ops)}
           title={
             selected
               ? `用合成信号自检 IPC 与渲染（会顶替 ${selected.fileName} 的显示，不修改文件）`
@@ -1136,14 +1097,14 @@ export default function App() {
         </Button>
         <Button
           onClick={onExport}
-          disabled={busy || !selected || display == null}
+          disabled={!canStartExport(ops) || !selected || display == null}
           title={
             selected
               ? `导出 ${selected.fileName} 的分析结果（CSV / JSON，含算法版本与参数）`
               : "先打开一个音频文件"
           }
         >
-          导出…
+          {exportLabel(ops)}
         </Button>
 
         <div className="spacer" />
@@ -1171,7 +1132,7 @@ export default function App() {
             selected={selected}
             onPick={onOpenFile}
             onSelect={analyzePath}
-            busy={busy}
+            analyzing={analyzing}
             version={version}
             livePeak={livePeak}
             liveRms={liveRms}
@@ -1200,303 +1161,39 @@ export default function App() {
           />
         }
         center={
-          <div className="center-stack">
-            {error && (
-              <div style={{ marginBottom: 8 }}>
-                <ErrorBar
-                  title={error.title}
-                  detail={error.detail}
-                  action={
-                    <>
-                      {lastPathRef.current && (
-                        <Button size="tiny" onClick={onRetry} title="Ctrl+R">
-                          重试
-                        </Button>
-                      )}
-                      <Button size="tiny" onClick={() => setError(null)}>
-                        关闭
-                      </Button>
-                    </>
-                  }
-                />
-              </div>
-            )}
-            <section className="pane" id="pane-spectrum" style={{ flex: "1.35" }}>
-              <div className="pane-head">
-                <span className="pane-title">
-                  频谱
-                  {liveDb && <span className="rt-badge">实时</span>}
-                </span>
-                <span className="pane-meta">
-                  {liveDb
-                    ? `${liveDb.length} bins`
-                    : display?.db
-                      ? `${display.db.length} bins`
-                      : "等待数据"}
-                  <span className="sep">·</span>
-                  {liveDb
-                    ? `${liveStepHz.toFixed(1)} Hz/bin`
-                    : display
-                      ? `${display.fftSize} 点 FFT`
-                      : "FFT 4096"}
-                  <span className="sep">·</span>
-                  {fmtHzInt(sampleRate / 2)} Hz 奈奎斯特
-                  {/* 画的是合成信号时必须标出来：否则用户会以为这是文件的频谱。 */}
-                  {!liveDb && display?.source === "synthetic" && (
-                    <>
-                      <span className="sep">·</span>
-                      <span className="est-tag">合成信号</span>
-                    </>
-                  )}
-                  {viewRange && (
-                    <>
-                      <span className="sep">·</span>
-                      <span className="num">
-                        {fmtHz(viewRange[0])}–{fmtHz(viewRange[1])} Hz
-                      </span>
-                    </>
-                  )}
-                </span>
-                <span className="spacer" />
-                {/* 光标读数只在悬停时出现：常驻一个 "—" 只是噪声 */}
-                {cursorHz != null && (
-                  <span className="pane-meta num" title="光标频率">
-                    {fmtHz(cursorHz)} Hz
-                  </span>
-                )}
-                {viewRange && (
-                  <Button
-                    size="tiny"
-                    onClick={() => setViewRange(null)}
-                    title="回到全带宽"
-                  >
-                    复位缩放
-                  </Button>
-                )}
-              </div>
-              <div className="pane-body" ref={spectrumRef}>
-                {/* 实时数据上不能叠文件分析出的峰值标记：频率位置对不上，
-                    会让人以为那是当前信号的峰值。 */}
-                <SpectrumView
-                  db={liveDb ?? display?.db ?? null}
-                  stepHz={liveDb ? liveStepHz : (display?.stepHz ?? 1)}
-                  sampleRate={sampleRate}
-                  minDb={minDb}
-                  maxDb={maxDb}
-                  cursorHz={cursorHz}
-                  peaks={liveDb ? NO_PEAKS : display?.peaks}
-                  viewRange={viewRange}
-                  onViewRangeChange={setViewRange}
-                  onHoverHz={setCursorHz}
-                  mode={spectrumMode}
-                />
-              </div>
-              <div className="pane-note">
-                拖拽框选缩放 · 滚轮以光标为中心缩放 · 双击复位
-                <span className="sep">·</span>
-                dBFS，未做校准
-              </div>
-            </section>
-
-            <div className="splitter splitter-h" />
-
-            <section className="pane" id="pane-spectrogram" style={{ flex: 1 }}>
-              <div className="pane-head">
-                <span className="pane-title">声谱图</span>
-                <span className="pane-meta">
-                  STFT 2048/512
-                  <span className="sep">·</span>
-                  {display && display.spectrogramFrames > 0
-                    ? `${display.spectrogramFrames} × ${display.spectrogramBins}`
-                    : display?.source === "synthetic"
-                      ? "合成信号不产生声谱图"
-                      : "等待数据"}
-                  {display && display.spectrogramHopMs > 0 && (
-                    <>
-                      <span className="sep">·</span>
-                      <span className="num">
-                        {display.spectrogramHopMs.toFixed(2)} ms/列
-                      </span>
-                    </>
-                  )}
-                  {display && display.spectrogramFrames > 0 && (
-                    <>
-                      <span className="sep">·</span>
-                      <span className="num" title="矩阵覆盖的绝对时间范围">
-                        {fmtClock(spectroStart)}–
-                        {fmtClock(spectroStart + spectrogramSeconds)}
-                      </span>
-                    </>
-                  )}
-                </span>
-                <span className="spacer" />
-                {viewRange && (
-                  <>
-                    <span className="pane-meta num" title="当前频率视口">
-                      {fmtHz(viewRange[0])}–{fmtHz(viewRange[1])} Hz
-                    </span>
-                    <Button
-                      size="tiny"
-                      onClick={() => setViewRange(null)}
-                      title="恢复全带宽频率视口"
-                    >
-                      频率复位
-                    </Button>
-                  </>
-                )}
-                {showSpectroPaging && (
-                  <>
-                    <Button
-                      size="tiny"
-                      onClick={() =>
-                        void loadSpectrogramWindow(
-                          spectroStart - spectrogramSeconds * 0.8,
-                        )
-                      }
-                      disabled={busy || spectroLoading || spectroStart <= 0}
-                      title="向前一屏"
-                    >
-                      ◀
-                    </Button>
-                    <Button
-                      size="tiny"
-                      onClick={() => void loadSpectrogramWindow(0)}
-                      disabled={busy || spectroLoading || spectroStart <= 0}
-                      title="回到文件开头"
-                    >
-                      开头
-                    </Button>
-                    <Button
-                      size="tiny"
-                      onClick={() =>
-                        void loadSpectrogramWindow(
-                          spectroStart + spectrogramSeconds * 0.8,
-                        )
-                      }
-                      disabled={
-                        busy ||
-                        spectroLoading ||
-                        spectroStart >=
-                          Math.max(0, durationSeconds - spectrogramWindow) -
-                            1e-6
-                      }
-                      title="向后一屏"
-                    >
-                      ▶
-                    </Button>
-                  </>
-                )}
-                {spectroLoading && <span className="pane-meta">载入…</span>}
-              </div>
-              <div className="pane-body">
-                <SpectrogramView
-                  matrix={display?.spectrogram ?? null}
-                  width={display?.spectrogramFrames ?? 0}
-                  height={display?.spectrogramBins ?? 0}
-                  minDb={minDb}
-                  maxDb={maxDb}
-                  cursorHz={cursorHz}
-                  // 声谱图画的是**文件**的矩阵，频率轴必须用文件自己的
-                  // 采样率。实时采集开着时 `sampleRate` 会切成设备的采样率，
-                  // 那样频率刻度会整体错位 —— 而画面看上去完全正常。
-                  nyquistHz={(display?.sampleRate ?? sampleRate) / 2}
-                  durationSeconds={spectrogramSeconds}
-                  startSeconds={spectroStart}
-                  onPan={panSpectrogram}
-                  viewRange={viewRange}
-                  onViewRangeChange={setViewRange}
-                />
-              </div>
-              <div className="pane-note">
-                滚轮 / 拖拽平移时间
-                <span className="sep">·</span>
-                Shift + 滚轮缩放频率 · Shift + 拖拽框选频段
-                <span className="sep">·</span>
-                双击回到文件开头
-              </div>
-            </section>
-
-            <div className="splitter splitter-h" />
-
-            <section className="pane" id="pane-waveform" style={{ flex: 1 }}>
-              <div className="pane-head">
-                <span className="pane-title">波形</span>
-                <span className="pane-meta">
-                  min/max 包络
-                  <span className="sep">·</span>
-                  {display?.env?.length ?? 0} 点
-                  {/* 标题跟着**显示数据的来源**走：合成信号不能顶着文件名，
-                      否则看起来就是一个挂着文件名的默认页。 */}
-                  {display?.source === "synthetic" ? (
-                    <>
-                      <span className="sep">·</span>
-                      <span className="est-tag">合成信号</span>
-                    </>
-                  ) : (
-                    selected && (
-                      <>
-                        <span className="sep">·</span>
-                        {selected.fileName}
-                      </>
-                    )
-                  )}
-                </span>
-              </div>
-              <div className="pane-body">
-                {/* 合成信号是单声道：别拿已打开文件的声道数去切它的包络。 */}
-                <WaveformView
-                  envelope={display?.env ?? null}
-                  sampleRate={sampleRate}
-                  channels={
-                    display?.source === "synthetic"
-                      ? 1
-                      : (selected?.channels ?? 1)
-                  }
-                  durationSeconds={durationSeconds}
-                  layout={channelLayout}
-                />
-              </div>
-            </section>
-
-            <div className="splitter splitter-h" />
-
-            <section className="pane pane-metrics" id="pane-metrics">
-              <div className="pane-head">
-                <span className="pane-title">电平 / 指标</span>
-                <span className="pane-meta">
-                  {/* 跟着**显示数据**的来源走：合成信号不能只写「已分析」，
-                      否则这张卡看起来像在报已打开文件的指标。 */}
-                  {liveDb
-                    ? "实时采集"
-                    : display
-                      ? display.source === "synthetic"
-                        ? "合成信号"
-                        : "已分析"
-                      : "等待数据"}
-                  {display && (
-                    <>
-                      <span className="sep">·</span>
-                      <span className="num">
-                        {display.elapsedMs.toFixed(1)} ms
-                      </span>
-                    </>
-                  )}
-                </span>
-              </div>
-              <div className="pane-body pane-scroll">
-                <MetricsPanel
-                  display={display}
-                  live={
-                    liveDb
-                      ? { peakDbfs: livePeak, rmsDbfs: liveRms }
-                      : null
-                  }
-                  minDb={minDb}
-                  maxDb={maxDb}
-                />
-              </div>
-            </section>
-          </div>
+          <AnalysisCanvas
+            error={error}
+            canRetry={lastPathRef.current != null}
+            onRetry={onRetry}
+            onDismissError={() => setError(null)}
+            spectrumRef={spectrumRef}
+            liveDb={liveDb}
+            liveStepHz={liveStepHz}
+            livePeak={livePeak}
+            liveRms={liveRms}
+            display={display}
+            selected={selected}
+            sampleRate={sampleRate}
+            minDb={minDb}
+            maxDb={maxDb}
+            cursorHz={cursorHz}
+            onHoverHz={setCursorHz}
+            viewRange={viewRange}
+            onViewRangeChange={setViewRange}
+            spectrumMode={spectrumMode}
+            channelLayout={channelLayout}
+            spectroStart={spectroStart}
+            spectrogramSeconds={spectrogramSeconds}
+            spectrogramWindow={spectrogramWindow}
+            durationSeconds={durationSeconds}
+            showSpectroPaging={showSpectroPaging}
+            canPage={canLoadSpectrogramWindow(ops)}
+            spectroLoading={spectroLoading}
+            onLoadSpectrogramWindow={(start) =>
+              void loadSpectrogramWindow(start)
+            }
+            onPanSpectrogram={panSpectrogram}
+          />
         }
         right={
           <InspectorPanel
@@ -1504,7 +1201,7 @@ export default function App() {
             setReq={setReq}
             display={display}
             selected={selected}
-            busy={busy}
+            analyzing={analyzing}
             onRun={run}
             info={info}
             viewRange={viewRange}
@@ -1601,648 +1298,4 @@ export default function App() {
       />
     </div>
   );
-}
-
-/* ---------------------------------------------------------------- 侧栏 */
-
-function ResourcePanel({
-  files,
-  selected,
-  onPick,
-  onSelect,
-  busy,
-  version,
-  livePeak,
-  liveRms,
-  onLiveSnapshot,
-  tasks,
-  history,
-  onCancelTask: onCancelQueueTask,
-  liveRunning,
-  onLiveStatusChange,
-  onSearch,
-  onOpenPrefs,
-  onOpenHelp,
-  onOpenAbout,
-}: {
-  files: FileInfo[];
-  selected: FileInfo | null;
-  onPick: () => void;
-  /** 点击历史文件重新分析，不必再过一遍文件对话框 */
-  onSelect: (path: string) => void;
-  busy: boolean;
-  version: string;
-  /** 实时 Peak dBFS；null = 未采集或静音 */
-  livePeak: number | null;
-  /** 实时 RMS dBFS；null = 未采集或静音 */
-  liveRms: number | null;
-  /** 实时快照回调（频谱 / 电平） */
-  onLiveSnapshot: (snap: RealtimeSnapshot | null) => void;
-  /** 运行中的后台任务 */
-  tasks: TaskInfo[];
-  /** 最近完成的文件分析 */
-  history: HistoryEntry[];
-  /** 取消一个运行中的任务 */
-  onCancelTask: (taskId: number) => void;
-  /** 实时采集是否在运行 */
-  liveRunning: boolean;
-  /** 实时采集状态变化回调 */
-  onLiveStatusChange: (running: boolean) => void;
-  /** 打开全局搜索 */
-  onSearch: () => void;
-  /** 打开偏好设置 */
-  onOpenPrefs: () => void;
-  /** 打开帮助 */
-  onOpenHelp: () => void;
-  /** 打开关于 */
-  onOpenAbout: () => void;
-}) {
-  return (
-    <>
-      <div className="panel-body">
-        <button className="nav-cta" onClick={onPick} disabled={busy}>
-          <IconFilePlus size={15} />
-          {busy ? "分析中…" : "打开音频文件…"}
-        </button>
-
-        <NavGroup label="文件">
-          {files.length === 0 ? (
-            <li>
-              <div className="empty" style={{ padding: "10px 4px" }}>
-                <span className="empty-hint">
-                  还没有文件。可打开 WAV / FLAC / MP3 / AIFF / OGG；
-                  WAV / FLAC 已用真实样本验证，其余容器会在名字旁标注。
-                </span>
-              </div>
-            </li>
-          ) : (
-            files.map((f) => (
-              <li key={f.path}>
-                <button
-                  type="button"
-                  className={
-                    "file-item" + (selected?.path === f.path ? " on" : "")
-                  }
-                  title={`${f.path}\n点击重新分析`}
-                  disabled={busy}
-                  onClick={() => onSelect(f.path)}
-                >
-                  <span className="file-name">{f.fileName}</span>
-                  <span className="file-meta num">
-                    <span className="meta-text">
-                      {f.containerName} ·{" "}
-                      {f.sampleRate.toLocaleString("en-US")} Hz ·{" "}
-                      {f.channels === 1 ? "单声道" : `${f.channels} ch`}
-                    </span>
-                    {!f.verified && (
-                      <span className="file-warn" title={f.verificationNote}>
-                        未验证
-                      </span>
-                    )}
-                  </span>
-                </button>
-              </li>
-            ))
-          )}
-        </NavGroup>
-
-        <NavGroup label="分析视图">
-          <NavItem
-            icon={<IconWaveform />}
-            active
-            onClick={() => scrollToPane("pane-waveform")}
-          >
-            波形
-          </NavItem>
-          <NavItem
-            icon={<IconSpectrum />}
-            active
-            onClick={() => scrollToPane("pane-spectrum")}
-          >
-            频谱
-          </NavItem>
-          <NavItem
-            icon={<IconSpectrogram />}
-            onClick={() => scrollToPane("pane-spectrogram")}
-            title="声谱图：Shift + 滚轮缩放频率，Shift + 拖拽框选频段"
-          >
-            声谱图缩放
-          </NavItem>
-          <NavItem
-            icon={<IconGauge />}
-            onClick={() => scrollToPane("pane-metrics")}
-            title="电平、信号指标与数据质量"
-          >
-            电平表 / 指标
-          </NavItem>
-          <NavItem
-            icon={<IconTasks />}
-            onClick={() => scrollToPane("task-queue-panel")}
-            title="运行中的任务与最近完成的分析"
-            tag={tasks.length > 0 ? String(tasks.length) : undefined}
-          >
-            后台任务队列
-          </NavItem>
-          <NavItem
-            icon={<IconDevice />}
-            onClick={() => scrollToPane("realtime-panel")}
-            title="枚举输入设备并启动实时采集"
-            tag={liveRunning ? "采集中" : undefined}
-          >
-            实时输入
-          </NavItem>
-        </NavGroup>
-
-        {/* M4：实时采集。放在导航之外，因为它是一个真正的控制面板，
-            不是切换视图的入口。 */}
-        <div className="nav-divider" />
-        <RealtimePanel
-          onSnapshot={onLiveSnapshot}
-          onStatusChange={onLiveStatusChange}
-        />
-        {livePeak !== null && (
-          <LevelMeter
-            peakDbfs={livePeak}
-            rmsDbfs={liveRms}
-            peakPerChannel={[]}
-            minDb={MIN_DB}
-            maxDb={MAX_DB}
-            overFullScale={0}
-            clippingRegions={0}
-          />
-        )}
-
-        {/* M3：后台任务队列。与实时面板一样是控制面板，不是视图入口。 */}
-        <div className="nav-divider" />
-        <div id="task-queue-panel">
-          <TaskQueuePanel
-            running={tasks}
-            history={history}
-            onCancel={onCancelQueueTask}
-          />
-        </div>
-
-        <NavGroup label="工程">
-          <NavItem
-            icon={<IconSettings />}
-            onClick={onOpenPrefs}
-            title="显示、布局与分析参数（Ctrl+,）"
-          >
-            偏好设置
-          </NavItem>
-        </NavGroup>
-      </div>
-
-      <div className="sidebar-foot">
-        <ul className="nav">
-          <NavItem
-            icon={<IconSearch />}
-            onClick={onSearch}
-            title="搜索文件、峰值或操作（Ctrl+K）"
-          >
-            搜索
-          </NavItem>
-          <NavItem
-            icon={<IconHelp />}
-            onClick={onOpenHelp}
-            title="快捷键、界面导览与能力边界（F1）"
-          >
-            帮助
-          </NavItem>
-        </ul>
-        <div className="sidebar-user">
-          <span className="avatar">AS</span>
-          <span className="who">
-            <b>Auralis Studio</b>
-            <span className="num">{version} · 本地分析</span>
-          </span>
-          <span className="spacer" />
-          <IconButton label="关于与版本信息" onClick={onOpenAbout}>
-            <IconMore size={15} />
-          </IconButton>
-        </div>
-      </div>
-    </>
-  );
-}
-
-/* -------------------------------------------------------------- 检查器 */
-
-function InspectorPanel({
-  req,
-  setReq,
-  display,
-  selected,
-  busy,
-  onRun,
-  info,
-  viewRange,
-  onResetViewRange,
-  minDb,
-  maxDb,
-  spectrumMode,
-  onSpectrumModeChange,
-  dbRangeIdx,
-  onDbRangeChange,
-  channelLayout,
-  onChannelLayoutChange,
-}: {
-  req: SyntheticRequest;
-  setReq: React.Dispatch<React.SetStateAction<SyntheticRequest>>;
-  display: DisplayData | null;
-  selected: FileInfo | null;
-  busy: boolean;
-  onRun: () => void;
-  info: AppInfo | null;
-  viewRange: [number, number] | null;
-  onResetViewRange: () => void;
-  /** 当前 dB 量程（与中央画布一致） */
-  minDb: number;
-  maxDb: number;
-  spectrumMode: SpectrumMode;
-  onSpectrumModeChange: (m: SpectrumMode) => void;
-  dbRangeIdx: number;
-  onDbRangeChange: (idx: number) => void;
-  channelLayout: ChannelLayout;
-  onChannelLayoutChange: (l: ChannelLayout) => void;
-}) {
-  const set = <K extends keyof SyntheticRequest>(
-    k: K,
-    v: SyntheticRequest[K],
-  ) => setReq((r) => ({ ...r, [k]: v }));
-
-  return (
-    <div className="panel-body">
-      {display?.outcome === "failed" && (
-        <div style={{ marginBottom: 8 }}>
-          <ErrorBar title="分析未成功完成" />
-        </div>
-      )}
-
-      <div className="label" style={{ marginBottom: 5 }}>
-        电平
-      </div>
-      <div className="readout">
-        <LevelMeter
-          peakDbfs={display?.peakDbfs ?? null}
-          rmsDbfs={display?.rmsDbfs ?? null}
-          peakPerChannel={display?.peakPerChannel ?? []}
-          minDb={minDb}
-          maxDb={maxDb}
-          overFullScale={display ? display.overFullScaleSamples : null}
-          clippingRegions={display ? display.clippingRegions : null}
-        />
-      </div>
-
-      <div className="label" style={{ marginBottom: 5, marginTop: 12 }}>
-        信号指标
-      </div>
-      <div className="readout">
-        <MetricRow label="Peak" value={display?.peakDbfs} unit="dBFS" />
-        <MetricRow label="RMS" value={display?.rmsDbfs} unit="dBFS" />
-        <MetricRow label="Crest" value={display?.crestDb} unit="dB" />
-        <DataRow
-          label="DC Offset"
-          value={display ? display.dc.toExponential(2) : "—"}
-        />
-        <DataRow
-          label="包络点数"
-          value={
-            display ? display.env?.length.toLocaleString("en-US") ?? "—" : "—"
-          }
-        />
-        {/* 多声道文件的逐声道峰值：单声道时与上面的 Peak 完全重复，不显示 */}
-        {display && display.peakPerChannel.length > 1 && (
-          <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid var(--grid-minor)" }}>
-            {display.peakPerChannel.map((p, i) => (
-              <DataRow
-                key={i}
-                label={`CH${i + 1} Peak`}
-                value={p == null ? "—（静音）" : `${p.toFixed(2)} dBFS`}
-              />
-            ))}
-          </div>
-        )}
-        {/* 数据质量：这些计数为 0 也要显示，否则「有没有检查过」无法区分 */}
-        <DataRow
-          label="超量程样本"
-          value={
-            display
-              ? display.overFullScaleSamples.toLocaleString("en-US")
-              : "—"
-          }
-        />
-        <DataRow
-          label="平顶片段"
-          value={
-            display ? display.clippingRegions.toLocaleString("en-US") : "—"
-          }
-          title="启发式计数，不是模拟削波的证据"
-        />
-        <DataRow
-          label="清理样本"
-          value={
-            display ? display.sanitizedSamples.toLocaleString("en-US") : "—"
-          }
-          title="NaN / Inf 被替换为 0 的数量"
-        />
-      </div>
-
-      {display && display.peaks.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <div className="label" style={{ marginBottom: 5 }}>
-            峰值
-          </div>
-          <div className="readout">
-            {display.peaks.slice(0, 8).map((p, i) => (
-              <div className="metric-row" key={i}>
-                <span className="muted num">{i + 1}</span>
-                <span className="num">
-                  {fmtHz(p.frequencyHz)}
-                  <span className="muted"> Hz · </span>
-                  {p.amplitudeDbfs.toFixed(2)}
-                  <span className="muted"> dBFS</span>
-                  {p.estimated && (
-                    <span
-                      className="est-tag"
-                      title={`扇贝损失 ${p.scallopingDb.toFixed(2)} dB，读数不可靠`}
-                    >
-                      估算
-                    </span>
-                  )}
-                </span>
-              </div>
-            ))}
-          </div>
-          <div className="note">
-            FFT {display.fftSize} · {display.window} ·{" "}
-            <span className="num">{display.stepHz.toFixed(3)}</span> Hz/bin
-          </div>
-        </div>
-      )}
-
-      <div style={{ marginTop: 12 }}>
-        <div className="label" style={{ marginBottom: 2 }}>
-          参数
-        </div>
-        <Collapsible title="合成信号自检">
-          <FormField label="频率" unit="Hz">
-            <input
-              type="number"
-              className="num"
-              value={req.frequencyHz}
-              step={50}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v)) set("frequencyHz", v);
-              }}
-            />
-          </FormField>
-          <FormField label="幅值" unit="FS">
-            <input
-              type="number"
-              className="num"
-              value={req.amplitude}
-              step={0.1}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v)) set("amplitude", v);
-              }}
-            />
-          </FormField>
-          <FftSizeField
-            value={req.fftSize}
-            onChange={(v) => set("fftSize", v)}
-          />
-          <div style={{ marginTop: 8 }}>
-            <Button variant="primary" wide onClick={onRun} disabled={busy}>
-              {busy ? "计算中…" : "分析合成信号"}
-            </Button>
-          </div>
-          <p className="note">
-            合成 1 kHz 正弦，用于验证 IPC 通路与渲染；不读取也不修改任何文件。
-            {selected
-              ? "运行后会顶替画布上当前文件的结果，点左侧文件名可重新分析恢复。"
-              : ""}
-          </p>
-        </Collapsible>
-
-        {selected && (
-          <Collapsible
-            title="文件"
-            meta={
-              [
-                // 合成信号分析会把画布换掉：此时这一节讲的是**已打开的文件**，
-                // 不是屏幕上画的东西，必须点名，否则就是在标签上撒谎。
-                display?.source === "synthetic" ? "未显示" : null,
-                selected.verified ? null : "未验证",
-              ]
-                .filter(Boolean)
-                .join(" · ") || undefined
-            }
-            defaultOpen
-          >
-            {display?.source === "synthetic" && (
-              <p className="note warn-note">
-                下列是已打开文件的属性；画布上显示的是合成信号，不是这份文件。
-              </p>
-            )}
-            <DataRow label="容器" value={selected.containerName} />
-            <DataRow label="编码" value={selected.codec} />
-            <DataRow
-              label="采样率"
-              value={`${selected.sampleRate.toLocaleString("en-US")} Hz`}
-            />
-            <DataRow label="声道" value={String(selected.channels)} />
-            <DataRow
-              label="时长"
-              value={
-                selected.durationSeconds == null
-                  ? "—"
-                  : `${selected.durationSeconds.toFixed(3)} s`
-              }
-            />
-            <DataRow
-              label="文件大小"
-              value={`${(selected.fileSizeBytes / 1024).toFixed(1)} KiB`}
-            />
-            {!selected.verified && (
-              <p className="note warn-note">{selected.verificationNote}</p>
-            )}
-          </Collapsible>
-        )}
-
-        <Collapsible title="显示" defaultOpen>
-          <FormField label="频谱形态">
-            <Select
-              value={spectrumMode}
-              onValueChange={(v) =>
-                onSpectrumModeChange(v === "line" ? "line" : "area")
-              }
-            >
-              <option value="area">填充（面积）</option>
-              <option value="line">曲线（声线）</option>
-            </Select>
-          </FormField>
-          <FormField label="dB 量程">
-            <Select
-              value={String(dbRangeIdx)}
-              onValueChange={(v) => onDbRangeChange(Number(v))}
-            >
-              {DB_RANGES.map((r, i) => (
-                <option key={r.label} value={i}>
-                  {r.label}
-                </option>
-              ))}
-            </Select>
-          </FormField>
-          <FormField label="声道显示">
-            <Select
-              value={channelLayout}
-              onValueChange={(v) =>
-                onChannelLayoutChange(v === "overlay" ? "overlay" : "lanes")
-              }
-            >
-              <option value="lanes">分道</option>
-              <option value="overlay">叠加（对比）</option>
-            </Select>
-          </FormField>
-          <DataRow label="当前量程" value={`${minDb} … ${maxDb} dBFS`} />
-          <DataRow label="视口" value={fmtRange(viewRange)} />
-          <DataRow label="频谱点数" value={String(req.targetBins)} />
-          <div style={{ marginTop: 8 }}>
-            <Button
-              size="tiny"
-              wide
-              onClick={onResetViewRange}
-              disabled={!viewRange}
-            >
-              复位缩放
-            </Button>
-          </div>
-        </Collapsible>
-
-        <Collapsible title="关于">
-          <DataRow label="版本" value={info?.version ?? "—"} />
-          <DataRow label="算法" value={info?.algorithmVersion ?? "—"} mono />
-          <DataRow label="DSP 规范" value={info?.dspSpecRevision ?? "—"} />
-          <p className="note">
-            dB 换算、FFT、降采样全部在 Rust 侧完成，前端只画结果（ADR-018）。
-            真实文件与实时输入共用同一条计算链路。
-          </p>
-        </Collapsible>
-      </div>
-    </div>
-  );
-}
-
-/**
- * FFT 点数选择器。
- *
- * 用固定候选而非自由输入 + log2 取整：
- *   - DSP_SPEC §5 只定义 2 的幂长度，自由输入会被静默取整，用户不知情
- *   - 避免在前端做任何数值运算（ADR-018：前端只做展示）
- */
-const FFT_SIZES = [1024, 2048, 4096, 8192, 16384] as const;
-
-function FftSizeField({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <FormField label="FFT 点数">
-      <Select
-        className="num"
-        value={value}
-        onValueChange={(v) => onChange(Number(v))}
-      >
-        {FFT_SIZES.map((n) => (
-          <option key={n} value={n}>
-            {n}
-          </option>
-        ))}
-      </Select>
-    </FormField>
-  );
-}
-
-/* ---------------------------------------------------------------- 工具 */
-
-/**
- * 取路径的文件名部分；没有分隔符时原样返回。
- *
- * 只用于显示标签，不是解析路径 —— 真正的路径处理由 Rust 侧负责。
- */
-function fileNameOf(path: string): string {
-  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return cut >= 0 ? path.slice(cut + 1) : path;
-}
-
-/** 频率显示：12000 -> "12.0k" */
-function fmtHz(hz: number): string {
-  // 上游可能给出 NaN / Infinity（例如零点附近插值失败），
-  // 这类值直接交给 toFixed 会抛错并让整个渲染树崩掉。
-  if (!Number.isFinite(hz)) return "—";
-  return hz >= 1000 ? `${(hz / 1000).toFixed(2)}k` : hz.toFixed(0);
-}
-
-function fmtHzInt(hz: number): string {
-  return Math.round(hz).toLocaleString("en-US");
-}
-
-/**
- * 缩放范围摘要：`null` 表示全带宽。
- *
- * 只格式化显示值，不做任何计算（ADR-018 规则 1）。
- */
-function fmtRange(r: [number, number] | null): string {
-  if (!r) return "全带宽";
-  return `${fmtHz(r[0])} – ${fmtHz(r[1])} Hz`;
-}
-
-/** 绝对时间：`m:ss.s`，用于声谱图视口范围。 */
-function fmtClock(sec: number): string {
-  if (!Number.isFinite(sec) || sec < 0) return "—";
-  const m = Math.floor(sec / 60);
-  const s = sec - m * 60;
-  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
-}
-
-/* -------------------------------------------------------------- 错误文案 */
-
-interface UiError {
-  title: string;
-  detail: string | null;
-}
-
-/**
- * 把未知异常翻译成「能看懂的一句话 + 可复制的原始文本」。
- *
- * M1 阶段直接把 `String(e)` 铺在状态栏，结果是满屏 `TypeError: ...`：
- * 既看不出是什么操作失败，也无法定位。这里做最小翻译，未知错误原样保留
- * detail，不编造原因。
- */
-function describeError(e: unknown, action: string): UiError {
-  const raw = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-  if (raw.includes("is not a multiple of 4")) {
-    return { title: `${action}：后端返回的二进制载荷长度非法`, detail: raw };
-  }
-  if (raw.includes("not found") || raw.includes("No such file")) {
-    return { title: `${action}：文件不存在或已被移动`, detail: raw };
-  }
-  if (raw.includes("Unsupported") || raw.includes("unsupported")) {
-    return { title: `${action}：该格式尚未验证支持`, detail: raw };
-  }
-  // 截断与损坏要分开说：截断通常意味着文件没下完/拷贝不完整，重新获取即可；
-  // 混在一句话里，用户会以为是格式不支持而白折腾。
-  if (raw.includes("truncated")) {
-    return { title: `${action}：文件不完整（已截断）`, detail: raw };
-  }
-  if (raw.includes("corrupt")) {
-    return { title: `${action}：文件已损坏`, detail: raw };
-  }
-  return { title: `${action}（详见悬停提示）`, detail: raw };
 }
