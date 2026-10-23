@@ -48,12 +48,20 @@ import { SpectrumView } from "@/components/audio-viz/SpectrumView";
 import { SpectrogramView } from "@/components/audio-viz/SpectrogramView";
 import { TaskQueuePanel } from "@/components/audio-viz/TaskQueuePanel";
 import { WaveformView } from "@/components/audio-viz/WaveformView";
+import { readStoredJson, writeStoredJson } from "@/lib/persist";
 import {
-  asBoolean,
-  asNumberInRange,
-  readStoredJson,
-  writeStoredJson,
-} from "@/lib/persist";
+  clearPrefs,
+  clearSession,
+  DB_RANGES,
+  readPrefs,
+  resetLayout,
+  SESSION_KEY,
+  writePrefs,
+  type Prefs,
+} from "@/lib/prefs";
+import { AboutDialog } from "@/components/ui/AboutDialog";
+import { HelpDialog } from "@/components/ui/HelpDialog";
+import { PreferencesDialog } from "@/components/ui/PreferencesDialog";
 import { SearchPalette, type PaletteItem } from "@/components/ui/SearchPalette";
 import {
   Button,
@@ -115,15 +123,6 @@ function scrollToPane(id: string): void {
   });
 }
 
-/** 校验存下来的可见性；任何字段损坏都整条丢弃，回到默认值。 */
-function readVisibility(v: unknown): { left: boolean; right: boolean } | null {
-  if (typeof v !== "object" || v === null) return null;
-  const rec = v as Record<string, unknown>;
-  const left = asBoolean(rec.left);
-  const right = asBoolean(rec.right);
-  return left != null && right != null ? { left, right } : null;
-}
-
 const DEFAULTS: SyntheticRequest = {
   frequencyHz: 1000,
   amplitude: 0.5,
@@ -142,38 +141,7 @@ type SpectrumMode = "area" | "line";
 /** 多声道波形的排布：分道 / 叠加。 */
 type ChannelLayout = "lanes" | "overlay";
 
-/** dB 量程预设。 */
-const DB_RANGES = [
-  { label: "全量程 −140…0", min: MIN_DB, max: MAX_DB },
-  { label: "常用 −100…0", min: -100, max: MAX_DB },
-  { label: "细节 −80…−10", min: -80, max: -10 },
-  { label: "底噪 −140…−40", min: MIN_DB, max: -40 },
-] as const;
-
 const DISPLAY_KEY = "auralis.display.v1";
-/** 上次打开的文件；M5 会话恢复只存路径，不存分析结果。 */
-const SESSION_KEY = "auralis.session.v1";
-
-/** 显示偏好。字段缺一个就整条丢弃，回到默认值（不猜用户意图）。 */
-interface DisplayPrefs {
-  mode: SpectrumMode;
-  dbRange: number;
-  channelLayout: ChannelLayout;
-}
-
-function readDisplayPrefs(v: unknown): DisplayPrefs | null {
-  if (typeof v !== "object" || v === null) return null;
-  const rec = v as Record<string, unknown>;
-  const mode = rec.mode === "line" || rec.mode === "area" ? rec.mode : null;
-  const dbRange = asNumberInRange(rec.dbRange, 0, DB_RANGES.length - 1);
-  const channelLayout =
-    rec.channelLayout === "lanes" || rec.channelLayout === "overlay"
-      ? rec.channelLayout
-      : null;
-  return mode != null && dbRange != null && channelLayout != null
-    ? { mode, dbRange, channelLayout }
-    : null;
-}
 
 /** 正在进行、可取消的文件分析。`null` = 没有在跑的文件任务。 */
 interface ActiveTask {
@@ -202,13 +170,6 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [cursorHz, setCursorHz] = useState<number | null>(null);
   const [viewRange, setViewRange] = useState<[number, number] | null>(null);
-  // 面板可见性也持久化：一上来就隐藏资源栏的人，不希望每次启动都重新勾一遍
-  const [showLeft, setShowLeft] = useState(
-    () => readStoredJson(VISIBILITY_KEY, readVisibility)?.left ?? true,
-  );
-  const [showRight, setShowRight] = useState(
-    () => readStoredJson(VISIBILITY_KEY, readVisibility)?.right ?? true,
-  );
   const spectrumRef = useRef<HTMLDivElement>(null);
   /** 任务号由前端分配：见 AppState::try_register_token 的说明 */
   const taskSeq = useRef(0);
@@ -216,15 +177,33 @@ export default function App() {
   /** 上一个成功 probe 的路径，供「重试」使用 */
   const lastPathRef = useRef<string | null>(null);
 
-  // ---- 显示偏好（持久化）----
-  const storedDisplay = useRef(readStoredJson(DISPLAY_KEY, readDisplayPrefs))
-    .current;
+  // ---- 统一偏好（持久化）----
+  //
+  // 一份真值源：顶栏复选框、检查器的「显示」分区、偏好设置对话框
+  // 全部读写这同一份状态。改一处三处一致 —— 「改了没反应」几乎总是
+  // 因为两处各写各的。
+  //
+  // 初值来自 `readPrefs()`：它会先读新键，再从旧的
+  // `auralis.display.v1` / `auralis.workspace.visibility.v1` 迁移，
+  // 所以已有的用户设置不会因为换了存储位置而丢失。
+  const initialPrefs = useRef(readPrefs()).current;
   const [spectrumMode, setSpectrumMode] = useState<SpectrumMode>(
-    storedDisplay?.mode ?? "area",
+    initialPrefs.spectrumMode,
   );
-  const [dbRangeIdx, setDbRangeIdx] = useState(storedDisplay?.dbRange ?? 0);
+  const [dbRangeIdx, setDbRangeIdx] = useState(initialPrefs.dbRange);
   const [channelLayout, setChannelLayout] = useState<ChannelLayout>(
-    storedDisplay?.channelLayout ?? "lanes",
+    initialPrefs.channelLayout,
+  );
+  // 面板可见性也持久化：一上来就隐藏资源栏的人，不希望每次启动都重新勾一遍
+  const [showLeft, setShowLeft] = useState(initialPrefs.showLeft);
+  const [showRight, setShowRight] = useState(initialPrefs.showRight);
+  /** 文件分析的波形包络点数 */
+  const [envelopePoints, setEnvelopePoints] = useState(
+    initialPrefs.envelopePoints,
+  );
+  /** 启动时是否自动恢复上次打开的文件 */
+  const [restoreSession, setRestoreSession] = useState(
+    initialPrefs.restoreSession,
   );
 
   // ---- 真实文件 ----
@@ -253,6 +232,10 @@ export default function App() {
   const [liveRunning, setLiveRunning] = useState(false);
   /** 全局搜索面板是否打开 */
   const [searchOpen, setSearchOpen] = useState(false);
+  /** 打开中的模态对话框；`null` = 都没开 */
+  const [dialog, setDialog] = useState<null | "prefs" | "help" | "about">(null);
+  /** 布局重置计数：递增会重建 Workspace，让它重新读一遍面板宽度 */
+  const [layoutEpoch, setLayoutEpoch] = useState(0);
 
   useEffect(() => {
     writeStoredJson(VISIBILITY_KEY, { left: showLeft, right: showRight });
@@ -265,6 +248,86 @@ export default function App() {
       channelLayout,
     });
   }, [spectrumMode, dbRangeIdx, channelLayout]);
+
+  // 统一偏好存储键。状态是真值源，这个 effect 只是把它落盘。
+  useEffect(() => {
+    writePrefs({
+      spectrumMode,
+      dbRange: dbRangeIdx,
+      channelLayout,
+      showLeft,
+      showRight,
+      envelopePoints,
+      restoreSession,
+    });
+  }, [
+    spectrumMode,
+    dbRangeIdx,
+    channelLayout,
+    showLeft,
+    showRight,
+    envelopePoints,
+    restoreSession,
+  ]);
+
+  /** 把一份偏好应用到全部状态。 */
+  const applyPrefs = useCallback((p: Prefs) => {
+    setSpectrumMode(p.spectrumMode);
+    setDbRangeIdx(p.dbRange);
+    setChannelLayout(p.channelLayout);
+    setShowLeft(p.showLeft);
+    setShowRight(p.showRight);
+    setEnvelopePoints(p.envelopePoints);
+    setRestoreSession(p.restoreSession);
+  }, []);
+
+  /** 当前偏好的快照，供偏好设置对话框渲染。 */
+  const prefs = useMemo<Prefs>(
+    () => ({
+      spectrumMode,
+      dbRange: dbRangeIdx,
+      channelLayout,
+      showLeft,
+      showRight,
+      envelopePoints,
+      restoreSession,
+    }),
+    [
+      spectrumMode,
+      dbRangeIdx,
+      channelLayout,
+      showLeft,
+      showRight,
+      envelopePoints,
+      restoreSession,
+    ],
+  );
+
+  /**
+   * 重置某一组本地设置。
+   *
+   * 删除对应的存储键，并把运行中的界面同步回默认值 —— 只删键不刷新
+   * 界面的话，用户会看到「按钮按了没反应」。
+   */
+  const onResetPrefs = useCallback(
+    (kind: "prefs" | "layout" | "session") => {
+      if (kind === "prefs") {
+        clearPrefs();
+        applyPrefs(readPrefs());
+        setNotice("显示与分析偏好已重置");
+      } else if (kind === "layout") {
+        resetLayout();
+        // 侧栏宽度由 Workspace 组件自持；重建它才会重新读一次存储。
+        setLayoutEpoch((n) => n + 1);
+        applyPrefs({ ...readPrefs(), showLeft: true, showRight: true });
+        setNotice("面板布局已重置");
+      } else {
+        clearSession();
+        setNotice("会话记录已清除，下次启动不再自动恢复文件");
+      }
+    },
+    [applyPrefs],
+  );
 
   useEffect(() => {
     fetchAppInfo()
@@ -350,7 +413,7 @@ export default function App() {
       setSelected(fi);
 
       setActiveTask({ id, label: fi.fileName });
-      const a = await analyzeFile(fi.path, 2048, id);
+      const a = await analyzeFile(fi.path, envelopePoints, id);
 
       // 取消不是失败：保留上一次的数据，只在状态栏说明
       if (a.outcome === "cancelled") {
@@ -430,7 +493,7 @@ export default function App() {
       setActiveTask(null);
       setBusy(false);
     }
-  }, [recordAnalysis]);
+  }, [recordAnalysis, envelopePoints]);
 
   /**
    * 启动入口：
@@ -456,9 +519,12 @@ export default function App() {
     const session = readStoredJson(SESSION_KEY, readSession);
     if (!session || !isAudioPath(session.path)) return;
 
+    // 用户可以关掉「启动时恢复上次打开的文件」。
+    if (!restoreSession) return;
+
     const recovered = params.get("recovered") === "1";
     void analyzePath(session.path, recovered ? "crashed" : "clean");
-  }, [analyzePath]);
+  }, [analyzePath, restoreSession]);
 
   const onOpenFile = useCallback(async () => {
     setError(null);
@@ -526,7 +592,12 @@ export default function App() {
         : ("csv" as const);
 
       setBusy(true);
-      const out = await exportAnalysis(selected.path, destination, format);
+      const out = await exportAnalysis(
+        selected.path,
+        destination,
+        format,
+        envelopePoints,
+      );
       setNotice(
         `已导出 ${out.format.toUpperCase()} · ${(out.bytesWritten / 1024).toFixed(1)} KiB → ${out.destination}`,
       );
@@ -535,7 +606,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [selected]);
+  }, [selected, envelopePoints]);
 
   /**
    * 把频率视口对准某个检测到的峰值。
@@ -563,16 +634,32 @@ export default function App() {
   );
 
   // ---- 键盘：Ctrl/Cmd+O 打开，Esc 取消，Ctrl/Cmd+R 重试，Ctrl/Cmd+K 搜索 ----
+  //
+  // 有模态打开时键盘归模态：否则在对话框里按 Esc 会同时「关闭对话框」
+  // 和「取消正在进行的分析」；在搜索面板里按 Ctrl+O 会在面板上再弹一个
+  // 文件选择器。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
+
       if (mod && (key === "k" || key === "f")) {
         e.preventDefault();
-        setSearchOpen(true);
-      } else if (mod && key === "o") {
+        if (dialog === null) setSearchOpen(true);
+        return;
+      }
+
+      if (dialog !== null || searchOpen) return;
+
+      if (mod && key === "o") {
         e.preventDefault();
         void onOpenFile();
+      } else if (mod && key === ",") {
+        e.preventDefault();
+        setDialog("prefs");
+      } else if (e.key === "F1") {
+        e.preventDefault();
+        setDialog("help");
       } else if (e.key === "Escape" && activeTask) {
         e.preventDefault();
         void onCancelTask();
@@ -583,7 +670,14 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeTask, onCancelTask, onOpenFile, onRetry]);
+  }, [
+    activeTask,
+    dialog,
+    onCancelTask,
+    onOpenFile,
+    onRetry,
+    searchOpen,
+  ]);
 
   // ---- 拖放：桌面音频应用的基本预期 ----
   //
@@ -960,6 +1054,7 @@ export default function App() {
 
       {/* ---- 主体 ---- */}
       <Workspace
+        key={layoutEpoch}
         leftVisible={showLeft}
         rightVisible={showRight}
         left={
@@ -982,6 +1077,9 @@ export default function App() {
             liveRunning={liveRunning}
             onLiveStatusChange={setLiveRunning}
             onSearch={() => setSearchOpen(true)}
+            onOpenPrefs={() => setDialog("prefs")}
+            onOpenHelp={() => setDialog("help")}
+            onOpenAbout={() => setDialog("about")}
             tasks={tasks}
             history={history}
             onCancelTask={onCancelQueueTask}
@@ -1341,6 +1439,21 @@ export default function App() {
         onClose={() => setSearchOpen(false)}
         items={paletteItems}
       />
+
+      {/* ---- 对话框 ---- */}
+      <PreferencesDialog
+        open={dialog === "prefs"}
+        onClose={() => setDialog(null)}
+        prefs={prefs}
+        onChange={applyPrefs}
+        onReset={onResetPrefs}
+      />
+      <HelpDialog open={dialog === "help"} onClose={() => setDialog(null)} />
+      <AboutDialog
+        open={dialog === "about"}
+        onClose={() => setDialog(null)}
+        info={info}
+      />
     </div>
   );
 }
@@ -1363,6 +1476,9 @@ function ResourcePanel({
   liveRunning,
   onLiveStatusChange,
   onSearch,
+  onOpenPrefs,
+  onOpenHelp,
+  onOpenAbout,
 }: {
   files: FileInfo[];
   selected: FileInfo | null;
@@ -1389,6 +1505,12 @@ function ResourcePanel({
   onLiveStatusChange: (running: boolean) => void;
   /** 打开全局搜索 */
   onSearch: () => void;
+  /** 打开偏好设置 */
+  onOpenPrefs: () => void;
+  /** 打开帮助 */
+  onOpenHelp: () => void;
+  /** 打开关于 */
+  onOpenAbout: () => void;
 }) {
   return (
     <>
@@ -1516,7 +1638,11 @@ function ResourcePanel({
         </div>
 
         <NavGroup label="工程">
-          <NavItem icon={<IconSettings />} disabled tag="M5">
+          <NavItem
+            icon={<IconSettings />}
+            onClick={onOpenPrefs}
+            title="显示、布局与分析参数（Ctrl+,）"
+          >
             偏好设置
           </NavItem>
         </NavGroup>
@@ -1531,7 +1657,11 @@ function ResourcePanel({
           >
             搜索
           </NavItem>
-          <NavItem icon={<IconHelp />} disabled>
+          <NavItem
+            icon={<IconHelp />}
+            onClick={onOpenHelp}
+            title="快捷键、界面导览与能力边界（F1）"
+          >
             帮助
           </NavItem>
         </ul>
@@ -1542,7 +1672,7 @@ function ResourcePanel({
             <span className="num">{version} · 本地分析</span>
           </span>
           <span className="spacer" />
-          <IconButton label="关于与版本信息" disabled>
+          <IconButton label="关于与版本信息" onClick={onOpenAbout}>
             <IconMore size={15} />
           </IconButton>
         </div>

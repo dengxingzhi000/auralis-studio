@@ -637,6 +637,115 @@ dialog.modal-palette {
   color: var(--text-secondary);
 }
 
+/* ---- 偏好设置 / 帮助 / 关于 ---- */
+
+.prefs-section {
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--grid-minor);
+}
+.prefs-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+.prefs-section > .label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+  letter-spacing: 0.03em;
+}
+.prefs-section .toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+  cursor: pointer;
+}
+.prefs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.help-section {
+  margin-bottom: 14px;
+}
+.help-section:last-child {
+  margin-bottom: 0;
+}
+.help-section > .label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+  letter-spacing: 0.03em;
+}
+.help-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.help-list b {
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+}
+.help-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.help-table td {
+  padding: 3px 6px 3px 0;
+  vertical-align: top;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--grid-minor);
+}
+.help-table tr:last-child td {
+  border-bottom: none;
+}
+.help-key {
+  width: 34%;
+  white-space: nowrap;
+}
+.help-term {
+  width: 26%;
+  color: var(--text-primary);
+}
+
+.about-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.about-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--grid-minor);
+  font-size: var(--text-sm);
+}
+.about-row .num {
+  color: var(--text-primary);
+  text-align: right;
+  word-break: break-all;
+}
+.about-divider {
+  height: 1px;
+  margin: 8px 0 6px;
+  background: var(--border-subtle);
+}
+.about-list code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
 /* ---- 指标视图 ---- */
 
 .metrics-grid {
