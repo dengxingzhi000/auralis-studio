@@ -560,12 +560,18 @@ export default function App() {
         sanitizedSamples: r.metrics.sanitizedSamples,
       });
       setSpectroStart(0);
+      // 合成信号会**替换**当前显示的结果。开着文件时，用户很容易把
+      // 「分析合成信号」当成「分析这个文件」——明说一次，别让人以为
+      // 自己的文件被分析成了那声 1 kHz 正弦。
+      if (selected) {
+        setNotice(`已切换到合成信号分析：${selected.fileName} 的结果已被替换`);
+      }
     } catch (e) {
       setError(describeError(e, "合成信号分析失败"));
     } finally {
       setBusy(false);
     }
-  }, [req]);
+  }, [req, selected]);
 
   /**
    * 当前用于画频率轴的采样率。
@@ -1394,10 +1400,13 @@ function InspectorPanel({
           />
           <div style={{ marginTop: 8 }}>
             <Button variant="primary" wide onClick={onRun} disabled={busy}>
-              {busy ? "计算中…" : "生成并分析"}
+              {busy ? "计算中…" : "分析合成信号"}
             </Button>
           </div>
-          <p className="note">合成 1 kHz 正弦，用于验证 IPC 通路与渲染。</p>
+          <p className="note">
+            合成 1 kHz 正弦，用于验证 IPC 通路与渲染。
+            {selected ? "会替换当前文件的分析结果。" : ""}
+          </p>
         </Collapsible>
 
         {selected && (
