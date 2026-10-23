@@ -106,6 +106,8 @@ jobs:
       - run: npm ci
       - name: TypeScript 类型检查（渲染进程）
         run: npm run typecheck
+      - name: 前端单元测试
+        run: npm run test
       - name: TypeScript 类型检查（Electron 主进程）
         run: npm run electron:typecheck
       - name: 打包 Electron 主进程与 preload
