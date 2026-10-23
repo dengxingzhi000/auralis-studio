@@ -32,6 +32,7 @@ import {
 } from "electron";
 
 import { Engine } from "./engine";
+import { isOpenableExternalUrl } from "./external-links";
 
 /** Vite dev server 地址，与 vite.config.ts 的 server.port 保持一致。 */
 const DEV_URL = "http://127.0.0.1:5173";
@@ -148,8 +149,16 @@ function createWindow(): void {
   });
 
   // 外链一律交给系统浏览器，窗口本身不导航出去。
+  //
+  // 只放行 http(s)：`shell.openExternal` 会让系统按 URL 的协议启动对应
+  // 程序，渲染层若被诱导产生一个自定义协议链接，就会变成「一条数据就能
+  // 拉起本机程序」。判定与理由见 `external-links.ts`。
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    if (isOpenableExternalUrl(url)) {
+      void shell.openExternal(url);
+    } else {
+      console.error("[app] refused to open a non-http(s) url:", url);
+    }
     return { action: "deny" };
   });
   mainWindow.webContents.on("will-navigate", (event, url) => {

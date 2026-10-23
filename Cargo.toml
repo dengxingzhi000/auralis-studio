@@ -60,12 +60,18 @@ rustfft = "6.4"
 # --- 外部：通用 ---
 base64 = "0.22"
 crossbeam-channel = "0.5"
+# ArrayQueue 在 crossbeam-queue 而非 crossbeam-channel 里（auralis-audio 用）
+crossbeam-queue = "0.3"
 criterion = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- 外部：设备（只有 auralis-audio 用）---
+# 版本在这里声明一份，成员 crate 用 `workspace = true` 引用（ADR-007）。
+cpal = "0.18"
 
 # --- 外部：文件解码 ---
 # feature 决定**实际能解码什么**，因此必须显式声明，不能依赖默认值。

@@ -779,7 +779,7 @@ ADR-016 关于「React + TypeScript 承担 UI、Rust 承担音频计算」的决
 | 项 | 结果 |
 |---|---|
 | `cargo check --workspace --all-targets` | 通过 |
-| `cargo test --workspace` | 通过（DSP 199 项 + 各 crate，见 CI 输出） |
+| `cargo test --workspace` | 通过（全仓 281 项，其中 DSP 81 项；用例数随功能增长，以 CI 输出为准） |
 | 引擎 stdio RPC：`app_info` / `probe_file` / `analyze_file` / 导出 CSV+JSON | 通过（真实 2 s 立体声 WAV） |
 | Electron 渲染进程 → preload → 引擎：`probe_file` / `analyze_file` | 通过；二进制字段到达渲染层为 `Uint8Array` |
 | Electron 真窗口渲染（合成信号） | 三块画布均有内容（截图见 `.devrun/electron-main.png`） |

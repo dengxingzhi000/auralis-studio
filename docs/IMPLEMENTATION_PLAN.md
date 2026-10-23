@@ -31,7 +31,7 @@
 |---|---|
 | `cargo fmt --all -- --check` | 见 CI 流水线 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 见 CI 流水线 |
-| `cargo test --workspace` | 当时 51 项 DSP/core 测试通过（现已 199 项） |
+| `cargo test --workspace` | 当时 51 项 DSP/core 测试通过（2026-10-23 复核：全仓 281 项，其中 DSP 81 项；前端另 72 项） |
 | `cargo build --workspace --release` | 见 CI 流水线 |
 | `--self-test` 无窗口 DSP 自检 | 通过 |
 | 架构边界检查 | 通过（正反用例均已验证） |
