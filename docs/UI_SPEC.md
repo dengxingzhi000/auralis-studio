@@ -120,7 +120,8 @@ Checkbox / FormField / DataRow / Collapsible / NavItem / NavGroup / ErrorBar / E
 
 ## 5. 图表性能
 
-- `egui_plot` 用于基础二维曲线原型。
+- 图表使用 Canvas 2D 自绘；高密度声谱图以 `ImageData` 整块绘制，不建立每个
+  采样点或时频单元的绘图对象。
 - 密集声谱图不得将每个时频单元建成独立绘图对象。
 - 波形应使用 min/max 多级包络。
 - 根据像素宽度对频谱数据降采样。

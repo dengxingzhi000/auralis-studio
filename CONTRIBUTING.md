@@ -62,7 +62,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 
 # IPC payload sizes, printed (ADR-018)
-cargo test -p auralis-desktop ipc --locked -- --nocapture
+cargo test -p auralis-engine ipc --locked -- --nocapture
 
 # DSP cross-validation against an independent numpy implementation
 ./scripts/check-oracle.ps1
@@ -82,7 +82,7 @@ cd apps/desktop && npm run typecheck
 
 > [!NOTE]
 > **`check-oracle.ps1` needs a release build first.** It shells out to
-> `target\release\auralis-studio.exe --dump-reference`. Run
+> `target\release\auralis-engine.exe --dump-reference`. Run
 > `cargo build --workspace --release --locked` before it.
 
 > [!WARNING]

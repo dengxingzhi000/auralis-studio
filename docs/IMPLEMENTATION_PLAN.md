@@ -31,7 +31,7 @@
 |---|---|
 | `cargo fmt --all -- --check` | 见 CI 流水线 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 见 CI 流水线 |
-| `cargo test --workspace` | 当时 51 项 DSP/core 测试通过（2026-10-23 复核：全仓 286 项，其中 DSP 81 项；前端另 77 项） |
+| `cargo test --workspace` | 当时 51 项 DSP/core 测试通过（2026-11-03 复核：全仓 286 项，其中 DSP 81 项；前端另 84 项） |
 | `cargo build --workspace --release` | 见 CI 流水线 |
 | `--self-test` 无窗口 DSP 自检 | 通过 |
 | 架构边界检查 | 通过（正反用例均已验证） |
@@ -75,10 +75,11 @@
 
 | 容器 | 编译进产物 | **已用签入样本验证** |
 |---|---|---|
-| WAV  | 是 | **是**（13 项集成测试；样本由手写 writer 生成） |
+| WAV  | 是 | **是**（9 项 WAV 相关集成测试，核心链路 5 项 + 1 项 writer 头字段单测；样本由手写 writer 生成） |
 | FLAC | 是 | **是**（4 项常规集成测试 + 样本生成器；样本由第三方编码器 `flacenc` 生成） |
 | AIFF | 是（显式开 feature） | **是**（4 项常规集成测试 + 样本生成器；样本由手写 writer 生成） |
 | MP3  | 是（显式开 feature） | 否（本机无 MP3 编码器，造不出可复现样本） |
+| OGG  | 是（symphonia 默认 feature） | 否（缺可复现样本） |
 
 `auralis_codec::verified_containers()` 是 UI 的硬约束：
 WAV / FLAC / AIFF 会被标记为「已验证」，其余格式在界面上显示「未验证」角标。
@@ -105,8 +106,7 @@ WAV / FLAC / AIFF 会被标记为「已验证」，其余格式在界面上显�
 - [x] 峰值检测 + 抛物线插值（保留未插值 bin 频率供验证）
 - [x] **扇贝损失判据**替代原「能量集中度」判据（见下）
 - [x] 真实文件频谱接入 `analyze_file`，峰值带「估算」标记
-- [x] **oracle 扩展到覆盖 FFT**：137 项（原 101 项）
-- [x] **oracle 扩展到覆盖 FFT**（ADR-015 硬性要求）：137 项
+- [x] **oracle 扩展到覆盖 FFT**（ADR-015 硬性要求）：137 项（原 101 项）
 - [x] 建立 criterion 基准：**在 M4 完成**（见 M4 与 [BENCHMARKS.md](BENCHMARKS.md)）
 
 验收：设计文档 §5.7 的 T1–T15 全通过，oracle 对 FFT 全部一致。
@@ -133,7 +133,7 @@ WAV / FLAC / AIFF 会被标记为「已验证」，其余格式在界面上显�
 
 - ~~criterion 基准未建~~ → **已在 M4 完成**（[BENCHMARKS.md](BENCHMARKS.md)）。
 - 声谱图（STFT）属 M3，已完成。
-- 削波平顶检测仍返回 0（原因见 M1）。
+- ~~削波平顶检测仍返回 0~~ → 已在命令层接入 `StreamingFlatTop`（跨解码块计数）。
 
 ### M3：频谱 UI（约 1–2 周）
 
@@ -165,12 +165,14 @@ ADR-018 初稿建议声谱图用 WebGL。实现时改为 **Canvas 2D + ImageData
 
 - ~~criterion 基准仍未建~~ → **已在 M4 完成**（[BENCHMARKS.md](BENCHMARKS.md)）。
 - 实时采集（CPAL 流）：**已在 M4 接通**（`auralis-audio::capture`）。
-- 削波平顶检测仍返回 0。
+- ~~削波平顶检测仍返回 0~~ → 已在命令层接入 `StreamingFlatTop`。
 
 ### M4：实时采集骨架 + 性能基准
 
-状态：**部分完成（2026-10-22）** —— 实时内核、CPAL 输入流、实时频谱链路、
-视口分块声谱图已接通；高频通道仍未做。界面导航入口于 2026-10-23 开通
+状态：**已完成（2026-10-22；8 小时长稳未验收）** —— 实时内核、CPAL 输入流、实时频谱链路、
+视口分块声谱图已接通；真实设备验证已完成一次 6 秒采集。高频通道按 ADR-020
+决定不引入。热插拔、采集中切换设备与 8 小时连续运行仍未验证（见下方条目）。
+界面导航入口于 2026-10-23 开通
 
 - [x] **建立 criterion 基准**（清偿 M2/M3 欠项）：`crates/auralis-dsp/benches/dsp_bench.rs`
 - [x] 实测数据写入 [docs/BENCHMARKS.md](BENCHMARKS.md)
@@ -257,18 +259,17 @@ ADR-018「回调只做拷贝、全部 DSP 在工作线程」的架构由实测�
 - [x] 对话框走 Electron `dialog`；拖放走 DOM + `webUtils.getPathForFile`
 - [x] 一条命令启动开发：`npm run electron:dev`
 - [x] **IPC 端到端延迟实测**（走 preload 桥接 `window.auralis.invoke`，
-      非人工点击状态栏；2026-10-23 先测 debug，2026-10-23 复核 release）：
-      - **release 引擎，快命令**（3–7 次采样中位数，首次调用含引擎冷启动不计入）：
-        `app_info` 4.9 ms、`probe_file` 1.5 ms、`input_devices` 6.8 ms、
-        `stop_realtime` 11 ms。
+      非人工点击状态栏；2026-11-03 用 release 引擎重测，N=7 + 1 次预热丢弃）：
+      - **release 引擎，快命令**（N=15，mean / p50 / p95）：
+        `app_info` 0.6 / 0.5 / 1.1 ms、`probe_file` 0.9 / 0.8 / 1.1 ms。
       - **release 引擎，文件分析**：900 秒 / 48 kHz / 立体声 WAV（172.8 MB），
-        `analyze_file`（`envelopePoints=2048`，返回含 2.8 MB base64 声谱图）
-        经 Electron 全链路 **5.9 s**；同一文件、同一命令直接走引擎 stdio
-        **6.1 s（冷）/ 3.9 s（页缓存热）**。两条路径在噪声范围内，
-        说明耗时由解码 + STFT 决定，IPC 与容器不是瓶颈。
-      - debug 引擎对照：同一文件全链路 14.6 s。
-      - 之前记录的「release 直连 1.2 s」在相同负载下**无法复现**
-        （应来自不同文件或未包含声谱图），以本节数字为准。
+        `analyze_file`（`envelopePoints=2048`，响应含 512×1024 f32 声谱图）
+        经 Electron 全链路 mean **1795 ms** / p50 1823 / p95 2040；
+        同一文件、同一命令直连引擎 stdio mean **1651 ms** / p50 1618 / p95 2126。
+        两条路径分布重叠，说明耗时由解码 + STFT 决定，IPC 与容器不是瓶颈。
+      - debug 引擎对照（2026-10-23 单次）：同一文件全链路 14.6 s。
+      - 同一负载跨会话测到过 1.4–6.1 s，差异来自冷启动、页缓存与机器负载；
+        引用时须连同样本数与分位（见 [BENCHMARKS.md](BENCHMARKS.md)）。
 - [x] 真实 WAV 走通引擎 RPC 的 probe / analyze / CSV+JSON 导出
 - [x] Electron 渲染进程 → preload → 引擎的 `probe_file` / `analyze_file`
       验证；二进制字段到达渲染层为 `Uint8Array`
@@ -276,9 +277,10 @@ ADR-018「回调只做拷贝、全部 DSP 在工作线程」的架构由实测�
 
 #### 迁移**没有**解决/验证的事
 
-- 真实声卡采集仍未验证（M4 既有欠项，与容器无关）。
+- 真实声卡采集后已在 M4 补测（一台 Realtek WASAPI 默认输入、6.03 s），
+  但热插拔、设备切换与 8 小时长稳仍未验证。
 - Electron 只在这台机器、这个 GPU/驱动组合上验证过，不构成通用保证。
-- 安装包、签名、自动更新尚未开始（M6）。
+- 安装包已生成（`npm run package:win`，未签名），签名与自动更新尚未开始。
 - 拖放路径只做了类型检查，尚未用真实文件拖放验证。
 
 ### M5：导出与可靠性（约 1 周）
@@ -321,15 +323,22 @@ ADR-018「回调只做拷贝、全部 DSP 在工作线程」的架构由实测�
   绝不写成 `0`；两者都用 `non_finite_values=<n>` 报出计数。
 - 波形包络的来源如实写成「第一个声道的按桶最大值」——不是所有声道的 min/max。
 
-### M6：发布候选（约 1–2 周）
+### M6：发布候选
 
-状态：未开始
+状态：**大部分完成（2026-10-23）** —— 打包产物与随包文档已落地；
+安装/卸载回归、代码签名、自动更新与 8 小时长稳未完成
 
-- [ ] 安装包（Electron 打包方案待定；必须同时携带 Chromium、
-      `auralis-engine.exe` 与许可证清单）
-- [ ] 用户手册
-- [ ] 依赖许可证清单（含 npm 侧）
-- [ ] 长时间运行稳定性（崩溃恢复已在 M5 完成）
+- [x] 安装包：`npm run package:win` 产出
+      `Auralis-Studio-0.1.0-setup.exe`（约 113.7 MB）与 `win-unpacked/`，
+      同时携带 Chromium、`<resources>/engine/auralis-engine.exe`、
+      许可证清单与用户手册
+- [x] 用户手册（`docs/USER_MANUAL.md`，随包分发）
+- [x] 依赖许可证清单（Rust + npm；当前 448 packages / 216 distinct texts，
+      `npm run licenses:check` 校验）
+- [ ] 安装/卸载回归测试（安装目录、快捷方式、卸载残留）
+- [ ] 代码签名（未配置证书；SmartScreen 显示「未知发布者」）
+- [ ] 自动更新
+- [ ] 长时间运行稳定性（崩溃恢复已在 M5 完成；目前只有短时 soak）
 - 验收：发布检查表通过
 
 上述周期是有经验开发者的初始规划，不构成承诺。首次使用 Rust、桌面 GUI 或 DSP 时应增加学习缓冲。

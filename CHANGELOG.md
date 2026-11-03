@@ -190,6 +190,24 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Changed
 
+- **Documentation resynced with the shipped state.** The READMEs still claimed
+  there was no installer, that the suite had 237 tests, that real-time capture
+  had never run on hardware, and that clipping always read 0; the M6 plan said
+  "not started"; `CONTRIBUTING.md` and `DEV_ENVIRONMENT.md` named the removed
+  `auralis-desktop` package and `auralis-studio.exe`; the user manual still
+  called AIFF unverified. All corrected against the code and this session's
+  measurements: 286 Rust tests (2 ignored), 84 frontend tests, 137 oracle
+  comparisons, and a 10-minute soak recorded in `docs/BENCHMARKS.md`.
+- **The installer no longer emits update metadata.** `build.publish` is
+  explicitly `null`, so electron-builder stops writing `app-update.yml` and
+  `latest.yml`. The app has no `electron-updater`, and those files made the
+  build look like it had an update channel; the `repository` field required for
+  provider detection was what started generating them. Verified by deleting
+  both files and repackaging: they do not reappear. Code signing and
+  auto-update remain a next-phase decision (certificate and release channel).
+- CI now runs `npm run licenses:check` in the frontend job, right after the
+  unit tests, so the shipped license inventory cannot drift from the lockfile
+  unnoticed. A nightly packaging job was deliberately not added.
 - **Toolchain moved to the latest released versions.** TypeScript was already
   on the newest stable (7.0.2; 7.1 is still beta). Vite went 8.3.4 → 8.3.5 and
   vitest 3.2.7 → 5.0.5 — a two-major jump that needed **no code changes**:
@@ -309,6 +327,20 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Fixed
 
+- **`npm run electron:dev` opened a window with no engine.** Electron 45.0.0
+  returns `app.isPackaged === true` even when launched from source with
+  `electron .` (its `process.defaultApp` is still `true`), so the engine path
+  resolved to `node_modules/electron/dist/resources/engine/auralis-engine.exe`
+  — a path that only exists in a packaged build. Every request then failed with
+  "写入引擎失败：Cannot call write after a stream was destroyed" while the UI
+  kept retrying: 56 identical errors in 25 seconds, and no engine process.
+  Resolution now prefers the packaged path only when the file actually exists,
+  falling back to `target/debug/auralis-engine.exe`. `start()` also checks
+  `fs.existsSync` synchronously so a missing engine surfaces as
+  "找不到音频引擎（…）：请先运行 cargo build -p auralis-engine" instead of a
+  stream error per request. Verified by a clean `npm ci` followed by
+  `npm run electron:dev`: engine logs `auralis-engine ready`, zero write
+  failures.
 - **`npm ci` left the Electron runtime missing on a clean checkout.**
   electron@45.0.0 ships no `postinstall` (only an `install-electron` bin), so
   reinstalling dependencies deleted `node_modules/electron/dist` and never

@@ -758,9 +758,9 @@ ADR-016 关于「React + TypeScript 承担 UI、Rust 承担音频计算」的决
 - **未证明的部分**：Electron 不保证在所有 GPU/驱动组合上都不花屏。
   本次只证明了**这台机器、这个版本、这个页面**下症状消失。
   若换机复现，仍应按「容器 → Chromium 图形开关 → 驱动/合成」的顺序定位。
-- **打包要求**：M6 的安装包必须同时携带 `auralis-engine.exe` 与 Electron 运行时；
+- **打包要求**：安装包必须同时携带 `auralis-engine.exe` 与 Electron 运行时；
   引擎路径为 `<resources>/engine/auralis-engine.exe`（见 `electron/engine.ts`）。
-  当前尚未生成安装包，也未签名。
+  `npm run package:win` 已能产出该安装包（未签名，无自动更新）。
 - **保留的独立修复**：画布重建风暴的修复与容器无关，保留在
   `canvas-fit.ts` 中；即使将来换回其他容器也应保留。
 
@@ -784,7 +784,7 @@ ADR-016 关于「React + TypeScript 承担 UI、Rust 承担音频计算」的决
 | Electron 渲染进程 → preload → 引擎：`probe_file` / `analyze_file` | 通过；二进制字段到达渲染层为 `Uint8Array` |
 | Electron 真窗口渲染（合成信号） | 三块画布均有内容（截图见 `.devrun/electron-main.png`） |
 | 渲染进程/主进程 typecheck + Vite build | 通过 |
-| 真实声卡采集 | **仍未验证**（与容器迁移无关的既有欠项） |
+| 真实声卡采集 | 当时**仍未验证**（与容器迁移无关的既有欠项）；后于 M4 补测：一台 Realtek WASAPI 输入、6.03 s、丢帧 0 |
 
 ## ADR-020：实时高频通道与 ASIO 评估
 
@@ -1038,4 +1038,5 @@ Steinberg ASIO SDK**（通过 `CPAL_ASIO_DIR` 指定），SDK 不随本仓库分
 - 用户的 FLAC 不再显示「未验证」角标，界面按已验证格式对待。
 - 仓库多了一份 dev-dependency（`flacenc`，MIT/Apache）。它不进产物，
   因此也不进随包分发的许可证清单（该清单只收 normal 依赖，与既有约定一致）。
-- MP3 / AIFF / OGG 仍是「未验证」：同样缺样本，同样不宣称。
+- MP3 / OGG 仍是「未验证」：同样缺样本，同样不宣称。AIFF 后来补了手写
+  writer 与签入样本，已纳入已验证列表（2026-10-23）。
