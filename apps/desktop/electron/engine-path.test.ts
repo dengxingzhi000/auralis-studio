@@ -1,24 +1,30 @@
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { resolveEnginePath } from "./engine-path";
 
-const resourcesPath = "D:\\app\\resources";
-const devRepoRoot = "D:\\repo";
-const packaged = "D:\\app\\resources\\engine\\auralis-engine.exe";
-const dev = "D:\\repo\\target\\debug\\auralis-engine.exe";
+// 所有路径都用 path.join 构造：测试跑在 Windows 本机与 Linux CI 上，
+// 硬编码反斜杠会在 Linux 下与函数内部的 path.join 结果不一致。
+const resourcesPath = path.join("app", "resources");
+const devRepoRoot = path.join("repo");
+const asarAppPath = path.join(resourcesPath, "app.asar");
+const packaged = path.join(resourcesPath, "engine", "auralis-engine.exe");
+const dev = path.join(devRepoRoot, "target", "debug", "auralis-engine.exe");
+const custom = path.join("custom", "engine.exe");
 
 describe("resolveEnginePath", () => {
   it("uses AURALIS_ENGINE when set", () => {
     expect(
       resolveEnginePath({
-        override: "D:\\custom\\engine.exe",
+        override: custom,
         resourcesPath,
         // 即使同时满足安装包条件，覆盖也必须优先
-        appPath: "D:\\app\\resources\\app.asar",
+        appPath: asarAppPath,
         packagedExists: true,
         devRepoRoot,
       }),
-    ).toBe("D:\\custom\\engine.exe");
+    ).toBe(custom);
   });
 
   it("treats an empty override as unset", () => {
@@ -26,7 +32,7 @@ describe("resolveEnginePath", () => {
       resolveEnginePath({
         override: "",
         resourcesPath,
-        appPath: "D:\\repo\\apps\\desktop",
+        appPath: path.join("repo", "apps", "desktop"),
         packagedExists: false,
         devRepoRoot,
       }),
@@ -37,7 +43,7 @@ describe("resolveEnginePath", () => {
     expect(
       resolveEnginePath({
         resourcesPath,
-        appPath: "D:\\app\\resources\\app.asar",
+        appPath: asarAppPath,
         packagedExists: true,
         devRepoRoot,
       }),
@@ -50,7 +56,7 @@ describe("resolveEnginePath", () => {
     expect(
       resolveEnginePath({
         resourcesPath,
-        appPath: "D:\\app\\resources\\app.asar",
+        appPath: asarAppPath,
         packagedExists: false,
         devRepoRoot,
       }),
@@ -62,8 +68,8 @@ describe("resolveEnginePath", () => {
     // 但 app.getAppPath() 指向项目目录，不以 .asar 结尾。
     expect(
       resolveEnginePath({
-        resourcesPath: "D:\\repo\\apps\\desktop\\node_modules\\electron\\dist\\resources",
-        appPath: "D:\\repo\\apps\\desktop",
+        resourcesPath: path.join("repo", "apps", "desktop", "node_modules", "electron", "dist", "resources"),
+        appPath: path.join("repo", "apps", "desktop"),
         packagedExists: false,
         devRepoRoot,
       }),
@@ -74,7 +80,7 @@ describe("resolveEnginePath", () => {
     expect(
       resolveEnginePath({
         resourcesPath,
-        appPath: "D:\\app\\resources\\APP.ASAR",
+        appPath: path.join(resourcesPath, "APP.ASAR"),
         packagedExists: false,
         devRepoRoot,
       }),
@@ -85,7 +91,7 @@ describe("resolveEnginePath", () => {
     expect(
       resolveEnginePath({
         resourcesPath,
-        appPath: "D:\\usr\\share\\auralis",
+        appPath: path.join("usr", "share", "auralis"),
         packagedExists: true,
         devRepoRoot,
       }),
