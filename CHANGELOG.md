@@ -205,9 +205,12 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
   provider detection was what started generating them. Verified by deleting
   both files and repackaging: they do not reappear. Code signing and
   auto-update remain a next-phase decision (certificate and release channel).
-- CI now runs `npm run licenses:check` in the frontend job, right after the
-  unit tests, so the shipped license inventory cannot drift from the lockfile
-  unnoticed. A nightly packaging job was deliberately not added.
+- CI now runs `npm run licenses:check` in a dedicated Windows job. The inventory
+  is platform-dependent — it counts the Windows-only optional bindings that npm
+  actually installs — and the script also calls `cargo metadata`, so a Linux
+  job would fail by construction. Verified locally by moving one win32 binding
+  aside: the check immediately reported "out of date". A nightly packaging job
+  was deliberately not added.
 - **Toolchain moved to the latest released versions.** TypeScript was already
   on the newest stable (7.0.2; 7.1 is still beta). Vite went 8.3.4 → 8.3.5 and
   vitest 3.2.7 → 5.0.5 — a two-major jump that needed **no code changes**:
