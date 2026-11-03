@@ -13,10 +13,13 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 
 import { app } from "electron";
+
+import { resolveEnginePath } from "./engine-path";
 
 /** 引擎响应里承载二进制数据的字段名（Rust 侧以 base64 字符串发送）。 */
 const BINARY_FIELDS = new Set([
@@ -72,18 +75,25 @@ export class Engine {
   /** 启动失败的原因；用于把「引擎没编译」这类问题说清楚。 */
   private launchError: string | null = null;
 
-  /** 可执行文件路径。 */
+  /**
+   * 可执行文件路径。
+   *
+   * 判定逻辑在 [`resolveEnginePath`] 里，是纯函数、有单测覆盖。
+   * 关键回归点：**不能**用 `app.isPackaged` —— Electron 45.0.0 在
+   * `electron .` 源码运行时也返回 `true`，会把开发态解析到
+   * `node_modules/electron/dist/resources/engine` 并 ENOENT。
+   */
   private static executablePath(): string {
-    const override = process.env.AURALIS_ENGINE;
-    if (override) return override;
-
-    // 打包后：<resources>/engine/auralis-engine.exe
-    if (app.isPackaged) {
-      return path.join(process.resourcesPath, "engine", "auralis-engine.exe");
-    }
-
-    // 开发：仓库根目录的 cargo 产物（__dirname = apps/desktop/electron/dist）
-    return path.join(__dirname, "..", "..", "..", "..", "target", "debug", "auralis-engine.exe");
+    return resolveEnginePath({
+      override: process.env.AURALIS_ENGINE,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+      packagedExists: fs.existsSync(
+        path.join(process.resourcesPath, "engine", "auralis-engine.exe"),
+      ),
+      // __dirname = apps/desktop/electron/dist → 上四级是仓库根
+      devRepoRoot: path.join(__dirname, "..", "..", "..", ".."),
+    });
   }
 
   /** 启动子进程。重复调用是安全的。 */
@@ -91,6 +101,18 @@ export class Engine {
     if (this.proc) return;
 
     const exe = Engine.executablePath();
+
+    // 先同步检查：spawn 的 ENOENT 是异步事件，直接 spawn 会让每个
+    // 后续请求都撞上「写入引擎失败：Cannot call write after a stream
+    // was destroyed」，界面看到的不是真正原因。这里提前给出准确诊断。
+    if (!fs.existsSync(exe)) {
+      this.launchError = process.env.AURALIS_ENGINE
+        ? `AURALIS_ENGINE 指向的引擎不存在：${exe}`
+        : `找不到音频引擎：${exe}\n请先运行 cargo build -p auralis-engine（或设置 AURALIS_ENGINE）`;
+      console.error("[engine]", this.launchError);
+      return;
+    }
+
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawn(exe, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });

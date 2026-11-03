@@ -114,6 +114,10 @@ jobs:
       - name: 前端单元测试
         if: matrix.node != '20'
         run: npm run test
+      # 许可证清单必须与 lockfile 一致：清单是由脚本生成的，
+      # 依赖变动后若忘记重新生成，随包分发的许可证会悄悄过期。
+      - name: 依赖许可证清单一致性
+        run: npm run licenses:check
       - name: TypeScript 类型检查（Electron 主进程）
         run: npm run electron:typecheck
       - name: 打包 Electron 主进程与 preload
