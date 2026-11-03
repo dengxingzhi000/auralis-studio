@@ -17,60 +17,61 @@ auralis-studio/
 ├── rust-toolchain.toml
 ├── AGENTS.md
 ├── apps/
-│   └── auralis-desktop/
+│   └── desktop/                  # Electron 主进程 + preload + React 19 渲染层
+│       ├── electron/             # 主进程、preload 窄接口、引擎宿主
+│       ├── src/                  # React/TS 渲染层（只展示，不做音频计算）
+│       └── scripts/              # 开发启动、esbuild、打包
 ├── crates/
-│   ├── auralis-core/
-│   ├── auralis-dsp/
-│   ├── auralis-analysis/
-│   ├── auralis-audio/
-│   ├── auralis-codec/
-│   ├── auralis-visualization/
-│   ├── auralis-application/
-│   ├── auralis-task/
-│   ├── auralis-project/
-│   ├── auralis-storage/
-│   ├── auralis-report/
-│   └── auralis-ui/
-├── tests/fixtures/
-├── benchmarks/
+│   ├── auralis-core/             # 共享类型、单位、错误——纯净
+│   ├── auralis-dsp/              # RMS/Peak/DC/FFT/STFT/峰值/削波——纯净
+│   ├── auralis-codec/            # 容器探测与 PCM 解码（symphonia）
+│   ├── auralis-audio/            # SPSC 环、设备枚举、CPAL 采集
+│   ├── auralis-task/             # 离线任务调度、进度、取消
+│   ├── auralis-storage/          # CSV/JSON 导出与原子写盘
+│   ├── auralis-visualization/    # 波形包络、声谱矩阵
+│   └── auralis-engine/           # 命令层 + stdio JSON-Lines RPC（无 UI、无窗口）
+├── scripts/                      # 边界检查、oracle、采集/soak、许可证
 ├── docs/
-└── packaging/windows/
+└── .github/workflows/
 ```
 
-Crates 应按实际依赖逐步创建。目录列表不是要求首日为每个 crate 添加空壳或复杂接口。
+Crates 按实际依赖逐步创建。目录列表不是要求首日为每个 crate 添加空壳或复杂接口；
+当前没有单独的 `auralis-app`、`auralis-report` 或 `auralis-project`，等出现真实编排
+需求再建（AGENTS.md「不预建空 crate」）。
 
 ## 3. 依赖方向
 
 - `auralis-core`：共享领域类型和错误，不依赖 UI/OS/数据库。
 - `auralis-dsp` → `auralis-core`：纯数值算法。
-- `auralis-codec` → `auralis-core`：解码、探测和 PCM 转换。
-- `auralis-audio` → `auralis-core`：设备输入与平台适配。
-- `auralis-analysis` → `auralis-core`、`auralis-dsp`：分析流程。
+- `auralis-codec` → `auralis-core`：解码、探测和 PCM 转换（`auralis-dsp` 只作为
+  dev-dependency 用于生成测试样本）。
+- `auralis-audio` → `auralis-core`、`auralis-dsp`：设备输入、环形缓冲与实时分析。
 - `auralis-visualization` → `auralis-core`：视图数据准备，不负责音频采集。
-- `auralis-task`：离线任务调度、取消、进度。
-- `auralis-application`：编排用例。
-- `auralis-storage`、`auralis-report`：持久化与导出。
-- `auralis-ui`：依赖应用接口和视图数据。
-- `apps/auralis-desktop`：组装应用。
+- `auralis-task`：离线任务调度、取消、进度（不依赖其它内部 crate）。
+- `auralis-storage`：导出与原子写盘（不依赖其它内部 crate）。
+- `auralis-engine` → 以上全部：命令层与 stdio RPC，负责编排、进程生命周期与
+  跨进程协议；文件读写由 `auralis-codec` / `auralis-storage` 承担。
+- `apps/desktop`：Electron 容器 + React 渲染层，通过 stdio JSON-Lines 调
+  `auralis-engine`；渲染层不直接依赖任何 Rust crate，也不做音频计算。
 
 避免循环依赖。若两个 crate 需要共享类型，将类型下沉到 core 或重新审视边界。
 
 ## 4. 依赖选型基线
 
-- Rust Stable；edition 2024（先确认所用 Rust 工具链支持）。
-- `eframe`/`egui`：桌面 UI。
-- `egui_plot`：基础曲线与坐标交互；高密度声谱图采用纹理渲染。
-- `cpal`：设备枚举与实时音频 I/O。
-- `symphonia`：文件探测与解码，按需启用 codec features。
-- `rustfft`：FFT；评估 `realfft` 是否有实际收益。
-- `serde`/`serde_json`：参数和结果序列化。
-- `thiserror`：库错误。
-- `tracing`：结构化诊断。
-- `crossbeam-channel`：普通后台任务通信。
-- `rtrb` 或经验证的 SPSC Ring Buffer：实时线程与工作线程交接。
-- `proptest`：算法性质测试。
-- `criterion`：性能基准。
-- `rusqlite`：仅在确实需要查询型历史记录时引入。
+| 领域 | 选型 |
+|---|---|
+| 桌面容器 | Electron 45：主进程 + sandboxed preload + 独立渲染进程（ADR-019） |
+| UI | React 19 + TypeScript 7 + Vite 8；Canvas 2D 自绘图表 |
+| Rust | Stable 1.99.0（`rust-toolchain.toml` 固定），edition 2024 |
+| 设备 I/O | `cpal` 0.18（默认 WASAPI；ASIO 未启用，见 ADR-020） |
+| 解码 | `symphonia` 0.6，显式启用 `mp3` / `aiff` features |
+| FFT | `rustfft` 6.4 |
+| 并发 | `crossbeam-channel` 0.5；`crossbeam-queue` 0.3 的 `ArrayQueue`（SPSC 环） |
+| 序列化 | `serde` / `serde_json` |
+| 错误 | `thiserror` |
+| 诊断 | `tracing` / `tracing-subscriber` |
+| 基准 | `criterion` 0.8 |
+| 测试样本 | WAV/AIFF 手写 writer；FLAC 由 dev-dependency `flacenc` 0.4 生成 |
 
 版本必须在初始化时通过 Cargo 解析、编译和测试验证。提交 Cargo.lock；不要在每次构建时浮动升级依赖。
 
@@ -101,7 +102,8 @@ Crates 应按实际依赖逐步创建。目录列表不是要求首日为每个 
 ### 线程模型
 
 离线：
-UI → Application → bounded task queue → decoder blocks → DSP → immutable result/view snapshot → UI。
+renderer → preload → Electron main → engine stdio RPC → bounded task queue →
+decoder blocks → DSP → immutable result/view snapshot → renderer。
 
 实时：
 device callback → preallocated bounded SPSC buffer → analysis worker → latest snapshot → UI。
@@ -112,7 +114,8 @@ device callback → preallocated bounded SPSC buffer → analysis worker → lat
 
 - 文件解码采用块处理。
 - 波形使用多级 min/max 包络。
-- 声谱图采用分块 STFT 与纹理增量更新。
+- 声谱图采用分块 STFT，在 Rust 侧降采样到固定网格后以 Canvas 2D `ImageData`
+  绘制（WebGL 路径保留为可替换方案，见 ADR-018）。
 - 图表数据按视口和像素宽度降采样。
 - 所有队列、缓存和历史结果设置上限或淘汰策略。
 - 取消任务后尽快停止生产新数据并释放资源。

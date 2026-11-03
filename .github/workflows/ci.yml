@@ -123,6 +123,37 @@ jobs:
       - name: 产物中存在 index.html
         run: test -f dist/index.html
 
+  # ---------------------------------------------------------------- 许可证
+  # 为什么不在 frontend job：许可证清单是**平台相关**的。npm 侧只统计
+  # 「实际安装」的包，而 Windows 专用可选二进制（@esbuild/win32-x64、
+  # lightningcss-win32-x64-msvc、@rolldown/binding-win32-x64-msvc 等）
+  # 只在 Windows 上安装 —— 实测在 Windows 本机移走其中一个，`--check`
+  # 立刻报 "out of date"。另外脚本要调用 `cargo metadata` 取 Rust 依赖。
+  # 因此这项必须跑在 Windows + Rust 环境，否则会稳定地误报失败。
+  licenses:
+    name: 依赖许可证清单（Windows + Cargo）
+    runs-on: windows-latest
+    env:
+      # 这项只校验清单，不启动 Electron。
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - name: 清单必须与 lockfile 一致
+        run: npm run licenses:check
+
   # ---------------------------------------------------------------- DSP 回归
   dsp-regression:
     name: DSP 数值回归 + numpy oracle

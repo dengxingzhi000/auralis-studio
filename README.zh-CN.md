@@ -98,9 +98,19 @@ cd apps\desktop
 npm run electron:start                # vite build + esbuild 主进程/preload + electron .
 ```
 
-**还没有安装包**（M6）。引擎必须存在于
-`target\debug\auralis-engine.exe`（或由 `AURALIS_ENGINE` 指定）；
-打包后预期读取 `<resources>\engine\auralis-engine.exe`。
+### 4. Windows 安装包
+
+```powershell
+cd apps\desktop
+npm run package:win                   # 引擎 + Electron 运行时 + NSIS 安装包
+```
+
+安装包输出到 `apps\desktop\release\Auralis-Studio-<version>-setup.exe`，
+`release\win-unpacked\` 是用于发布前自检的免安装目录。安装包**未签名**
+（未配置代码签名证书）且**没有自动更新**，Windows SmartScreen 会显示
+「未知发布者」。打包后的应用从 `<resources>\engine\auralis-engine.exe`
+读取引擎。开发时引擎必须存在于 `target\debug\auralis-engine.exe`
+（或由 `AURALIS_ENGINE` 指定）。
 
 > [!WARNING]
 > **Release 产物是 GUI 子系统程序。** PowerShell 直接调用不会可靠等待，
@@ -121,10 +131,10 @@ npm run electron:start                # vite build + esbuild 主进程/preload +
 
 | 图标 | 领域 | 现状 |
 |---|---|---|
-| 📂 | **导入** | WAV 元数据检查、可取消的分块 PCM 解码。FLAC / AIFF 已用签入样本验证；MP3 能解码但**未验证**，见[下表](#容器支持实测结论不是推测) |
+| 📂 | **导入** | WAV 元数据检查、可取消的分块 PCM 解码。FLAC / AIFF 已用签入样本验证；MP3 / OGG 能解码但**未验证**，见[下表](#容器支持实测结论不是推测) |
 | 📈 | **时域** | Peak、RMS、DC Offset、Crest、满刻度溢出计数、左右声道独立 |
 | 📊 | **频域** | 带显式幅值校正的 FFT、峰值检测与标记、缩放平移、游标读数 |
-| 🌈 | **声谱图** | 窗长与跳步可配的 STFT，基于纹理的 Canvas 渲染 |
+| 🌈 | **声谱图** | 窗长与跳步明确的 STFT，Canvas 2D `ImageData` 整块绘制 |
 | 🔴 | **实时** | CPAL 采集 → 有界无锁环形缓冲 → 缓冲区回收 + 丢帧计数 |
 | 🧮 | **DSP 验证** | Criterion 基准 + 与独立 numpy 实现的交叉验证 |
 | 🧱 | **边界强制** | CI 会在 DSP crate 引入 I/O、或前端出现音频运算时失败 |
@@ -137,7 +147,7 @@ npm run electron:start                # vite build + esbuild 主进程/preload +
 | **桌面外壳** | Electron 45（自带 Chromium，运行时版本随发行固定） |
 | **UI** | React 19 + TypeScript 7 + Vite 8（渲染进程沙箱 + `contextIsolation`） |
 | **设计系统** | CSS Variables 令牌 + Radix Primitives（headless）+ 自研组件 |
-| **可视化** | 自研 Canvas 2D（波形 / 频谱），纹理化 Canvas（声谱图） |
+| **可视化** | 自研 Canvas 2D（波形 / 频谱 / 声谱图；声谱图用 `ImageData`） |
 | **DSP** | Rust：`auralis-dsp`，只依赖 `rustfft` 6.4 |
 | **编解码** | `symphonia` 0.6，`mp3` / `aiff` feature 显式声明 |
 | **并发** | 无锁 SPSC 环（`crossbeam-queue`）、`catch_unwind` 任务隔离 |
@@ -232,10 +242,11 @@ let _ = ring.push(buf);   // 溢出时返回 Err(buf) —— 复用它，别丢�
 
 | 容器 | 编译进产物 | 已用签入样本验证 |
 |---|---|---|
-| **WAV** | 是 | **是**——13 项集成测试覆盖「写入 → 解码 → DSP」 |
+| **WAV** | 是 | **是**——9 项使用 WAV 样本的集成测试（其中核心链路 5 项），另有 1 项 writer 头字段单测 |
 | **FLAC** | 是 | **是**——4 项常规集成测试 + 1 项样本生成器（`--ignored`），样本由第三方编码器 `flacenc` 生成 |
 | **AIFF** | 是（`aiff` feature 显式声明） | **是**——4 项常规集成测试 + 1 项样本生成器（`--ignored`），样本由本 crate 的手写 writer 生成 |
 | MP3 | 是（`mp3` feature 显式声明） | 否 |
+| OGG / Vorbis | 是（symphonia 默认 feature） | 否 |
 
 样本的证据强度不同，文档不得混为一谈：WAV / AIFF 的样本来自仓库内的手写
 writer，FLAC 来自第三方编码器；**没有一份是现实世界采集到的文件**。
@@ -320,10 +331,11 @@ Criterion，release profile，48 kHz。完整方法与注意事项见
 ./scripts/check-oracle.ps1       # numpy 交叉验证 DSP
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace           # 237 个测试
+cargo test --workspace           # 286 个测试（2 个 fixture 生成器 ignored）
 cargo test -p auralis-engine ipc -- --nocapture   # IPC 载荷体积
 cd apps\desktop && npm run typecheck
 cd apps\desktop && npm run electron:typecheck
+cd apps\desktop && npm run test
 cd apps\desktop && npm run electron:build
 ```
 
@@ -336,10 +348,10 @@ cd apps\desktop && npm run electron:build
 | **M1** | WAV 导入、元数据、分块 PCM、取消 | ✅ 已完成 |
 | **M2** | FFT、幅值校正、峰值检测、多级波形包络 | ✅ 已完成 |
 | **M3** | 频谱交互：游标、缩放平移、参数检查器、峰值标记 | ✅ 已完成 |
-| **M4** | 实时采集（CPAL）+ 实时声谱图 | 🚧 进行中——CPAL 流、分析线程、UI 实时频谱、带 offset 的视口分块声谱图已接通；高频通道未做。**尚未在真实声卡上运行过。** |
+| **M4** | 实时采集（CPAL）+ 实时声谱图 | ✅ 已完成（8 小时长稳未验收）——CPAL 流、分析线程、UI 实时频谱、带 offset 的视口分块声谱图已接通。已在一台 Realtek WASAPI 输入上验证（6.03 s、287,040 帧、丢帧 0）；热插拔、设备切换与 8 小时运行未验证。高频通道按 ADR-020 决定不引入。 |
 | **M4.5** | 桌面容器 Tauri 2 → Electron 45；Rust 命令层抽为 `auralis-engine` 独立进程（ADR-019） | ✅ 已完成（2026-10-22） |
 | M5 | 导出、配置持久化、异常恢复 | ✅ 已完成——CSV/JSON 导出、布局持久化、进程级会话恢复（含异常退出提示）；`auralis-app` 用例层刻意推迟 |
-| M6 | 安装包、用户手册、许可证清单 | ⬜ 未开始 |
+| M6 | 安装包、用户手册、许可证清单、长时间稳定性 | 🚧 大部分完成——`npm run package:win` 能产出携带引擎、手册与许可证清单的未签名 NSIS 安装包。安装/卸载回归、代码签名、自动更新与 8 小时稳定性尚未完成 |
 
 ## 项目结构
 
@@ -396,26 +408,29 @@ auralis-studio/
 
 - **没有校准测量。** 无 SPL、无 LUFS、无 SNR、无 THD、无 THD+N——
   这些算法尚未实现，本版本不作任何准确度声明。
-- **WAV / FLAC / AIFF 已用签入样本验证，MP3 未验证。** 这些样本是生成的
+- **WAV / FLAC / AIFF 已用签入样本验证，MP3 / OGG 未验证。** 这些样本是生成的
   （WAV / AIFF 用手写 writer，FLAC 用 `flacenc`），不是现实世界采集的文件；
   因此它证明的是「解码器与独立的编码侧实现一致」，而不是「任意来源文件都能
-  正确处理」。MP3 能解码但没有样本，界面标注「未验证」。
-- **实时采集从未在真实声卡上运行过。** CPAL 流、分析线程、丢帧/覆盖计数、
-  UI 实时频谱都已实现并有单元测试，但实际跑到的只有「设备不存在」错误路径
-  与纯逻辑测试。所有关于真实采集行为的说法（延迟、丢帧率、设备热插拔）
-  都**未经验证**。
+  正确处理」。MP3/OGG 能解码但没有样本，界面标注「未验证」。
+- **实时采集只在一台设备上验证过。** 一次 6.03 s 的 Realtek WASAPI 默认输入
+  （2 声道 / 48 kHz）采集处理了 287,040 帧（0.991 × 实时），环形缓冲丢帧 0，
+  快照 RPC p95 为 3.10 ms。热插拔、采集中切换设备与 8 小时连续运行
+  **未经验证**；未启用 ASIO。
 - **实时分析会丢弃中间样本。** 环形缓冲积压时，工作线程每次刷新只保留最新的
   `fft_size` 个样本，而不是对每个 hop 都出频谱。显示因此保持最新，
   代价是并非每个 hop 都有结果；UI 错过的帧计入 `snapshot_overwrites`。
 - **FFT 超原设计目标 2.7 倍。** 271 µs vs 目标 < 100 µs，见
   [docs/BENCHMARKS.md](./docs/BENCHMARKS.md)。
-- **削波检测在命令层返回 0。** 完整的平顶检测需要逐样本轨迹，
-  与「分块、内存有界」冲突，将在 M2 随波形金字塔一起实现。
-  **返回 0 是刻意的，猜测不是。**
+- **削波检测是启发式，不是模拟削波的证据。** `StreamingFlatTop` 跨解码块
+  统计平顶段并报告为 `clippingRegions`；它不测采样间峰值，也不能证明 ADC
+  发生了削波。超量程样本计数是另一项精确统计。
 - **拖放导入已实现但只做过类型检查。** 路径由 preload 的
   `webUtils.getPathForFile` 解析；尚未在本机用真实文件拖放验证。
-- **IPC 端到端延迟只测过一次，也未在负载下测。** 合成信号一帧
-  （含 4096 点 FFT）在开发机约 11 ms；持续实时吞吐未测。
+- **IPC 已测过文件分析与快命令，但未在持续负载下测。** 900 s / 48 kHz
+  立体声 WAV（172.8 MB）经 Electron 全链路中位数 1.8 s（n=7，直连 stdio 约
+  1.65 s）；`app_info` 与 `probe_file` 的 p50 分别为 0.5 ms 与 0.8 ms。
+  同一负载跨会话测到过 1.4–6.1 s，引用时请连同样本数与分位，
+  不要只引一个数字。持续实时吞吐尚未测量。
 - **Electron 迁移只在一台机器上验证过。** 它消除了本机的最大化花屏，
   但不保证所有 GPU/驱动组合。见
   [ADR-019](./docs/ADR.md#adr-019桌面容器从-tauri-2-迁移到-electron)。

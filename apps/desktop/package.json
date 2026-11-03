@@ -66,6 +66,7 @@
     "npmRebuild": false,
     "electronVersion": "45.0.0",
     "electronDist": "node_modules/electron/dist",
+    "publish": null,
     "directories": {
       "output": "release",
       "buildResources": "build"

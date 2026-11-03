@@ -186,7 +186,7 @@ cargo test --workspace
 cargo build --workspace --release
 
 # 产物自检
-.\target\release\auralis-studio.exe --self-test
+.\target\release\auralis-engine.exe --self-test
 ```
 
 新开一个终端时，用户级环境变量会自动生效；

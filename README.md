@@ -108,9 +108,21 @@ cd apps\desktop
 npm run electron:start                # vite build + esbuild main/preload + electron .
 ```
 
-There is **no installer yet** (M6). The engine binary must exist at
-`target\debug\auralis-engine.exe` (or `AURALIS_ENGINE` must point at it);
-a packaged build is expected to read `<resources>\engine\auralis-engine.exe`.
+### 4. Windows installer
+
+```powershell
+cd apps\desktop
+npm run package:win                   # engine + Electron runtime + NSIS installer
+```
+
+The installer is written to
+`apps\desktop\release\Auralis-Studio-<version>-setup.exe`, with an unpacked tree
+under `release\win-unpacked\` for pre-release checks. It is **unsigned** (no
+code-signing certificate is configured) and has **no auto-update**, so Windows
+SmartScreen will show “unknown publisher”. The packaged app reads the engine
+from `<resources>\engine\auralis-engine.exe`. For development, the engine must
+exist at `target\debug\auralis-engine.exe` (or `AURALIS_ENGINE` must point at
+it).
 
 > [!WARNING]
 > **The release binary is a GUI-subsystem executable.** Calling it directly
@@ -133,10 +145,10 @@ compared against.
 
 | Icon | Area | What works today |
 | ---- | ---- | ---------------- |
-| 📂 | **Import** | WAV with metadata inspection, cancellable chunked PCM decode. FLAC and AIFF are verified against checked-in samples; MP3 decodes but is **not verified** — see [the table below](#container-support--measured-not-assumed) |
+| 📂 | **Import** | WAV with metadata inspection, cancellable chunked PCM decode. FLAC and AIFF are verified against checked-in samples; MP3 and OGG decode but are **not verified** — see [the table below](#container-support--measured-not-assumed) |
 | 📈 | **Time-domain** | Peak, RMS, DC offset, crest factor, over-full-scale sample counting, per-channel independence |
 | 📊 | **Frequency-domain** | FFT with explicit amplitude correction, peak detection with markers, zoom and pan, cursor readout |
-| 🌈 | **Spectrogram** | STFT with configurable window and hop, rendered to a texture-backed canvas |
+| 🌈 | **Spectrogram** | STFT with an explicit window and hop, rendered as a Canvas 2D `ImageData` buffer |
 | 🔴 | **Real-time** | CPAL capture through a bounded lock-free ring buffer with buffer recycling and drop instrumentation |
 | 🧮 | **Verified DSP** | Criterion benchmarks plus cross-validation against an independent numpy implementation |
 | 🧱 | **Enforced boundaries** | CI fails if the DSP crates acquire I/O, or if audio math appears in the frontend |
@@ -149,7 +161,7 @@ compared against.
 | **Desktop shell** | Electron 45 with a bundled Chromium — runtime version is fixed per release |
 | **UI** | React 19 + TypeScript 7 + Vite 8 (sandboxed renderer, `contextIsolation`) |
 | **Design system** | CSS custom-property tokens + Radix primitives (headless) + in-house components |
-| **Visualization** | In-house Canvas 2D for waveform and spectrum; texture-backed canvas for the spectrogram |
+| **Visualization** | In-house Canvas 2D for waveform, spectrum and spectrogram (`ImageData`-backed for the dense view) |
 | **DSP** | Rust: `auralis-dsp`, depending only on `rustfft` 6.4 |
 | **Codec** | `symphonia` 0.6 with `mp3` and `aiff` features declared explicitly |
 | **Concurrency** | Lock-free SPSC ring (`crossbeam-queue`), `catch_unwind` task isolation |
@@ -252,10 +264,11 @@ checked.
 
 | Container | Compiled in | Verified against checked-in samples |
 | --------- | ----------- | ------------------------------------ |
-| **WAV** | yes | **yes** — 13 integration tests covering write → decode → DSP |
+| **WAV** | yes | **yes** — 9 integration tests that use WAV fixtures (5 of them cover the core write → decode → DSP path), plus a WAV-writer header unit test |
 | **FLAC** | yes | **yes** — 4 integration tests + a fixture generator (`--ignored`), sample produced by the third-party `flacenc` encoder |
-| **AIFF** | yes (`aiff` feature declared explicitly) | **yes** — 4 integration tests + a fixture generator (`--ignored`), sample produced by this crate's hand-written writer |
+| **AIFF** | yes (`aiff` feature declared explicitly) | **yes** — 4 integration tests + 2 writer unit tests (80-bit sample-rate encoding, header fields) + a fixture generator (`--ignored`), sample produced by this crate's hand-written writer |
 | MP3 | yes (`mp3` feature declared explicitly) | no |
+| OGG / Vorbis | yes (symphonia default features) | no |
 
 Sample strength differs and the docs should not blur it: WAV and AIFF fixtures
 come from hand-written writers in this repository, FLAC from a third-party
@@ -347,10 +360,11 @@ measurement rather than an opinion:
 ./scripts/check-oracle.ps1       # numpy cross-validation of the DSP
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace           # 237 tests
+cargo test --workspace           # 286 tests (2 ignored fixture generators)
 cargo test -p auralis-engine ipc -- --nocapture   # IPC payload sizes
 cd apps\desktop && npm run typecheck
 cd apps\desktop && npm run electron:typecheck
+cd apps\desktop && npm run test
 cd apps\desktop && npm run electron:build
 ```
 
@@ -363,10 +377,10 @@ cd apps\desktop && npm run electron:build
 | **M1** | WAV import, metadata, chunked PCM, cancellation | ✅ done |
 | **M2** | FFT, amplitude correction, peak detection, waveform pyramid | ✅ done |
 | **M3** | Spectrum interaction: cursor, zoom/pan, parameter inspector, peak markers | ✅ done |
-| **M4** | Real-time capture (CPAL) + live spectrogram | 🚧 in progress — the CPAL stream, analyser thread, live spectrum, and the offset-aware chunked spectrogram are in; the high-refresh channel is not. **Not yet run against real audio hardware.** |
+| **M4** | Real-time capture (CPAL) + live spectrogram | ✅ done (8-hour stability not accepted) — CPAL stream, analyser thread, live spectrum, and offset-aware chunked spectrogram are in. Verified on one Realtek WASAPI input (6.03 s, 287,040 frames, 0 drops); hot-plug, device switching and 8-hour runs are not verified. The high-refresh channel was deliberately not added (ADR-020). |
 | **M4.5** | Desktop container replaced: Tauri 2 → Electron 45; Rust command layer extracted to `auralis-engine` (ADR-019) | ✅ done (2026-10-22) |
 | M5 | Export, config persistence, crash recovery | ✅ done — CSV/JSON export, layout persistence, and process-level session restore (including an unclean-exit notice). The `auralis-app` use-case layer is deliberately deferred |
-| M6 | Installer, user manual, license inventory | ⬜ not started |
+| M6 | Installer, user manual, license inventory, long-run stability | 🚧 mostly done — `npm run package:win` produces an unsigned NSIS installer carrying the engine, manual and license inventory. Install/uninstall regression, code signing, auto-update and 8-hour stability are not done |
 
 ## Project structure
 
@@ -432,18 +446,17 @@ Read this before trusting a number. It is short on purpose.
 - **No calibrated measurement.** No SPL, no LUFS, no SNR, no THD, no THD+N.
   Those algorithms are not implemented. This release makes no accuracy claim
   of any kind.
-- **WAV, FLAC, and AIFF are verified against checked-in samples; MP3 is not.**
-  The fixtures are generated (hand-written writers for WAV/AIFF, `flacenc` for
-  FLAC), not captured from real-world sources, so this proves the decoders
-  agree with an independent encode-side implementation — not that arbitrary
-  files in the wild will work. MP3 decodes but has no sample, and the UI marks
-  it unverified.
-- **Real-time capture has never run against a real sound card.** The CPAL
-  stream, the analyser thread, the drop/overwrite counters, and the live
-  spectrum in the UI are implemented and unit-tested, but the only executed
-  paths are the missing-device error and pure-logic tests. Every statement
-  about real capture behaviour (latency, drop rate, device hot-plug) is
-  unverified.
+- **WAV, FLAC, and AIFF are verified against checked-in samples; MP3 and OGG
+  are not.** The fixtures are generated (hand-written writers for WAV/AIFF,
+  `flacenc` for FLAC), not captured from real-world sources, so this proves the
+  decoders agree with an independent encode-side implementation — not that
+  arbitrary files in the wild will work. MP3/OGG decode but have no sample, and
+  the UI marks them unverified.
+- **Real-time capture is verified on one device only.** A 6.03 s run on a
+  Realtek WASAPI default input (2 ch / 48 kHz) processed 287,040 frames
+  (0.991× real time) with 0 ring-buffer drops and a snapshot RPC p95 of
+  3.10 ms. Hot-plug, switching devices while capturing, and 8-hour runs are
+  unverified; ASIO is not enabled.
 - **Real-time analysis discards intermediate samples.** When the ring backs up,
   the worker keeps only the most recent `fft_size` samples per refresh rather
   than analysing every window. The display stays current at the cost of not
@@ -451,16 +464,20 @@ Read this before trusting a number. It is short on purpose.
   the UI missed.
 - **FFT is 2.7× over its original design target.** 271 µs against < 100 µs.
   See [docs/BENCHMARKS.md](./docs/BENCHMARKS.md).
-- **Clipping detection returns 0 at the command layer.** A real
-  flat-topped-waveform detector needs a per-sample trace, which conflicts with
-  chunked, memory-bounded decoding. It is scheduled for M2's waveform
-  pyramid work. Returning 0 is deliberate; guessing is not.
+- **Clipping detection is a heuristic, not proof of analog clipping.**
+  `StreamingFlatTop` counts flat-topped runs across decode-block boundaries and
+  reports them as `clippingRegions`; it does not measure intersample peaks or
+  prove that an ADC clipped. Over-full-scale sample counting is separate and
+  exact.
 - **Drag-and-drop import is implemented but only typechecked.** It uses
   Electron's `webUtils.getPathForFile` in preload; the code path has not yet
   been exercised with a real OS drop on this machine.
-- **IPC round-trip has been measured once, not under load.** A synthetic frame
-  (4096-point FFT included) took ~11 ms end to end on the dev machine. Sustained
-  realtime throughput has not been measured.
+- **IPC has been measured for file analysis and fast commands, but not under
+  sustained load.** A 900 s / 48 kHz stereo WAV (172.8 MB) took 1.8 s median
+  (n=7, ~1.65 s direct stdio) through Electron; `app_info` and `probe_file`
+  p50 were 0.5 ms and 0.8 ms. The same workload ranged 1.4–6.1 s across
+  sessions, so quote the sample count and percentiles, not a single number.
+  Continuous realtime throughput under load has not been measured.
 - **The Electron migration was verified on one machine only.** It removed the
   maximize-time artifacts here; it is not a guarantee for every GPU/driver
   combination. See [ADR-019](./docs/ADR.md#adr-019桌面容器从-tauri-2-迁移到-electron).
