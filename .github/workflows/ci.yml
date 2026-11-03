@@ -9,6 +9,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 最小权限：本 workflow 的五个 job（check / frontend / licenses /
+# dsp-regression / artifact）都只读取仓库内容（actions/checkout 只需
+# contents: read）。artifact job 的 upload-artifact 走 artifact 服务，
+# 使用 ACTIONS_RUNTIME_TOKEN，并不需要 contents: write；本仓库也没有
+# Release 创建、PR 评论等写入步骤。因此不授予任何写权限。
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
