@@ -86,7 +86,7 @@ symphonia = { version = "0.6", features = ["mp3", "aiff"] }
 # **锁在 0.4**：0.5 产出的 FLAC，symphonia 0.6.1（最新）读不了 ——
 # 解码报「意外的文件结束」，四条 FLAC 集成测试全挂。symphonia 没有更新
 # 版本可换，所以升级 flacenc 只能等上游修好再试。
-flacenc = "0.4"
+flacenc = "0.5"
 
 [profile.release]
 opt-level = 3
