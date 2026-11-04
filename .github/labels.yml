@@ -50,6 +50,10 @@
   color: c2e0c6
   description: No activity for 60 days
 
+- name: dependencies
+  color: 0366d6
+  description: Dependency bumps opened by Dependabot
+
 - name: area:dsp
   color: 1d76db
   description: crates/auralis-dsp — RMS, Peak, DC, FFT, STFT, peak detection
