@@ -32,7 +32,7 @@ jobs:
         os: [windows-latest, ubuntu-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Linux 上只需要 ALSA 开发头文件（cpal / auralis-audio）。
       # 迁移到 Electron 后不再需要 GTK/WebKit —— 容器是 Node 进程，
@@ -105,7 +105,7 @@ jobs:
         node: ['20', '22', '24']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
@@ -148,7 +148,7 @@ jobs:
       run:
         working-directory: apps/desktop
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -167,7 +167,7 @@ jobs:
     name: DSP 数值回归 + numpy oracle
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.0
@@ -223,7 +223,7 @@ jobs:
       # 约 100 MB 的运行时下载（apps/desktop/scripts/ensure-electron.mjs）。
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.0
