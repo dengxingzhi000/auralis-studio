@@ -28,7 +28,6 @@ updates:
     commit-message:
       prefix: deps
       prefix-development: deps-dev
-      include: scope
     groups:
       npm-minor-patch:
         applies-to: version-updates
@@ -48,7 +47,6 @@ updates:
       - dependencies
     commit-message:
       prefix: deps
-      include: scope
     groups:
       cargo-minor-patch:
         applies-to: version-updates
@@ -68,7 +66,6 @@ updates:
       - dependencies
     commit-message:
       prefix: deps
-      include: scope
     groups:
       actions-minor-patch:
         applies-to: version-updates
