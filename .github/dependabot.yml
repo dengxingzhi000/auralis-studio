@@ -1,0 +1,77 @@
+# 依赖更新配置（Dependabot）。
+#
+# 目录均指向清单的真实位置（写错 Dependabot 会静默不工作）：
+#   * npm —— apps/desktop 是唯一的 npm 包，lockfile 在 apps/desktop/package-lock.json，
+#     仓库根没有 package.json。
+#   * cargo —— 仓库根是 workspace（根 Cargo.toml + Cargo.lock），crates/* 下的
+#     Cargo.toml 只是工作区成员，版本统一在根 [workspace.dependencies] 声明。
+#   * github-actions —— workflow 在 .github/workflows/。
+#
+# 策略：
+#   * 统一每周一次，周一 04:00（Asia/Shanghai）低峰时段。
+#   * groups 只把 minor/patch 合成单个 PR（applies-to: version-updates），major 仍单独开。
+#   * 每个生态最多 3 个待合并 PR，避免刷满列表。
+#   * 不写任何 ignore —— 安全更新必须能提出来（含 minimatch 那条，交由维护者决定）。
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /apps/desktop
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    commit-message:
+      prefix: deps
+      prefix-development: deps-dev
+      include: scope
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      cargo-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
