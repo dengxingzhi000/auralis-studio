@@ -56,7 +56,7 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "auralis-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "auralis-core",
  "auralis-dsp",
@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "auralis-codec"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "auralis-core",
  "auralis-dsp",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "auralis-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -88,7 +88,7 @@ dependencies = [
 
 [[package]]
 name = "auralis-dsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "auralis-core",
  "criterion",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "auralis-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "auralis-audio",
  "auralis-codec",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "auralis-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "auralis-task"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "serde",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "auralis-visualization"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "auralis-core",
 ]

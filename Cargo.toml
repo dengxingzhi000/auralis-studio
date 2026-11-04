@@ -25,7 +25,7 @@ members = [
 # in the milestone where they actually get content.
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # MSRV 声明。**注意这与 rust-toolchain.toml 的 channel 是两件事：**
 #

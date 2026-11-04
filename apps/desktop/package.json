@@ -1,7 +1,7 @@
 {
   "name": "@auralis/desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Auralis Studio 桌面应用（Electron + React 19 + Rust 引擎）",
   "license": "MIT OR Apache-2.0",

@@ -2,10 +2,20 @@
 
 本流程只处理**桌面安装包**（NSIS）。`v0.1.0` 已发布，不要重跑或覆盖它的资产。
 
+## 版本策略
+
+- 仅修 bug / 无行为变化的重构（patch）：`0.2.0 → 0.2.1`；
+- 新功能、SDK/API 变更、引擎行为变化（minor）：`0.2.x → 0.3.0`；
+- 破坏性变更（major）：`1.0.0` 起才用，或在 0.x 阶段明确标注「breaking」并在
+  `CHANGELOG` 写迁移说明。
+- 当前处于 `0.2.x`：按 [Semantic Versioning](https://semver.org/) 的 0.x 约定，
+  **minor 位即视为可能破坏**，升级前先读 `CHANGELOG`。
+
 ## 前置
 
 - 版本号先改：`apps/desktop/package.json` 的 `version`（安装包名与 `latest.yml` 的
-  `version` 都来自这里）。
+  `version` 都来自这里），`Cargo.toml` 的 `[workspace.package]` 与 `Cargo.lock`、
+  `apps/desktop/package-lock.json` 必须同步。
 - 签名仍为空：构建脚本写死 `CSC_IDENTITY_AUTO_DISCOVERY=false`，
   产物是**未签名**的 `setup.exe`，Windows SmartScreen 会提示「未知发布者」。
   分发前应补 OV 证书（本轮不做，仅记录）。
