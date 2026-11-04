@@ -1,0 +1,78 @@
+# 为「分组且仅 minor/patch」的 Dependabot PR 打开原生 auto-merge。
+#
+# 只作用在三个分组分支：
+#   dependabot/npm_and_yarn/.../npm-minor-patch-*
+#   dependabot/cargo/.../cargo-minor-patch-*
+#   dependabot/github_actions/.../actions-minor-patch-*
+#
+# 额外闸门：update-type 必须是 semver-minor / semver-patch，且不是安全更新
+# （fetch-metadata 的 ghsa-id 为空）。major 与 security update 一律人工处理。
+#
+# 合并方式用 --merge（merge commit），与本仓库既有习惯一致，不引入 squash。
+# auto-merge 只有在必需检查全绿时才会真正合并；分支保护 strict=true 时
+# behind 会继续等待，需要时在 PR 上 `@dependabot rebase`。
+
+name: Dependabot auto-merge (grouped minor/patch)
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 读取依赖更新元数据
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 判定是否放行
+        id: gate
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          GHSA_ID: ${{ steps.meta.outputs.ghsa-id }}
+        run: |
+          set -euo pipefail
+          group="none"
+          case "$HEAD_REF" in
+            dependabot/npm_and_yarn/*npm-minor-patch*) group="npm-minor-patch" ;;
+            dependabot/cargo/*cargo-minor-patch*) group="cargo-minor-patch" ;;
+            dependabot/github_actions/*actions-minor-patch*) group="actions-minor-patch" ;;
+          esac
+          echo "branch=$HEAD_REF update_type=$UPDATE_TYPE ghsa=${GHSA_ID:-none} group=$group"
+          if [ "$group" = "none" ]; then
+            echo "allow=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::not a grouped minor/patch PR, skip"
+            exit 0
+          fi
+          if [ "$UPDATE_TYPE" != "version-update:semver-minor" ] && [ "$UPDATE_TYPE" != "version-update:semver-patch" ]; then
+            echo "allow=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::update_type=$UPDATE_TYPE, skip"
+            exit 0
+          fi
+          if [ -n "$GHSA_ID" ]; then
+            echo "allow=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::security update, keep manual review"
+            exit 0
+          fi
+          echo "allow=true" >> "$GITHUB_OUTPUT"
+
+      - name: 打开 auto-merge（merge commit）
+        if: steps.gate.outputs.allow == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: gh pr merge "$PR" --auto --merge --repo "$REPO"
