@@ -9,8 +9,15 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-11-04
+
 ### Added
 
+- **桌面端自动更新。** 打包版启动 5 秒后静默检查 GitHub Releases，后台下载后由系统
+  通知提示安装（非强弹窗）；`build.publish` 指向 GitHub，构建产出 `latest.yml`
+  与 `app-update.yml`，更新完整性按 `latest.yml` 的 sha512 校验。安装包**仍未签名**
+  （`signing: none`），Windows SmartScreen 会提示「未知发布者」；本轮只验证了更新
+  链路可产出，**未在真实机器上做升级验证**。
 - **Control lane for capture commands.** `input_devices`, `start_realtime` and
   `stop_realtime` moved out of the slow command queue into their own lane
   (1 worker, bounded queue of 2). They used to share the slow lane with file
@@ -190,6 +197,17 @@ Because Auralis Studio is pre-1.0, treat `0.x` minor bumps as breaking.
 
 ### Changed
 
+- **自动更新元数据重新启用。** `build.publish` 从 `null` 改为 GitHub provider，
+  `electron-builder` 重新产出 `latest.yml` / 打包内的 `app-update.yml`；这与
+  上一条历史记录相反，是 0.2.0 的刻意决定（客户端已接 `electron-updater`）。
+- **CodeQL 四个语言分析进入 master 必需检查。** `Analyze (actions)`、
+  `Analyze (javascript-typescript)`、`Analyze (python)`、`Analyze (rust)` 与原有
+  5 条 CI 检查一起阻塞合并；PR 平均多等约 3–4 分钟。
+- **Dependabot 治理。** 新增 `.github/dependabot.yml`（npm/cargo/github-actions，
+  weekly + 分组 minor/patch，单生态最多 3 个 PR）；分组 PR 走原生 auto-merge，
+  major 与安全更新仍需人工合并。
+- **npm 依赖升级（apps/desktop）。** `electron` 45.2.1、`electron-builder` 26.18.0、
+  `@types/node` 26.6.6；`THIRD_PARTY_LICENSES.md` 同步。
 - **Documentation resynced with the shipped state.** The READMEs still claimed
   there was no installer, that the suite had 237 tests, that real-time capture
   had never run on hardware, and that clipping always read 0; the M6 plan said
