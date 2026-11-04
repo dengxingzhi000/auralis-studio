@@ -31,6 +31,8 @@ import {
   type SaveDialogOptions,
 } from "electron";
 
+import { autoUpdater } from "electron-updater";
+
 import { Engine } from "./engine";
 import { isOpenableExternalUrl } from "./external-links";
 
@@ -121,6 +123,23 @@ function registerIpc(): void {
   });
 }
 
+/**
+ * 自动更新：只在打包态启用。
+ *
+ * 启动后延迟检查，不阻塞窗口与引擎起机；发现新版本后由 electron-updater
+ * 在后台下载，完成时弹系统通知，用户点击才重启安装 —— 不做强弹窗。
+ * 开发态（`--dev` / 未打包）没有 `app-update.yml`，直接跳过。
+ */
+function scheduleUpdateCheck(): void {
+  if (isDev || !app.isPackaged) return;
+
+  setTimeout(() => {
+    void autoUpdater
+      .checkForUpdatesAndNotify()
+      .catch((error) => console.error("[update] check failed:", error));
+  }, 5_000);
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     title: "Auralis Studio",
@@ -207,6 +226,7 @@ void app.whenReady().then(() => {
   registerIpc();
   engine.start();
   createWindow();
+  scheduleUpdateCheck();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
