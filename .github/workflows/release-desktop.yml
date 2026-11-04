@@ -1,0 +1,89 @@
+# Windows 桌面安装包发布。
+#
+# 触发：
+# - push tag `v*.*.*`：构建并上传到同名 GitHub Release（唯一会写 Release 的路径）；
+# - workflow_dispatch：只构建 + 上传 Actions artifact，用于不推 tag 时验证产物结构。
+#
+# 发布物：`Auralis-Studio-<version>-setup.exe`、同名 `.blockmap`、`latest.yml`。
+# `latest.yml` 的 sha512 是 electron-updater 的校验依据；安装包未签名（见
+# docs/RELEASING_DESKTOP.md），Windows SmartScreen 会提示「未知发布者」。
+
+name: Release (Windows desktop)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: package installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装前端依赖
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: 构建安装包
+        working-directory: apps/desktop
+        env:
+          # 与 package-win.mjs 一致：不自动发现本机证书，产物未签名。
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run package:win
+
+      - name: 校验产物
+        shell: pwsh
+        working-directory: apps/desktop
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $dir = "release"
+          Get-ChildItem $dir | Select-Object Name,Length | Format-Table -AutoSize
+          $expected = @("Auralis-Studio-$version-setup.exe", "latest.yml")
+          foreach ($name in $expected) {
+            if (-not (Test-Path (Join-Path $dir $name))) { throw "missing $name" }
+          }
+          if (-not (Get-ChildItem $dir -Filter "*.blockmap")) { throw "missing .blockmap" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release
+          if-no-files-found: error
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/latest.yml
+            apps/desktop/release/*.blockmap
+
+      - name: 上传到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag --generate-notes
+          }
+          gh release upload $tag `
+            "apps/desktop/release/Auralis-Studio-*-setup.exe" `
+            "apps/desktop/release/latest.yml" `
+            "apps/desktop/release/*.blockmap" `
+            --clobber
