@@ -118,8 +118,11 @@ npm run package:win                   # engine + Electron runtime + NSIS install
 The installer is written to
 `apps\desktop\release\Auralis-Studio-<version>-setup.exe`, with an unpacked tree
 under `release\win-unpacked\` for pre-release checks. It is **unsigned** (no
-code-signing certificate is configured) and has **no auto-update**, so Windows
-SmartScreen will show “unknown publisher”. The packaged app reads the engine
+code-signing certificate is configured), so Windows SmartScreen will show
+“unknown publisher”. Auto-update is wired since 0.2.0 (`latest.yml`), but
+upgrading on a real machine has **not** been verified yet. See
+[docs/SIGNING.md](./docs/SIGNING.md) for the consequences of running unsigned
+and for how to enable signing. The packaged app reads the engine
 from `<resources>\engine\auralis-engine.exe`. For development, the engine must
 exist at `target\debug\auralis-engine.exe` (or `AURALIS_ENGINE` must point at
 it).
