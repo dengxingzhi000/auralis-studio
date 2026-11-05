@@ -86,6 +86,13 @@ symphonia = { version = "0.6", features = ["mp3", "aiff"] }
 # **锁在 0.4**：0.5 产出的 FLAC，symphonia 0.6.1（最新）读不了 ——
 # 解码报「意外的文件结束」，四条 FLAC 集成测试全挂。symphonia 没有更新
 # 版本可换，所以升级 flacenc 只能等上游修好再试。
+#
+# 对应 Dependabot PR #11（https://github.com/dengxingzhi000/auralis-studio/pull/11），
+# 该 PR 保持 OPEN、不合并，此处的 pin 也不改。
+# 复评触发条件（满足任一）：
+#   1) symphonia 发布能读 flacenc 0.5+ 输出的版本；
+#   2) flacenc 修复了 0.5 输出的兼容性问题（用 0.5.x 新补丁重新验证）。
+# 复评时必须先跑通 4 条 FLAC 集成测试，再升级此 pin。
 flacenc = "0.4"
 
 [profile.release]
