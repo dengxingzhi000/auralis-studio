@@ -11,7 +11,11 @@
 #   * 统一每周一次，周一 04:00（Asia/Shanghai）低峰时段。
 #   * groups 只把 minor/patch 合成单个 PR（applies-to: version-updates），major 仍单独开。
 #   * 每个生态最多 3 个待合并 PR，避免刷满列表。
-#   * 不写任何 ignore —— 安全更新必须能提出来（含 minimatch 那条，交由维护者决定）。
+#   * 默认不写 ignore —— 安全更新必须能提出来（含 minimatch 那条，交由维护者决定）。
+#   * 唯一例外是 cargo 的 flacenc 0.5.x：0.5 产出的 FLAC，symphonia 0.6.1 读不了，
+#     4 条 FLAC 集成测试会全挂，所以 Cargo.toml 锁在 0.4（见 PR #22 的说明）。
+#     不挡住 0.5.x 的话，Dependabot 每次刷新已有的 flacenc PR 都会在 cargo 锁文件
+#     校验里抛 "Failed to update flacenc!"，整个 Dependabot Updates run 变红且不产出任何 PR。
 version: 2
 
 updates:
@@ -47,6 +51,12 @@ updates:
       - dependencies
     commit-message:
       prefix: deps
+    # 只挡 flacenc 的 0.5.x 这一条 minor 线（原因见文件顶部）。
+    # 0.4.x 补丁与将来的 0.6+ 仍会照常提 PR；等 symphonia 侧能读 0.5 的 FLAC 后删掉本段即可。
+    ignore:
+      - dependency-name: flacenc
+        versions:
+          - ">=0.5.0, <0.6.0"
     groups:
       cargo-minor-patch:
         applies-to: version-updates
