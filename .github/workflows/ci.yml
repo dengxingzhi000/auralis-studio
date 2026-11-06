@@ -239,7 +239,7 @@ jobs:
           npm run electron:build
       - name: 构建 Rust 音频引擎
         run: cargo build --workspace --release --locked
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: auralis-engine-windows-x64
           path: target/release/auralis-engine.exe
