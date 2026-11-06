@@ -383,7 +383,7 @@ cd apps\desktop && npm run electron:build
 | **M4** | Real-time capture (CPAL) + live spectrogram | ✅ done (8-hour stability not accepted) — CPAL stream, analyser thread, live spectrum, and offset-aware chunked spectrogram are in. Verified on one Realtek WASAPI input (6.03 s, 287,040 frames, 0 drops); hot-plug, device switching and 8-hour runs are not verified. The high-refresh channel was deliberately not added (ADR-020). |
 | **M4.5** | Desktop container replaced: Tauri 2 → Electron 45; Rust command layer extracted to `auralis-engine` (ADR-019) | ✅ done (2026-10-22) |
 | M5 | Export, config persistence, crash recovery | ✅ done — CSV/JSON export, layout persistence, and process-level session restore (including an unclean-exit notice). The `auralis-app` use-case layer is deliberately deferred |
-| M6 | Installer, user manual, license inventory, long-run stability | 🚧 mostly done — `npm run package:win` produces an unsigned NSIS installer carrying the engine, manual and license inventory. Install/uninstall regression, code signing, auto-update and 8-hour stability are not done |
+| M6 | Installer, user manual, license inventory, long-run stability | 🚧 mostly done — `npm run package:win` produces an unsigned NSIS installer carrying the engine, manual and license inventory. Install/uninstall regression, code signing and 8-hour stability are still open; auto-update has been wired since 0.2.0 (`latest.yml`), but an upgrade on a real machine is not verified yet |
 
 ## Project structure
 
