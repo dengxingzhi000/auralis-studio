@@ -107,8 +107,11 @@ npm run package:win                   # 引擎 + Electron 运行时 + NSIS 安�
 
 安装包输出到 `apps\desktop\release\Auralis-Studio-<version>-setup.exe`，
 `release\win-unpacked\` 是用于发布前自检的免安装目录。安装包**未签名**
-（未配置代码签名证书）且**没有自动更新**，Windows SmartScreen 会显示
-「未知发布者」。打包后的应用从 `<resources>\engine\auralis-engine.exe`
+（未配置代码签名证书），Windows SmartScreen 会显示「未知发布者」；自动更新
+**已接入**（自 0.2.0 起随 `latest.yml` 一起发布，真实机器上的升级尚未验证）。
+签名与发布的完整说明以英文 README 及 [docs/SIGNING.md](./docs/SIGNING.md)、
+[docs/RELEASING_DESKTOP.md](./docs/RELEASING_DESKTOP.md) 为准。
+打包后的应用从 `<resources>\engine\auralis-engine.exe`
 读取引擎。开发时引擎必须存在于 `target\debug\auralis-engine.exe`
 （或由 `AURALIS_ENGINE` 指定）。
 
@@ -351,7 +354,7 @@ cd apps\desktop && npm run electron:build
 | **M4** | 实时采集（CPAL）+ 实时声谱图 | ✅ 已完成（8 小时长稳未验收）——CPAL 流、分析线程、UI 实时频谱、带 offset 的视口分块声谱图已接通。已在一台 Realtek WASAPI 输入上验证（6.03 s、287,040 帧、丢帧 0）；热插拔、设备切换与 8 小时运行未验证。高频通道按 ADR-020 决定不引入。 |
 | **M4.5** | 桌面容器 Tauri 2 → Electron 45；Rust 命令层抽为 `auralis-engine` 独立进程（ADR-019） | ✅ 已完成（2026-10-22） |
 | M5 | 导出、配置持久化、异常恢复 | ✅ 已完成——CSV/JSON 导出、布局持久化、进程级会话恢复（含异常退出提示）；`auralis-app` 用例层刻意推迟 |
-| M6 | 安装包、用户手册、许可证清单、长时间稳定性 | 🚧 大部分完成——`npm run package:win` 能产出携带引擎、手册与许可证清单的未签名 NSIS 安装包。安装/卸载回归、代码签名、自动更新与 8 小时稳定性尚未完成 |
+| M6 | 安装包、用户手册、许可证清单、长时间稳定性 | 🚧 大部分完成——`npm run package:win` 能产出携带引擎、手册与许可证清单的未签名 NSIS 安装包。安装/卸载回归、代码签名与 8 小时稳定性尚未完成；自动更新自 0.2.0 起已接入（`latest.yml`），真实机器升级未验证 |
 
 ## 项目结构
 
